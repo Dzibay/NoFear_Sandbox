@@ -54,6 +54,10 @@
 		{
 			"Name": "NetworkPrediction",
 			"Enabled": true
+		},
+		{
+			"Name": "PCG",
+			"Enabled": true
 		}
 	],
 	"EpicSampleNameHash": "1673045636"
