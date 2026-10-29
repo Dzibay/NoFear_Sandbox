@@ -20,3 +20,5 @@ DerivedDataCache/
 *.obj
 *.dll
 *.exe
+Binaries/
+.vs/
