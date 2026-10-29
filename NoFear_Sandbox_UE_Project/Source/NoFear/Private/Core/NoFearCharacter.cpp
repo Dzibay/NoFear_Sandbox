@@ -1,9 +1,11 @@
 #include "Core/NoFearCharacter.h"
 
 #include "GameFramework/PlayerController.h"
+#include "Weapons/NoFearWeaponComponent.h"
 
 ANoFearCharacter::ANoFearCharacter()
 {
+	WeaponComponent = CreateDefaultSubobject<UNoFearWeaponComponent>(TEXT("WeaponComponent"));
 }
 
 void ANoFearCharacter::SetTeam(ENoFearTeam NewTeam)
@@ -28,5 +30,25 @@ void ANoFearCharacter::PossessedBy(AController* NewController)
 	if (NewController && NewController->IsPlayerController())
 	{
 		SetTeam(ENoFearTeam::Player);
+	}
+}
+
+void ANoFearCharacter::NotifyControllerChanged()
+{
+	Super::NotifyControllerChanged();
+
+	if (WeaponComponent)
+	{
+		WeaponComponent->HandleControllerChanged();
+	}
+}
+
+void ANoFearCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
+{
+	Super::SetupPlayerInputComponent(PlayerInputComponent);
+
+	if (WeaponComponent)
+	{
+		WeaponComponent->SetupPlayerInput(PlayerInputComponent);
 	}
 }

@@ -12,7 +12,10 @@ public class NoFear : ModuleRules
 			"Engine",
 			"AIModule",
 			"GameplayTasks",
-			"NavigationSystem"
+			"NavigationSystem",
+			"EnhancedInput",
+			"Niagara",
+			"PhysicsCore"
 		});
 	}
 }
