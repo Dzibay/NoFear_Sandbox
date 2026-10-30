@@ -139,6 +139,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
 	ANoFearWeapon* GetCurrentWeapon() const;
 
+	/** Поставить позу GASP по имени значения OverlayState (временно, до смены оружия или RefreshOverlayState). */
+	void SetOverlayState(FName StateName) const;
+
+	/** Вернуть позу по текущему оружию (или безоружную). */
+	void RefreshOverlayState() const;
+
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
 	TArray<ANoFearWeapon*> GetWeapons() const { return ObjectPtrDecay(Weapons); }
 
@@ -173,7 +179,6 @@ private:
 	/** Убранное старое оружие заменяется новым (или ничем) без анимации убирания. */
 	void CompleteSwitch(int32 NewIndex);
 
-	void SetOverlayState(FName StateName) const;
 	void UpdateArmRecoilVariables();
 
 	void OnSwitchWeaponInput(const FInputActionValue& Value);

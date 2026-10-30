@@ -12,6 +12,7 @@ class ANoFearCharacter;
 class UAISenseConfig_Hearing;
 class UAISenseConfig_Sight;
 class UBehaviorTree;
+class UNoFearPoseComponent;
 
 /** Имена ключей блэкборда BB_NoFearBot. Контроллеры и задачи пишут и читают их по этим именам. */
 struct NOFEAR_API FNoFearBotKeys
@@ -127,6 +128,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NoFear|AI")
 	void SetMovementFlags(bool bStrafe, bool bAim, bool bWalk);
 
+	/**
+	 * Присесть / встать (ACharacter::Crouch). Присевший бот тише (шаги по CrouchFootstepRange) и труднее заметен,
+	 * но медленнее. Само по себе поведение не приседает: вызывается из задач дерева или Blueprint.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|AI")
+	void SetCrouching(bool bCrouch);
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	bool IsCrouching() const;
+
 	UPROPERTY(BlueprintAssignable, Category = "NoFear|AI")
 	FNoFearBotTargetChangedSignature OnTargetChanged;
 
@@ -208,6 +219,14 @@ public:
 	/** Без цели ходить шагом. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Movement")
 	bool bWalkWhenCalm = true;
+
+	/** Насторожен (Suspicious) и с оружием в руках: поднять оружие (поза прицеливания), пока цели ещё нет. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Movement")
+	bool bRaiseWeaponWhenAlert = true;
+
+	/** Сильный удар (UNoFearPoseComponent::Stagger) останавливает бота: дерево на паузе, шаги и стрельба прекращены. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Movement")
+	bool bFreezeWhenStaggered = true;
 
 	/** В бою смотреть на цель и двигаться боком (стрелки). Выключено — бежать лицом по ходу (монстры). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Movement")
@@ -363,6 +382,15 @@ protected:
 	UFUNCTION()
 	void HandlePawnDamaged(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info);
 
+	/** Реакция на попадание из UNoFearPoseComponent: замедление и (при сильном ударе) остановка. */
+	UFUNCTION()
+	void HandleHitReaction(UNoFearPoseComponent* Component, bool bStagger);
+
+	void BeginStagger();
+	/** Раз в 0.1 с, пока пошатнувшийся стоит: отпустить дерево, когда пошатывание закончилось. */
+	void PollStagger();
+	void ReleaseStagger();
+
 	void SetTarget(AActor* NewTarget);
 	void SetInvestigateLocation(const FVector& Location);
 	void ForgetStaleActors();
@@ -406,7 +434,11 @@ protected:
 
 private:
 	FTimerHandle UpdateTimer;
+	FTimerHandle StaggerTimer;
 	TWeakObjectPtr<UNoFearHealthComponent> BoundHealth;
+	TWeakObjectPtr<UNoFearPoseComponent> BoundPose;
+	/** Дерево поставлено на паузу пошатыванием (и только им). */
+	bool bLogicPausedByStagger = false;
 
 	ENoFearAlertState AlertState = ENoFearAlertState::Calm;
 

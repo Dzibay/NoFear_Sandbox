@@ -15,9 +15,14 @@ public class NoFearEditor : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[] {
 			"AIGraph",
 			"AIModule",
+			"AnimGraph",
+			"AnimGraphRuntime",
 			"AssetRegistry",
+			"AssetTools",
 			"BehaviorTreeEditor",
+			"BlueprintGraph",
 			"GameplayTasks",
+			"KismetCompiler",
 			"NoFear",
 			"UnrealEd"
 		});

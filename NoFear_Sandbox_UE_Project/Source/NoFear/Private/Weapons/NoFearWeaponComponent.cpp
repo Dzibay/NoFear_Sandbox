@@ -476,6 +476,12 @@ void UNoFearWeaponComponent::UpdateArmRecoilVariables()
 // Поза GASP
 // ---------------------------------------------------------------------------
 
+void UNoFearWeaponComponent::RefreshOverlayState() const
+{
+	const ANoFearWeapon* Weapon = GetCurrentWeapon();
+	SetOverlayState(Weapon && Weapon->GetWeaponData() ? Weapon->GetWeaponData()->OverlayState : UnarmedOverlayState);
+}
+
 void UNoFearWeaponComponent::SetOverlayState(FName StateName) const
 {
 	AActor* Owner = GetOwner();

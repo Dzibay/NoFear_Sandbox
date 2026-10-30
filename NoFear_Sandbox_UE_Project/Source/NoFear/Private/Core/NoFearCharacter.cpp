@@ -2,10 +2,14 @@
 
 #include "AIController.h"
 #include "AI/NoFearBotSubsystem.h"
+#include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Animation/AnimInstance.h"
+#include "Animation/NoFearPoseComponent.h"
+#include "Animation/Skeleton.h"
 #include "BrainComponent.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Core/NoFearPlayerController.h"
 #include "Engine/DamageEvents.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -22,6 +26,8 @@ ANoFearCharacter::ANoFearCharacter()
 {
 	WeaponComponent = CreateDefaultSubobject<UNoFearWeaponComponent>(TEXT("WeaponComponent"));
 	HealthComponent = CreateDefaultSubobject<UNoFearHealthComponent>(TEXT("HealthComponent"));
+	PoseComponent = CreateDefaultSubobject<UNoFearPoseComponent>(TEXT("PoseComponent"));
+	PoseAnimBlueprint = TSoftClassPtr<UAnimInstance>(FSoftObjectPath(TEXT("/Game/Blueprints/ABP_NoFearPose.ABP_NoFearPose_C")));
 
 	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> MaskedMaterial(
 		TEXT("/Game/Characters/UEFN_Mannequin/Materials/M_UEFN_Mannequin_Masked.M_UEFN_Mannequin_Masked"));
@@ -143,6 +149,29 @@ void ANoFearCharacter::BeginPlay()
 		}
 		CharacterMesh->SetCollisionResponseToChannel(HitTraceChannel, ECR_Block);
 	}
+
+	ApplyPoseAnimBlueprint();
+}
+
+void ANoFearCharacter::ApplyPoseAnimBlueprint()
+{
+	USkeletalMeshComponent* CharacterMesh = GetMesh();
+	if (!CharacterMesh || PoseAnimBlueprint.IsNull())
+	{
+		return;
+	}
+
+	// Ассет создаёт NoFear.GeneratePoseAnimBP; пока его нет, позы просто не рисуются.
+	UClass* PoseClass = PoseAnimBlueprint.LoadSynchronous();
+	const UAnimBlueprintGeneratedClass* Generated = Cast<UAnimBlueprintGeneratedClass>(PoseClass);
+	const USkeletalMesh* MeshAsset = CharacterMesh->GetSkeletalMeshAsset();
+	if (!Generated || !MeshAsset || !Generated->TargetSkeleton || MeshAsset->GetSkeleton() != Generated->TargetSkeleton)
+	{
+		return;
+	}
+
+	// Меш держит один пост-процесс: ABP_NoFearPose — копия штатного, поэтому подмена его не ломает.
+	CharacterMesh->SetOverridePostProcessAnimBP(PoseClass, /*ReinitAnimInstances=*/true);
 }
 
 float ANoFearCharacter::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)

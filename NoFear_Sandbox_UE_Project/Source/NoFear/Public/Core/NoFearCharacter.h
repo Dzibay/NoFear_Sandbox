@@ -7,7 +7,9 @@
 #include "Core/NoFearTeam.h"
 #include "NoFearCharacter.generated.h"
 
+class UAnimInstance;
 class UMaterialInterface;
+class UNoFearPoseComponent;
 class UNoFearWeaponComponent;
 
 /**
@@ -67,6 +69,18 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "NoFear|Health")
 	UNoFearHealthComponent* GetHealthComponent() const { return HealthComponent; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Pose")
+	UNoFearPoseComponent* GetPoseComponent() const { return PoseComponent; }
+
+	/**
+	 * Пост-процесс AnimBP с узлом NoFear Pose (генерирует NoFear.GeneratePoseAnimBP: копия пост-процесса манекена с узлом поз).
+	 * На BeginPlay ставится на меш вместо штатного пост-процесса, но только если скелет меша совпадает со скелетом этого AnimBP:
+	 * у монстров и дрона другие скелеты, они остаются без визуальных поз (шатание на геймплей действует всё равно).
+	 * Пусто — позы не рисуются.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Pose")
+	TSoftClassPtr<UAnimInstance> PoseAnimBlueprint;
 
 	UFUNCTION(BlueprintPure, Category = "NoFear|Health")
 	bool IsDead() const { return HealthComponent && HealthComponent->IsDead(); }
@@ -155,7 +169,12 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "NoFear|Health")
 	TObjectPtr<UNoFearHealthComponent> HealthComponent;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "NoFear|Pose")
+	TObjectPtr<UNoFearPoseComponent> PoseComponent;
+
 private:
+	void ApplyPoseAnimBlueprint();
+
 	UFUNCTION()
 	void HandleDeath(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info);
 

@@ -1,6 +1,7 @@
 #include "AI/NoFearMeleeComponent.h"
 
 #include "Animation/AnimInstance.h"
+#include "Animation/NoFearPoseComponent.h"
 #include "Core/NoFearHealthComponent.h"
 #include "Core/NoFearTeam.h"
 #include "Engine/OverlapResult.h"
@@ -25,7 +26,7 @@ bool UNoFearMeleeComponent::IsOwnerAlive() const
 
 bool UNoFearMeleeComponent::CanAttack() const
 {
-	if (Phase != EPhase::Idle || !IsOwnerAlive() || GetWorld()->GetTimeSeconds() < NextAttackTime)
+	if (Phase != EPhase::Idle || !IsOwnerAlive() || GetWorld()->GetTimeSeconds() < NextAttackTime || UNoFearPoseComponent::IsActorStaggered(GetOwner()))
 	{
 		return false;
 	}

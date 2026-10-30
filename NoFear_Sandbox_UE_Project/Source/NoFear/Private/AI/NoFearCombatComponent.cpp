@@ -1,6 +1,7 @@
 #include "AI/NoFearCombatComponent.h"
 
 #include "AI/NoFearCombatSubsystem.h"
+#include "Animation/NoFearPoseComponent.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "Blueprint/AIBlueprintHelperLibrary.h"
 #include "CollisionQueryParams.h"
@@ -147,7 +148,8 @@ float UNoFearCombatComponent::GetTimeSinceTargetSeen() const
 
 bool UNoFearCombatComponent::IsReadyToFire() const
 {
-	return CurrentTarget.IsValid() && bHasLineOfSight && GetNow() >= ReadyToFireTime;
+	// Пошатнувшийся не стреляет (UNoFearPoseComponent::Stagger).
+	return CurrentTarget.IsValid() && bHasLineOfSight && GetNow() >= ReadyToFireTime && !UNoFearPoseComponent::IsActorStaggered(GetOwner());
 }
 
 FVector UNoFearCombatComponent::ComputeShotDirection(FVector MuzzleLocation)

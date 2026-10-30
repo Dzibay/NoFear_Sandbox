@@ -1,6 +1,8 @@
 #include "AI/NoFearAIController.h"
 
+#include "Animation/NoFearPoseComponent.h"
 #include "BehaviorTree/BehaviorTree.h"
+#include "BrainComponent.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "Core/NoFearCharacter.h"
 #include "Core/NoFearTeam.h"
@@ -14,6 +16,7 @@
 #include "Perception/AISense_Hearing.h"
 #include "Perception/AISense_Sight.h"
 #include "TimerManager.h"
+#include "Weapons/NoFearWeaponComponent.h"
 
 namespace
 {
@@ -193,6 +196,15 @@ void ANoFearAIController::OnPossess(APawn* InPawn)
 		BoundHealth = Health;
 	}
 
+	if (const ANoFearCharacter* BotCharacter = Cast<ANoFearCharacter>(InPawn))
+	{
+		if (UNoFearPoseComponent* Pose = BotCharacter->GetPoseComponent())
+		{
+			Pose->OnHitReaction.AddUniqueDynamic(this, &ANoFearAIController::HandleHitReaction);
+			BoundPose = Pose;
+		}
+	}
+
 	if (UAIPerceptionComponent* Perception = GetPerceptionComponent())
 	{
 		Perception->OnTargetPerceptionUpdated.AddUniqueDynamic(this, &ANoFearAIController::HandlePerceptionUpdated);
@@ -235,6 +247,13 @@ void ANoFearAIController::OnUnPossess()
 		Health->OnDamaged.RemoveDynamic(this, &ANoFearAIController::HandlePawnDamaged);
 	}
 	BoundHealth.Reset();
+
+	if (UNoFearPoseComponent* Pose = BoundPose.Get())
+	{
+		Pose->OnHitReaction.RemoveDynamic(this, &ANoFearAIController::HandleHitReaction);
+	}
+	BoundPose.Reset();
+	ReleaseStagger();
 
 	Super::OnUnPossess();
 }
@@ -1001,10 +1020,110 @@ bool ANoFearAIController::ShouldWalk() const
 
 void ANoFearAIController::UpdateMovementStance()
 {
-	// В бою: боком и с прицелом. Насторожен: боком (смотрит на источник), оружие пока опущено.
+	// В бою: боком и с прицелом. Насторожен: боком (смотрит на источник), оружие поднято, если оно есть в руках.
 	const bool bCombatStance = CurrentTarget.IsValid() && bStrafeInCombat;
 	const bool bAlertStance = bCanAttack && !CurrentTarget.IsValid() && AlertState == ENoFearAlertState::Suspicious && bStrafeInCombat;
-	SetMovementFlags(bCombatStance || bAlertStance, bCombatStance, ShouldWalk());
+
+	bool bArmed = false;
+	if (bAlertStance && bRaiseWeaponWhenAlert)
+	{
+		const ANoFearCharacter* BotCharacter = GetNoFearCharacter();
+		const UNoFearWeaponComponent* Weapons = BotCharacter ? BotCharacter->GetWeaponComponent() : nullptr;
+		bArmed = Weapons && Weapons->GetCurrentWeapon();
+	}
+
+	// Ранен или только что получил пулю: идёт шагом.
+	const UNoFearPoseComponent* Pose = BoundPose.Get();
+	const bool bSlowed = Pose && Pose->IsSlowed();
+
+	SetMovementFlags(bCombatStance || bAlertStance, bCombatStance || bArmed, ShouldWalk() || bSlowed);
+}
+
+void ANoFearAIController::SetCrouching(bool bCrouch)
+{
+	ACharacter* BotCharacter = Cast<ACharacter>(GetPawn());
+	if (!BotCharacter || UNoFearHealthComponent::IsActorDead(BotCharacter))
+	{
+		return;
+	}
+	if (bCrouch)
+	{
+		BotCharacter->Crouch();
+	}
+	else
+	{
+		BotCharacter->UnCrouch();
+	}
+}
+
+bool ANoFearAIController::IsCrouching() const
+{
+	const ACharacter* BotCharacter = Cast<ACharacter>(GetPawn());
+	return BotCharacter && BotCharacter->IsCrouched();
+}
+
+void ANoFearAIController::HandleHitReaction(UNoFearPoseComponent* Component, bool bStagger)
+{
+	UpdateMovementStance();
+	if (bStagger && bFreezeWhenStaggered)
+	{
+		BeginStagger();
+	}
+}
+
+void ANoFearAIController::BeginStagger()
+{
+	APawn* MyPawn = GetPawn();
+	if (!MyPawn || UNoFearHealthComponent::IsActorDead(MyPawn))
+	{
+		return;
+	}
+
+	StopMovement();
+	if (const ANoFearCharacter* BotCharacter = GetNoFearCharacter())
+	{
+		// Дерево на паузе и не отпустит спуск само.
+		if (UNoFearWeaponComponent* Weapons = BotCharacter->GetWeaponComponent())
+		{
+			Weapons->StopFire();
+		}
+	}
+
+	// Пауза дерева замораживает задачи и пересчёт веток; задача MoveTo получает сообщение об отмене пути и закончится после снятия паузы.
+	if (UBrainComponent* Brain = GetBrainComponent(); Brain && !bLogicPausedByStagger && !Brain->IsPaused())
+	{
+		Brain->PauseLogic(TEXT("Stagger"));
+		bLogicPausedByStagger = true;
+	}
+	GetWorldTimerManager().SetTimer(StaggerTimer, this, &ANoFearAIController::PollStagger, 0.1f, true);
+}
+
+void ANoFearAIController::PollStagger()
+{
+	const UNoFearPoseComponent* Pose = BoundPose.Get();
+	if (Pose && Pose->IsStaggered() && !UNoFearHealthComponent::IsActorDead(GetPawn()))
+	{
+		return;
+	}
+	ReleaseStagger();
+}
+
+void ANoFearAIController::ReleaseStagger()
+{
+	GetWorldTimerManager().ClearTimer(StaggerTimer);
+	if (!bLogicPausedByStagger)
+	{
+		return;
+	}
+	bLogicPausedByStagger = false;
+
+	// Мёртвого дерево не продолжает: StopLogic уже вызван при смерти.
+	UBrainComponent* Brain = GetBrainComponent();
+	if (Brain && Brain->IsPaused() && !UNoFearHealthComponent::IsActorDead(GetPawn()))
+	{
+		Brain->ResumeLogic(TEXT("Stagger over"));
+	}
+	UpdateMovementStance();
 }
 
 void ANoFearAIController::SetMovementFlags(bool bStrafe, bool bAim, bool bWalk)
@@ -1075,6 +1194,18 @@ void ANoFearAIController::DrawDebug() const
 	{
 		Text += FString::Printf(TEXT("\n-> %s%s"), *Target->GetName(), IsTargetVisible() ? TEXT("") : TEXT(" (lost)"));
 		DrawDebugLine(World, Location, Target->GetActorLocation(), Color, false, Duration, 0, 2.f);
+	}
+	if (const UNoFearPoseComponent* Pose = BoundPose.Get())
+	{
+		const FString PoseText = Pose->DescribeState();
+		if (!PoseText.IsEmpty())
+		{
+			Text += TEXT("\n") + PoseText;
+		}
+	}
+	if (IsCrouching())
+	{
+		Text += TEXT("  [crouch]");
 	}
 	DrawDebugString(World, Location + FVector(0.f, 0.f, 140.f), Text, nullptr, Color, Duration, true);
 
