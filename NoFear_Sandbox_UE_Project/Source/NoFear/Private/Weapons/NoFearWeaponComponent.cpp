@@ -254,9 +254,10 @@ void UNoFearWeaponComponent::SetupPlayerInput(UInputComponent* PlayerInputCompon
 	}
 	if (AimAction)
 	{
-		Input->BindAction(AimAction, ETriggerEvent::Started, this, &UNoFearWeaponComponent::OnAimStarted);
-		Input->BindAction(AimAction, ETriggerEvent::Completed, this, &UNoFearWeaponComponent::OnAimStopped);
-		Input->BindAction(AimAction, ETriggerEvent::Canceled, this, &UNoFearWeaponComponent::OnAimStopped);
+		// У IA_Aim из GASP триггеры Pressed и Released: Triggered приходит один раз на нажатие (true) и один на
+		// отпускание (false). Completed/Started тут не годятся: Completed прилетает уже на следующем кадре после нажатия.
+		Input->BindAction(AimAction, ETriggerEvent::Triggered, this, &UNoFearWeaponComponent::OnAimInput);
+		Input->BindAction(AimAction, ETriggerEvent::Canceled, this, &UNoFearWeaponComponent::OnAimCanceled);
 	}
 	if (ReloadAction)
 	{
@@ -270,6 +271,16 @@ void UNoFearWeaponComponent::SetupPlayerInput(UInputComponent* PlayerInputCompon
 	{
 		Input->BindAction(HolsterAction, ETriggerEvent::Started, this, &UNoFearWeaponComponent::OnHolsterInput);
 	}
+}
+
+void UNoFearWeaponComponent::OnAimInput(const FInputActionValue& Value)
+{
+	SetAiming(Value.Get<bool>());
+}
+
+void UNoFearWeaponComponent::OnAimCanceled()
+{
+	SetAiming(false);
 }
 
 void UNoFearWeaponComponent::OnSwitchWeaponInput(const FInputActionValue& Value)

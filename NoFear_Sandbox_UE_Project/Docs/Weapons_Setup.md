@@ -46,13 +46,15 @@
 - `IA_Fire` → **Left Mouse Button**, плюс Gamepad Right Trigger.
 - `IA_Reload` → **R**.
 - `IA_SwitchWeapon` → **Mouse Wheel Axis**.
-- `IA_Holster` → **X**.
+- `IA_Holster` → **H** (X занят приседанием в рэгдолл: `IA_Ragdoll` в `IMC_Sandbox`).
 
 **Triggers не добавляй**, оставь пустыми. Для огня это важно: никаких Hold и Pulse.
 
 ## 2. Data Asset'ы оружия (папка `Content/Weapons/Data`)
 
 ПКМ → Miscellaneous → Data Asset → **NoFearWeaponData**. Создай `DA_Rifle`, `DA_Pistol` и `DA_Shotgun`.
+
+В UE 5.8 пункта Data Asset может не быть в списке Miscellaneous: попробуй набрать «Data Asset» в строке поиска этого меню. Другой вариант: создать ассеты скриптом `Content/Weapons/Data` (уже сделано, значения из таблиц ниже в них внесены); тогда остаётся проверить поля и подправить на вкус.
 
 ### Вид, сокеты, анимации
 
@@ -61,7 +63,7 @@
 | Поле | DA_Rifle | DA_Pistol | DA_Shotgun |
 |---|---|---|---|
 | Overlay State | `Rifle` | `Pistol1H` | `Rifle` |
-| Mesh | `SK_Rifle` | `SK_Pistol` | `SK_Shotgun` |
+| Mesh | `SM_Rifle` | `SM_Pistol` | `SM_Shotgun` |
 | Attach Socket | `overlay_rifle` | `overlay_pistol` | `overlay_rifle` |
 | Holster Socket | `spine_weapon_first_socket` | `pelvis_weapon_first_socket` | `spine_weapon_second_socket` |
 | Character Fire Montage | — | — | — |
@@ -70,7 +72,7 @@
 | Weapon Fire Animation | `A_Rifle_Fire` | `A_Pistol_Fire` | `A_Shotgun_Fire` |
 | Weapon Reload Animation | `A_Rifle_Reload` | `A_Pistol_Reload` | `A_Shotgun_Reload` |
 
-- **Mesh**: возьми скелетный меш из `Content/Weapons/<тип>/Meshes`. Анимации `A_*_Fire` и `A_*_Reload` сделаны под его скелет.
+- **Mesh**: это скелетный меш `SM_*` из `Content/Weapons/<тип>/Meshes` (не `SK_*`: это скелет, а `SM_*` в этом проекте — именно SkeletalMesh). Анимации `A_*_Fire` и `A_*_Reload` сделаны под его скелет `SK_*`, сокет `Muzzle` лежит на нём же.
 - **Character Fire Montage** в старой версии не использовался: выстрел показывала процедурная отдача рук (ниже). Если захочется сильнее, можно поставить `AM_CharacterRifle_Fire_Montage` или `AM_CharacterPistol_Fire_Montage`, но на скорострельном автомате монтаж будет перезапускаться каждый выстрел.
 - Пистолет в старой версии был **Pistol1H** (одной рукой). Если хочется двумя руками — `Pistol2H`.
 
@@ -165,16 +167,17 @@
 
 Сами переменные `Recoil_Amount`, `UpperArm_R_Rotation`, `LowerArm_R_Rotations` и `Hand_R_Rotations` в панели **My Blueprint** **не удаляй**: в них пишет C++.
 
-### 5.2. AnimGraph: включить отдачу всегда
+### 5.2. AnimGraph: здесь ничего менять не нужно
 
-Узлы отдачи стоят в ветке **True** у **Blend Poses by bool**. Условие у него «Is Slot Active (DefaultSlot) OR MovementMode == …», и при обычной стрельбе оно ложно. Поэтому раньше рука дёргалась не всегда.
+Узлы отдачи уже подключены правильно. Найди в **AnimGraph** рамку «Don't Apply Hand IK if we are playing a Montage or InAir»: в ней стоит **Blend Poses by bool**.
 
-1. В **AnimGraph** найди цепочку **Modify Bone** (upperarm_r → lowerarm_r → hand_r → spine_01 → spine_02 → spine_03). Она уходит в **True Pose** у Blend Poses by bool, а **False Pose** — это `Use cached pose 'PreHandIK'`.
-2. У этого Blend Poses by bool отсоедини провод от **Active Value**: Alt+клик по пину.
-3. Поставь галочку **Active Value** = true.
-4. Узлы OR, Is Slot Active и сравнение enum'а можно удалить.
+- **False Pose** — цепочка **Modify Bone** (upperarm_r → lowerarm_r → hand_r → spine_01 → spine_02 → spine_03). Это отдача.
+- **True Pose** — `Use cached pose 'PreHandIK'`, то есть поза без отдачи.
+- **Active Value** — условие «Is Slot Active (DefaultSlot) OR MovementModeLastFrame == InAir». Оно истинно только во время траверсалов (слот `DefaultSlot`) и в воздухе. При обычной стрельбе и перезарядке (слот `UpperBody`) оно ложно, поэтому работает цепочка отдачи.
 
-Без выстрела `Recoil_Amount` = 0, и узлы Modify Bone ничего не меняют. Поэтому ветка True в покое выглядит так же, как `PreHandIK`.
+**Не трогай Active Value и не ставь галочку.** Если поставить true, отдача отключится совсем.
+
+Без выстрела `Recoil_Amount` = 0, и узлы Modify Bone ничего не меняют.
 
 ### 5.3. Сохранить
 
@@ -185,9 +188,24 @@
 | Клавиша | Что делает |
 |---|---|
 | ЛКМ | Огонь. Автомат стреляет, пока держишь, и сразу перестаёт, когда отпускаешь. Правая рука и корпус коротко дёргаются на каждом выстреле. |
-| ПКМ | Прицел: разброс, отдача и рывок рук меньше. |
+| ПКМ | Прицел (пока держишь): камера GASP подъезжает к плечу и сужает поле зрения до 60, разброс, отдача и рывок рук меньше, перекрестие сходится. |
 | R | Перезарядка с анимацией. При пустом магазине и зажатом огне — сама. |
 | Колесо | Смена оружия. Убранные стволы висят на спине и на поясе. |
-| X | Убрать / достать. |
+| H | Убрать / достать. |
 
 Боты стреляют через тот же код: `WeaponComponent → StartFire / StopFire`. Точность бота берётся из `NoFearCombatComponent`. Рывок рук и оружие на спине у ботов тоже есть.
+
+## 7. Перекрестие
+
+Рисует `ANoFearHUD` (C++), он выставлен в `ANoFearGameMode`, поэтому в редакторе делать ничего не нужно.
+
+- Стоит в центре экрана: именно туда летит пуля.
+- Зазор между чёрточками равен настоящему разбросу оружия: расходится при беге, прыжке и стрельбе, сходится при прицеливании.
+- Краснеет, когда в центре враг (команда считается через `UNoFearTeamLibrary::AreHostile`).
+- Бледнеет при перезарядке и доставании, пропадает, когда оружие убрано.
+
+Подстроить вид можно в Class Defaults у `ANoFearHUD` (создай Blueprint-наследник и поставь его в World Settings → HUD Class) или поменять значения по умолчанию в `NoFearHUD.h`: цвета, длина и толщина чёрточек, минимальный зазор.
+
+## 8. Камера при прицеливании
+
+Камеру ведёт GASP (`CameraAsset_SandboxCharacter`): в `CBP_SandboxCharacter` она вызывается через `IA_Aim → WantsToAim → риг Aim`. В проекте остались старые `Camera(NotUsedByDefault)` и `SpringArm`, они были активны и перебивали камеру GASP, поэтому прицел ничего не менял. Теперь `ANoFearCharacter::BeginPlay` гасит старую камеру, если на персонаже есть `GameplayCamera` (флаг `bDisableLegacySpringArmCamera`, по умолчанию включён). Делать в редакторе ничего не нужно.

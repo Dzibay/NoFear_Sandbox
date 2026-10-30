@@ -156,8 +156,8 @@ private:
 	void UpdateArmRecoilVariables();
 
 	void OnSwitchWeaponInput(const FInputActionValue& Value);
-	void OnAimStarted() { SetAiming(true); }
-	void OnAimStopped() { SetAiming(false); }
+	void OnAimInput(const FInputActionValue& Value);
+	void OnAimCanceled();
 	void OnHolsterInput();
 
 	UPROPERTY(Transient)

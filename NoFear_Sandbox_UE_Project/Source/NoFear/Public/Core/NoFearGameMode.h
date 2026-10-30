@@ -6,7 +6,7 @@
 
 /**
  * Режим игры по умолчанию (DefaultEngine.ini → GlobalDefaultGameMode).
- * Игрок — CBP_SandboxCharacter, контроллер — ANoFearPlayerController.
+ * Игрок — CBP_SandboxCharacter, контроллер — ANoFearPlayerController, HUD (прицел) — ANoFearHUD.
  */
 UCLASS()
 class NOFEAR_API ANoFearGameMode : public AGameModeBase

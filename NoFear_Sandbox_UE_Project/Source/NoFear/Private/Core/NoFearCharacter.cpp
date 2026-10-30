@@ -1,6 +1,8 @@
 #include "Core/NoFearCharacter.h"
 
+#include "Camera/CameraComponent.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/SpringArmComponent.h"
 #include "Weapons/NoFearWeaponComponent.h"
 
 ANoFearCharacter::ANoFearCharacter()
@@ -21,6 +23,40 @@ void ANoFearCharacter::SetGenericTeamId(const FGenericTeamId& NewTeamId)
 FGenericTeamId ANoFearCharacter::GetGenericTeamId() const
 {
 	return FGenericTeamId(static_cast<uint8>(Team));
+}
+
+void ANoFearCharacter::BeginPlay()
+{
+	Super::BeginPlay();
+
+	if (bDisableLegacySpringArmCamera)
+	{
+		DisableLegacyCamera();
+	}
+}
+
+void ANoFearCharacter::DisableLegacyCamera()
+{
+	// GameplayCameraComponent из плагина GameplayCameras — ищем по имени, чтобы не тянуть модуль в Build.cs.
+	UClass* GameplayCameraClass = FindObject<UClass>(nullptr, TEXT("/Script/GameplayCameras.GameplayCameraComponent"));
+	if (!GameplayCameraClass || !GetComponentByClass(TSubclassOf<UActorComponent>(GameplayCameraClass)))
+	{
+		return;
+	}
+
+	TInlineComponentArray<USpringArmComponent*> SpringArms(this);
+	for (USpringArmComponent* SpringArm : SpringArms)
+	{
+		TArray<USceneComponent*> ArmChildren;
+		SpringArm->GetChildrenComponents(/*bIncludeAllDescendants=*/true, ArmChildren);
+		for (USceneComponent* Child : ArmChildren)
+		{
+			if (UCameraComponent* LegacyCamera = Cast<UCameraComponent>(Child))
+			{
+				LegacyCamera->Deactivate();
+			}
+		}
+	}
 }
 
 void ANoFearCharacter::PossessedBy(AController* NewController)
