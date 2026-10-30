@@ -1,0 +1,201 @@
+#include "AI/BTTask_NoFearFindLocation.h"
+
+#include "AIController.h"
+#include "AI/NoFearAIController.h"
+#include "BehaviorTree/BehaviorTree.h"
+#include "BehaviorTree/BlackboardComponent.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Vector.h"
+#include "NavigationSystem.h"
+
+namespace
+{
+	/** Ближайшая к точке точка навмеша. false — навмеша рядом нет. */
+	bool ProjectToNav(const UObject* WorldContext, const FVector& Point, FVector& OutPoint)
+	{
+		UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(WorldContext->GetWorld());
+		FNavLocation NavLocation;
+		if (NavSys && NavSys->ProjectPointToNavigation(Point, NavLocation, FVector(300.f, 300.f, 500.f)))
+		{
+			OutPoint = NavLocation.Location;
+			return true;
+		}
+		return false;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Wander
+// ---------------------------------------------------------------------------
+
+UBTTask_NoFearFindWanderLocation::UBTTask_NoFearFindWanderLocation(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	NodeName = TEXT("NoFear Find Wander Location");
+
+	BlackboardKey.AddVectorFilter(this, GET_MEMBER_NAME_CHECKED(UBTTask_NoFearFindWanderLocation, BlackboardKey));
+	BlackboardKey.SelectedKeyName = FNoFearBotKeys::MoveGoal;
+
+	OriginKey.AddVectorFilter(this, GET_MEMBER_NAME_CHECKED(UBTTask_NoFearFindWanderLocation, OriginKey));
+	OriginKey.AllowNoneAsValue(true);
+	OriginKey.SelectedKeyName = FNoFearBotKeys::HomeLocation;
+}
+
+void UBTTask_NoFearFindWanderLocation::InitializeFromAsset(UBehaviorTree& Asset)
+{
+	Super::InitializeFromAsset(Asset);
+	if (const UBlackboardData* BBAsset = GetBlackboardAsset())
+	{
+		OriginKey.ResolveSelectedKey(*BBAsset);
+	}
+}
+
+EBTNodeResult::Type UBTTask_NoFearFindWanderLocation::ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
+{
+	const AAIController* Controller = OwnerComp.GetAIOwner();
+	const APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
+	UBlackboardComponent* Blackboard = OwnerComp.GetBlackboardComponent();
+	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(OwnerComp.GetWorld());
+	if (!Pawn || !Blackboard || !NavSys)
+	{
+		return EBTNodeResult::Failed;
+	}
+
+	FVector Origin = Pawn->GetActorLocation();
+	if (OriginKey.IsSet())
+	{
+		const FVector KeyValue = Blackboard->GetValueAsVector(OriginKey.SelectedKeyName);
+		if (FAISystem::IsValidLocation(KeyValue))
+		{
+			Origin = KeyValue;
+		}
+	}
+
+	// Несколько попыток найти точку не под ногами.
+	for (int32 Attempt = 0; Attempt < 6; ++Attempt)
+	{
+		FNavLocation Result;
+		if (NavSys->GetRandomReachablePointInRadius(Origin, Radius, Result)
+			&& FVector::DistSquared2D(Result.Location, Pawn->GetActorLocation()) >= FMath::Square(MinDistance))
+		{
+			Blackboard->SetValueAsVector(GetSelectedBlackboardKey(), Result.Location);
+			return EBTNodeResult::Succeeded;
+		}
+	}
+	return EBTNodeResult::Failed;
+}
+
+FString UBTTask_NoFearFindWanderLocation::GetStaticDescription() const
+{
+	return FString::Printf(TEXT("%s = random point within %.0f of %s"), *GetSelectedBlackboardKey().ToString(), Radius,
+		OriginKey.IsSet() ? *OriginKey.SelectedKeyName.ToString() : TEXT("self"));
+}
+
+// ---------------------------------------------------------------------------
+// Chase
+// ---------------------------------------------------------------------------
+
+UBTTask_NoFearFindChaseLocation::UBTTask_NoFearFindChaseLocation(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	NodeName = TEXT("NoFear Find Chase Location");
+
+	BlackboardKey.AddVectorFilter(this, GET_MEMBER_NAME_CHECKED(UBTTask_NoFearFindChaseLocation, BlackboardKey));
+	BlackboardKey.SelectedKeyName = FNoFearBotKeys::MoveGoal;
+
+	TargetKey.AddObjectFilter(this, GET_MEMBER_NAME_CHECKED(UBTTask_NoFearFindChaseLocation, TargetKey), AActor::StaticClass());
+	TargetKey.SelectedKeyName = FNoFearBotKeys::AttackTarget;
+}
+
+void UBTTask_NoFearFindChaseLocation::InitializeFromAsset(UBehaviorTree& Asset)
+{
+	Super::InitializeFromAsset(Asset);
+	if (const UBlackboardData* BBAsset = GetBlackboardAsset())
+	{
+		TargetKey.ResolveSelectedKey(*BBAsset);
+	}
+}
+
+EBTNodeResult::Type UBTTask_NoFearFindChaseLocation::ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
+{
+	AAIController* Controller = OwnerComp.GetAIOwner();
+	const APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
+	UBlackboardComponent* Blackboard = OwnerComp.GetBlackboardComponent();
+	if (!Pawn || !Blackboard)
+	{
+		return EBTNodeResult::Failed;
+	}
+
+	const ANoFearAIController* Bot = Cast<ANoFearAIController>(Controller);
+	FVector Goal;
+	if (Bot && Bot->GetCurrentTarget())
+	{
+		Goal = Bot->GetLastKnownTargetLocation();
+	}
+	else if (const AActor* Target = Cast<AActor>(Blackboard->GetValueAsObject(TargetKey.SelectedKeyName)))
+	{
+		Goal = Target->GetActorLocation();
+	}
+	else
+	{
+		return EBTNodeResult::Failed;
+	}
+
+	// Не вплотную: остановиться чуть раньше, по линии от бота.
+	const FVector PawnLocation = Pawn->GetActorLocation();
+	const FVector FromGoal = PawnLocation - Goal;
+	if (FromGoal.Size2D() > StopShortDistance)
+	{
+		Goal += FromGoal.GetSafeNormal2D() * StopShortDistance;
+	}
+
+	// Поводок: не дальше радиуса от дома (у напарника — от лидера).
+	if (Bot && Bot->GetLeashRadius() > 0.f)
+	{
+		const FVector Anchor = Bot->GetLeashAnchor();
+		FVector Offset = Goal - Anchor;
+		Offset.Z = 0.f;
+		if (Offset.Size() > Bot->GetLeashRadius())
+		{
+			Goal = Anchor + Offset.GetClampedToMaxSize(Bot->GetLeashRadius());
+			Goal.Z = PawnLocation.Z;
+		}
+	}
+
+	FVector NavGoal;
+	if (!ProjectToNav(Pawn, Goal, NavGoal))
+	{
+		return EBTNodeResult::Failed;
+	}
+	Blackboard->SetValueAsVector(GetSelectedBlackboardKey(), NavGoal);
+	return EBTNodeResult::Succeeded;
+}
+
+FString UBTTask_NoFearFindChaseLocation::GetStaticDescription() const
+{
+	return FString::Printf(TEXT("%s = last known location of %s, within leash"), *GetSelectedBlackboardKey().ToString(), *TargetKey.SelectedKeyName.ToString());
+}
+
+// ---------------------------------------------------------------------------
+// Clear key
+// ---------------------------------------------------------------------------
+
+UBTTask_NoFearClearBlackboardKey::UBTTask_NoFearClearBlackboardKey(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	NodeName = TEXT("NoFear Clear Key");
+}
+
+EBTNodeResult::Type UBTTask_NoFearClearBlackboardKey::ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
+{
+	if (UBlackboardComponent* Blackboard = OwnerComp.GetBlackboardComponent())
+	{
+		Blackboard->ClearValue(GetSelectedBlackboardKey());
+	}
+	return EBTNodeResult::Succeeded;
+}
+
+FString UBTTask_NoFearClearBlackboardKey::GetStaticDescription() const
+{
+	return FString::Printf(TEXT("Clear %s"), *GetSelectedBlackboardKey().ToString());
+}

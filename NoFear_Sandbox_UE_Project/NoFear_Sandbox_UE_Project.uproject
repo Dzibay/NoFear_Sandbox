@@ -12,6 +12,11 @@
 				"Engine",
 				"AIModule"
 			]
+		},
+		{
+			"Name": "NoFearEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
 		}
 	],
 	"Plugins": [

@@ -1,6 +1,7 @@
 #include "AI/NoFearCombatSubsystem.h"
 
 #include "AI/NoFearCombatComponent.h"
+#include "Core/NoFearTeam.h"
 #include "Engine/Engine.h"
 #include "Engine/HitResult.h"
 #include "Engine/World.h"
@@ -46,8 +47,6 @@ void UNoFearCombatSubsystem::ReportShot(const UObject* WorldContextObject, AActo
 	}
 
 	AActor* ShooterPawn = ResolveShooterPawn(Shooter);
-	const UNoFearCombatComponent* ShooterCombat = FindCombatComponent(ShooterPawn);
-	const int32 ShooterTeam = ShooterCombat ? ShooterCombat->TeamId : INDEX_NONE;
 
 	const FVector SegmentEnd = Hit.bBlockingHit ? FVector(Hit.ImpactPoint) : TraceEnd;
 	const AActor* HitActor = Hit.GetActor();
@@ -59,7 +58,8 @@ void UNoFearCombatSubsystem::ReportShot(const UObject* WorldContextObject, AActo
 		{
 			continue;
 		}
-		if (ShooterTeam != INDEX_NONE && Combatant->TeamId == ShooterTeam)
+		// Пули своих (по таблице NoFear Teams) не подавляют.
+		if (UNoFearTeamLibrary::AreFriendly(ShooterPawn, Owner))
 		{
 			continue;
 		}

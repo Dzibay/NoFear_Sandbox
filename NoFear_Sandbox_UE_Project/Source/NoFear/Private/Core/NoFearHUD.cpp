@@ -1,6 +1,11 @@
 #include "Core/NoFearHUD.h"
 
+#include "AI/NoFearCompanionAIController.h"
+#include "AI/NoFearRecruitableComponent.h"
 #include "Camera/PlayerCameraManager.h"
+#include "Components/CapsuleComponent.h"
+#include "Core/NoFearCharacter.h"
+#include "Core/NoFearInteractableComponent.h"
 #include "Core/NoFearPlayerController.h"
 #include "Core/NoFearTeam.h"
 #include "Engine/Canvas.h"
@@ -260,6 +265,24 @@ void ANoFearHUD::DrawHUD()
 
 	if (!bDead)
 	{
+		// Метки в мире — под прицелом и остальным HUD.
+		if (bShowRecruitableMarkers)
+		{
+			DrawRecruitableMarkers();
+		}
+		if (bShowCompanionMarkers)
+		{
+			DrawCompanionMarkers();
+		}
+		if (bShowCompanions)
+		{
+			DrawCompanionPanel();
+		}
+		if (bShowInteractionPrompt)
+		{
+			DrawInteractionPrompt();
+		}
+
 		const APawn* Pawn = GetOwningPawn();
 		const UNoFearWeaponComponent* WeaponComponent = Pawn ? Pawn->FindComponentByClass<UNoFearWeaponComponent>() : nullptr;
 		ANoFearWeapon* Weapon = WeaponComponent ? WeaponComponent->GetCurrentWeapon() : nullptr;
@@ -751,5 +774,296 @@ void ANoFearHUD::DrawDeathScreen()
 		const int32 Seconds = FMath::CeilToInt(PlayerController->GetRespawnTimeRemaining());
 		const FText Countdown = FText::Format(RespawnInText, FText::AsNumber(Seconds));
 		DrawLabel(Countdown.ToString(), CenterX, TitleY + TitleHeight + 16.f * S, FLinearColor(1.f, 1.f, 1.f, Alpha), 1.5f * S, ELabelAlign::Center);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Напарники и взаимодействие
+// ---------------------------------------------------------------------------
+
+FVector ANoFearHUD::GetOverheadLocation(const AActor* Actor)
+{
+	if (!Actor)
+	{
+		return FVector::ZeroVector;
+	}
+	float HalfHeight = 90.f;
+	if (const ACharacter* Character = Cast<ACharacter>(Actor); Character && Character->GetCapsuleComponent())
+	{
+		HalfHeight = Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	}
+	return Actor->GetActorLocation() + FVector(0.f, 0.f, HalfHeight + 35.f);
+}
+
+FString ANoFearHUD::FormatDistance(float Centimeters) const
+{
+	return FText::Format(DistanceText, FText::AsNumber(FMath::RoundToInt(Centimeters / 100.f))).ToString();
+}
+
+void ANoFearHUD::DrawDiamond(const FVector2D& Center, float Radius, const FLinearColor& Color)
+{
+	const float Outline = FMath::Max(1.f, GetUIScale() * 2.f);
+	const FLinearColor Shadow(0.f, 0.f, 0.f, 0.6f * Color.A);
+	const float R = Radius + Outline;
+	DrawColoredQuad(Center + FVector2D(0.f, -R), Center + FVector2D(R, 0.f), Center + FVector2D(0.f, R), Center + FVector2D(-R, 0.f), Shadow, Shadow, Shadow, Shadow);
+	DrawColoredQuad(Center + FVector2D(0.f, -Radius), Center + FVector2D(Radius, 0.f), Center + FVector2D(0.f, Radius), Center + FVector2D(-Radius, 0.f), Color, Color, Color, Color);
+}
+
+bool ANoFearHUD::DrawWorldMarker(const FVector& WorldLocation, const FLinearColor& Color, float Size, bool bEdgeArrow, const FString& Caption)
+{
+	const APlayerController* PC = GetOwningPlayerController();
+	if (!PC || !Canvas)
+	{
+		return false;
+	}
+
+	FVector CameraLocation;
+	FRotator CameraRotation;
+	PC->GetPlayerViewPoint(CameraLocation, CameraRotation);
+	// В осях камеры: X — вперёд, Y — вправо, Z — вверх.
+	const FVector Local = CameraRotation.UnrotateVector(WorldLocation - CameraLocation);
+
+	const float S = GetUIScale();
+	const float Inset = 40.f * S;
+	const float CaptionScale = 0.9f * S;
+	float CaptionWidth = 0.f;
+	float CaptionHeight = 0.f;
+	if (!Caption.IsEmpty())
+	{
+		GetTextSize(Caption, CaptionWidth, CaptionHeight, GetFont(), CaptionScale);
+	}
+
+	if (Local.X > 10.f)
+	{
+		const FVector Projected = Canvas->Project(WorldLocation, false);
+		const FVector2D Screen(Projected.X, Projected.Y);
+		if (Screen.X >= Inset && Screen.X <= Canvas->SizeX - Inset && Screen.Y >= Inset && Screen.Y <= Canvas->SizeY - Inset)
+		{
+			DrawDiamond(Screen, Size, Color);
+			if (!Caption.IsEmpty())
+			{
+				DrawLabel(Caption, Screen.X, Screen.Y - Size - 4.f * S - CaptionHeight, Color, CaptionScale, ELabelAlign::Center);
+			}
+			return true;
+		}
+	}
+	if (!bEdgeArrow)
+	{
+		return false;
+	}
+
+	// Направление как на радаре (вид сверху): впереди — верхний край, позади — нижний, слева — левый.
+	// Высоту и наклон камеры не учитываем: иначе стрелка прыгает, когда цель проходит рядом с камерой.
+	const FVector Flat = FRotator(0.f, CameraRotation.Yaw, 0.f).UnrotateVector(WorldLocation - CameraLocation);
+	FVector2D Direction = FVector2D(Flat.Y, -Flat.X).GetSafeNormal();
+	if (Direction.IsNearlyZero())
+	{
+		Direction = FVector2D(0.f, 1.f);
+	}
+
+	// Стрелка острием к цели, с тёмной обводкой.
+	const float Length = Size * 3.f;
+	const float HalfWidth = Size * 1.8f;
+
+	// Рамка для стрелки: нижний край выше полосок здоровья и оружия, чтобы стрелка на них не ложилась.
+	const float FrameLeft = Inset + Length;
+	const float FrameRight = Canvas->SizeX - Inset - Length;
+	const float FrameTop = Inset + Length;
+	const float FrameBottom = Canvas->SizeY - (Margin + 70.f) * S - Length;
+	const FVector2D FrameCenter((FrameLeft + FrameRight) * 0.5f, (FrameTop + FrameBottom) * 0.5f);
+	const float HalfWidthToEdge = (FrameRight - FrameLeft) * 0.5f;
+	const float HalfHeightToEdge = (FrameBottom - FrameTop) * 0.5f;
+	const float ToEdge = FMath::Min(
+		FMath::Abs(Direction.X) > KINDA_SMALL_NUMBER ? HalfWidthToEdge / FMath::Abs(Direction.X) : UE_BIG_NUMBER,
+		FMath::Abs(Direction.Y) > KINDA_SMALL_NUMBER ? HalfHeightToEdge / FMath::Abs(Direction.Y) : UE_BIG_NUMBER);
+	const FVector2D Position = FrameCenter + Direction * ToEdge;
+	const FVector2D Side(-Direction.Y, Direction.X);
+	auto DrawArrow = [&](float Grow, const FLinearColor& ArrowColor)
+	{
+		TArray<FCanvasUVTri> Triangles;
+		Triangles.SetNum(1);
+		FCanvasUVTri& Tri = Triangles[0];
+		Tri.V0_Pos = Position + Direction * (Length * 0.5f + Grow);
+		Tri.V1_Pos = Position - Direction * (Length * 0.5f + Grow * 0.5f) + Side * (HalfWidth + Grow);
+		Tri.V2_Pos = Position - Direction * (Length * 0.5f + Grow * 0.5f) - Side * (HalfWidth + Grow);
+		Tri.V0_Color = ArrowColor;
+		Tri.V1_Color = ArrowColor;
+		Tri.V2_Color = ArrowColor;
+		DrawTranslucentTriangles(Canvas, Triangles);
+	};
+	DrawArrow(2.f * S, FLinearColor(0.f, 0.f, 0.f, 0.6f * Color.A));
+	DrawArrow(0.f, Color);
+
+	if (!Caption.IsEmpty())
+	{
+		// Подпись — внутрь экрана от стрелки.
+		const FVector2D LabelCenter = Position - Direction * (Length + FMath::Max(CaptionWidth, CaptionHeight) * 0.6f);
+		DrawLabel(Caption, LabelCenter.X, LabelCenter.Y - CaptionHeight * 0.5f, Color, CaptionScale, ELabelAlign::Center);
+	}
+	return false;
+}
+
+void ANoFearHUD::DrawCompanionPanel()
+{
+	const ANoFearPlayerController* PlayerController = Cast<ANoFearPlayerController>(GetOwningPlayerController());
+	if (!PlayerController)
+	{
+		return;
+	}
+	const TArray<APawn*> Companions = PlayerController->GetCompanions();
+	if (Companions.IsEmpty())
+	{
+		return;
+	}
+
+	const float S = GetUIScale();
+	const float X = Margin * S;
+	const float ContentX = X + 20.f * S;
+	float Y = Margin * S;
+	const APawn* PlayerPawn = GetOwningPawn();
+	const FLinearColor Dim(0.8f, 0.8f, 0.8f, 0.85f);
+
+	DrawLabel(CompanionTitleText.ToString(), X, Y, Dim, 0.85f * S, ELabelAlign::Left);
+	Y += 22.f * S;
+
+	for (const APawn* Companion : Companions)
+	{
+		const ANoFearCharacter* Character = Cast<ANoFearCharacter>(Companion);
+		const ANoFearCompanionAIController* Controller = Cast<ANoFearCompanionAIController>(Companion->GetController());
+		const FString Name = Character ? Character->GetCharacterDisplayName().ToString() : Companion->GetName();
+
+		// Строка 1: значок, имя, расстояние.
+		const float NameScale = 1.15f * S;
+		float NameWidth = 0.f;
+		float NameHeight = 0.f;
+		GetTextSize(Name, NameWidth, NameHeight, GetFont(), NameScale);
+		DrawDiamond(FVector2D(X + 7.f * S, Y + NameHeight * 0.5f), 6.f * S, CompanionColor);
+		DrawLabel(Name, ContentX, Y, CompanionColor, NameScale, ELabelAlign::Left);
+		if (PlayerPawn)
+		{
+			const FString Distance = FormatDistance(FVector::Dist(PlayerPawn->GetActorLocation(), Companion->GetActorLocation()));
+			float DistanceWidth = 0.f;
+			float DistanceHeight = 0.f;
+			GetTextSize(Distance, DistanceWidth, DistanceHeight, GetFont(), 0.85f * S);
+			DrawLabel(Distance, ContentX + NameWidth + 12.f * S, Y + NameHeight - DistanceHeight - 1.f * S, Dim, 0.85f * S, ELabelAlign::Left);
+		}
+		Y += NameHeight + 4.f * S;
+
+		// Строка 2: здоровье и что делает.
+		const UNoFearHealthComponent* Health = UNoFearHealthComponent::FindHealth(Companion);
+		const float Fraction = Health ? Health->GetHealthFraction() : 1.f;
+		const float BarWidth = 200.f * S;
+		const float BarHeight = 8.f * S;
+		DrawBar(ContentX, Y, BarWidth, BarHeight, Fraction, FMath::Lerp(LowHealthColor, CompanionColor, FMath::Clamp(Fraction / 0.6f, 0.f, 1.f)));
+
+		const FText& Status = Controller && Controller->GetCurrentTarget() ? CompanionFightingText
+			: (Controller && Controller->IsFollowing() ? CompanionFollowingText : CompanionWaitingText);
+		float StatusWidth = 0.f;
+		float StatusHeight = 0.f;
+		GetTextSize(Status.ToString(), StatusWidth, StatusHeight, GetFont(), 0.85f * S);
+		DrawLabel(Status.ToString(), ContentX + BarWidth + 12.f * S, Y + BarHeight * 0.5f - StatusHeight * 0.5f, FLinearColor(1.f, 1.f, 1.f, 0.9f), 0.85f * S, ELabelAlign::Left);
+		Y += BarHeight + 18.f * S;
+	}
+}
+
+void ANoFearHUD::DrawCompanionMarkers()
+{
+	const ANoFearPlayerController* PlayerController = Cast<ANoFearPlayerController>(GetOwningPlayerController());
+	if (!PlayerController)
+	{
+		return;
+	}
+
+	const APawn* PlayerPawn = GetOwningPawn();
+	const float S = GetUIScale();
+	for (const APawn* Companion : PlayerController->GetCompanions())
+	{
+		const float Distance = PlayerPawn ? FVector::Dist(PlayerPawn->GetActorLocation(), Companion->GetActorLocation()) : 0.f;
+		const FString Caption = Distance > CompanionCaptionDistance ? FormatDistance(Distance) : FString();
+		DrawWorldMarker(GetOverheadLocation(Companion), CompanionColor, 7.f * S, /*bEdgeArrow=*/true, Caption);
+	}
+}
+
+void ANoFearHUD::DrawRecruitableMarkers()
+{
+	const ANoFearPlayerController* PlayerController = Cast<ANoFearPlayerController>(GetOwningPlayerController());
+	APawn* PlayerPawn = GetOwningPawn();
+	if (!PlayerController || !PlayerPawn)
+	{
+		return;
+	}
+
+	TArray<UNoFearInteractableComponent*> Interactables;
+	UNoFearInteractableComponent::GetInteractables(GetWorld(), Interactables);
+	const UNoFearInteractableComponent* Focused = PlayerController->GetFocusedInteractable();
+
+	FLinearColor Color = CompanionColor;
+	Color.A = 0.55f;
+	const float S = GetUIScale();
+	for (UNoFearInteractableComponent* Interactable : Interactables)
+	{
+		const APawn* Candidate = Cast<APawn>(Interactable->GetOwner());
+		if (!Candidate || Interactable == Focused || !Interactable->IsA<UNoFearRecruitableComponent>() || PlayerController->IsCompanion(Candidate))
+		{
+			continue;
+		}
+		if (FVector::DistSquared(PlayerPawn->GetActorLocation(), Candidate->GetActorLocation()) > FMath::Square(RecruitableMarkerDistance)
+			|| !Interactable->CanInteract(PlayerPawn))
+		{
+			continue;
+		}
+		DrawWorldMarker(GetOverheadLocation(Candidate), Color, 5.f * S, /*bEdgeArrow=*/false, FString());
+	}
+}
+
+void ANoFearHUD::DrawInteractionPrompt()
+{
+	const ANoFearPlayerController* PlayerController = Cast<ANoFearPlayerController>(GetOwningPlayerController());
+	APawn* PlayerPawn = GetOwningPawn();
+	UNoFearInteractableComponent* Focused = PlayerController ? PlayerController->GetFocusedInteractable() : nullptr;
+	if (!Focused || !PlayerPawn)
+	{
+		return;
+	}
+
+	const AActor* Target = Focused->GetOwner();
+	const bool bRecruitable = Focused->IsA<UNoFearRecruitableComponent>();
+	const float S = GetUIScale();
+
+	// Над тем, с кем будем взаимодействовать, — белая метка (у своего напарника уже есть зелёная).
+	if (!PlayerController->IsCompanion(Cast<APawn>(Target)))
+	{
+		DrawWorldMarker(GetOverheadLocation(Target), FLinearColor::White, 6.f * S, /*bEdgeArrow=*/false, FString());
+	}
+
+	const FString Key = InteractKeyText.ToString();
+	const FString Action = Focused->GetInteractionPrompt(PlayerPawn).ToString();
+	const float TextScale = 1.2f * S;
+	float KeyWidth = 0.f;
+	float KeyHeight = 0.f;
+	float ActionWidth = 0.f;
+	float ActionHeight = 0.f;
+	GetTextSize(Key, KeyWidth, KeyHeight, GetFont(), TextScale);
+	GetTextSize(Action, ActionWidth, ActionHeight, GetFont(), TextScale);
+
+	// [E] Действие — по центру, под прицелом.
+	const float Padding = 6.f * S;
+	const float BoxHeight = KeyHeight + Padding;
+	const float BoxWidth = FMath::Max(KeyWidth + Padding * 2.f, BoxHeight);
+	const float Gap = 10.f * S;
+	const float PromptLeft = FMath::RoundToFloat(Canvas->SizeX * 0.5f - (BoxWidth + Gap + ActionWidth) * 0.5f);
+	const float PromptTop = FMath::RoundToFloat(Canvas->SizeY * 0.5f + 70.f * S);
+	const float Border = FMath::Max(1.f, FMath::RoundToFloat(2.f * S));
+
+	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.6f), PromptLeft - Border, PromptTop - Border, BoxWidth + Border * 2.f, BoxHeight + Border * 2.f);
+	DrawRect(FLinearColor(1.f, 1.f, 1.f, 0.92f), PromptLeft, PromptTop, BoxWidth, BoxHeight);
+	DrawText(Key, FLinearColor(0.05f, 0.05f, 0.05f, 1.f), FMath::RoundToFloat(PromptLeft + (BoxWidth - KeyWidth) * 0.5f), FMath::RoundToFloat(PromptTop + (BoxHeight - KeyHeight) * 0.5f), GetFont(), TextScale);
+	DrawLabel(Action, PromptLeft + BoxWidth + Gap, PromptTop + (BoxHeight - ActionHeight) * 0.5f, FLinearColor::White, TextScale, ELabelAlign::Left);
+
+	// Под подсказкой — с кем.
+	if (const ANoFearCharacter* Character = Cast<ANoFearCharacter>(Target))
+	{
+		const FLinearColor NameColor = bRecruitable ? CompanionColor : FLinearColor(0.85f, 0.85f, 0.85f, 0.9f);
+		DrawLabel(Character->GetCharacterDisplayName().ToString(), Canvas->SizeX * 0.5f, PromptTop + BoxHeight + 8.f * S, NameColor, 0.9f * S, ELabelAlign::Center);
 	}
 }

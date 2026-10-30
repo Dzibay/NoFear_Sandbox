@@ -20,6 +20,9 @@ class UFont;
  * - Слоты оружия внизу по центру.
  * - Указатели урона: красные клинья по кругу в сторону стрелявшего. Красная виньетка при ударе и при низком здоровье.
  * - Экран смерти: затемнение, надпись и отсчёт до возрождения.
+ * - Напарники: панель вверху слева, зелёная метка над головой, стрелка у края экрана, если напарника не видно.
+ *   Бледные метки над ещё не завербованными напарниками поблизости.
+ * - Подсказка взаимодействия под прицелом: «[E] Завербовать» и имя того, с кем.
  *
  * Подключается в ANoFearGameMode, настраивать в редакторе ничего не нужно. Состояние обновляется в Tick, а не при
  * отрисовке, поэтому его можно читать из Blueprint и тестов (Get...).
@@ -204,6 +207,56 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text")
 	FText NoAmmoText = NSLOCTEXT("NoFearHUD", "NoAmmo", "НЕТ ПАТРОНОВ");
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text")
+	FText CompanionTitleText = NSLOCTEXT("NoFearHUD", "CompanionTitle", "НАПАРНИК");
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text")
+	FText CompanionFollowingText = NSLOCTEXT("NoFearHUD", "CompanionFollowing", "идёт за вами");
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text")
+	FText CompanionWaitingText = NSLOCTEXT("NoFearHUD", "CompanionWaiting", "ждёт");
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text")
+	FText CompanionFightingText = NSLOCTEXT("NoFearHUD", "CompanionFighting", "в бою");
+
+	/** {0} — расстояние в метрах. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text")
+	FText DistanceText = NSLOCTEXT("NoFearHUD", "Distance", "{0} м");
+
+	// --- Напарники ---
+
+	/** Панель вверху слева: имя, здоровье, «идёт за вами / ждёт / в бою», расстояние. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Companions")
+	bool bShowCompanions = true;
+
+	/** Метка над головой напарника, а когда он за краем экрана — стрелка в его сторону. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Companions")
+	bool bShowCompanionMarkers = true;
+
+	/** Бледная метка над ещё не завербованными напарниками поблизости. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Companions")
+	bool bShowRecruitableMarkers = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Companions", meta = (ClampMin = "0"))
+	float RecruitableMarkerDistance = 2500.f;
+
+	/** Ближе этого над напарником рисуется только метка, без расстояния. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Companions", meta = (ClampMin = "0"))
+	float CompanionCaptionDistance = 600.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Companions")
+	FLinearColor CompanionColor = FLinearColor(0.3f, 0.95f, 0.4f, 1.f);
+
+	// --- Взаимодействие ---
+
+	/** Подсказка «[E] Завербовать» под прицелом, когда есть с чем взаимодействовать. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction")
+	bool bShowInteractionPrompt = true;
+
+	/** Клавиша в подсказке. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction")
+	FText InteractKeyText = NSLOCTEXT("NoFearHUD", "InteractKey", "E");
+
 private:
 	/** Один указатель урона: откуда прилетело и сколько он уже виден. */
 	struct FDamageIndicator
@@ -238,6 +291,20 @@ private:
 	void DrawDamageIndicators();
 	void DrawVignette();
 	void DrawDeathScreen();
+	void DrawCompanionPanel();
+	void DrawCompanionMarkers();
+	void DrawRecruitableMarkers();
+	void DrawInteractionPrompt();
+
+	/**
+	 * Ромб над точкой мира с подписью сверху. Точка за краем экрана — при bEdgeArrow стрелка у края в её сторону.
+	 * Возвращает true, если точка на экране.
+	 */
+	bool DrawWorldMarker(const FVector& WorldLocation, const FLinearColor& Color, float Size, bool bEdgeArrow, const FString& Caption);
+	void DrawDiamond(const FVector2D& Center, float Radius, const FLinearColor& Color);
+	/** Где рисовать метку над персонажем: чуть выше макушки капсулы. */
+	static FVector GetOverheadLocation(const AActor* Actor);
+	FString FormatDistance(float Centimeters) const;
 
 	void DrawLabel(const FString& Text, float X, float Y, const FLinearColor& Color, float Scale, ELabelAlign Align);
 	void DrawBar(float X, float Y, float Width, float Height, float Fraction, const FLinearColor& Fill, float GhostFraction = -1.f);

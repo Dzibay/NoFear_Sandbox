@@ -1,13 +1,6 @@
-# ИИ ботов: настройка в редакторе
+# Боты: устройство и настройка
 
-C++ модуль `NoFear` (`Source/NoFear`) добавляет:
-
-| Класс | Где искать в редакторе | Что делает |
-|---|---|---|
-| `UNoFearCombatComponent` | Add Component → **NoFear Combat** | Видимость цели, время реакции, точность, подавление. Пишет состояние в блэкборд |
-| `UNoFearCombatSubsystem` | ноды **Report Shot**, **Compute AI Shot End**, **Find Combat Component** | Подавление от пролетающих пуль, выстрел бота с разбросом |
-| `UEnvQueryContext_NoFearThreat` | контекст **NoFear Threat** в EQS | От кого прятаться: цель, последний стрелявший или последняя известная позиция |
-| `UEnvQueryTest_NoFearCover` | тест **NoFear: Cover** в EQS | Оценка укрытия: полное, низкое или его нет |
+Все боты — это тело GASP (`CBP_SandboxCharacter`) с покрашенным манекеном, AI-контроллер на C++ и Behavior Tree. Тела, деревья и блэкборд создаёт генератор из редакторного модуля `NoFearEditor`, руками их собирать не нужно.
 
 ## 0. Сборка
 
@@ -18,123 +11,248 @@ C:\NoFear_Sandbox  →  C:\Users\долбаеб\Desktop\NoFear_Sandbox   (juncti
 ```
 
 - Открывать редактор только через `C:\NoFear_Sandbox\NoFear_Sandbox_UE_Project\NoFear_Sandbox_UE_Project.uproject` — иначе Live Coding и пересборка из редактора упадут.
-- Нужны компоненты Build Tools 2022: MSVC v143 (14.44), Windows 11 SDK 10.0.22621, **.NET Framework 4.8 SDK**.
+- Нужны компоненты Build Tools 2022: MSVC v143 (14.44), Windows 11 SDK 10.0.22621, **.NET Framework 4.8 SDK** (без него не соберётся модуль `NoFearEditor`).
 - Ссылку можно удалить командой `rmdir C:\NoFear_Sandbox` — удаляется только ссылка, файлы проекта остаются.
 
-## 1. NavMesh на уровне
+## 1. Виды ботов
 
-1. Открыть `Content/Levels/DefaultLevel`.
-2. Place Actors → Volumes → **Nav Mesh Bounds Volume**. Растянуть на весь уровень с запасом по высоте.
-3. Нажать **P** — проходимая область подсветится зелёным. Проверить, что навмеш есть на всех площадках, где ходят боты.
-4. Если блоки уровня двигаются во время игры: Project Settings → Navigation Mesh → Runtime Generation = **Dynamic**.
+Готовые тела лежат в `Content/Blueprints/Bots`. Их достаточно перетащить на уровень.
 
-## 2. Персонажи
+| Тело | Кто это | Команда | Цвет | Контроллер | Поведение |
+|---|---|---|---|---|---|
+| `CBP_Bot_Civilian` | Мирный житель | Civilian | белый | `NoFearCivilianAIController` | Стоит на месте, не стреляет, не реагирует на шум. Его можно убить |
+| `CBP_Bot_Monster` | Монстр | Monster | красный | `NoFearMonsterAIController` | Бродит шагом вокруг точки появления, бежит к цели и бьёт с рывком |
+| `CBP_Bot_AggroMonster` | Бешеный монстр | AggroMonster | фиолетовый | `NoFearMonsterAIController` | Как монстр, но бьёт всех, включая монстров и других бешеных |
+| `CBP_Bot_Enemy` | Противник | Enemy | оранжевый | `NoFearShooterAIController` | Стоит на своей точке с винтовкой, стреляет очередями, сближается с целью |
+| `CBP_Bot_Ally` | Союзник | Ally | синий | `NoFearShooterAIController` | Как противник, но воюет за игрока. За игроком не ходит |
+| `CBP_Bot_Companion` | Напарник | Ally | зелёный | `NoFearCompanionAIController` | До вербовки — обычный союзник. После вербовки ходит за игроком и воюет рядом с ним |
 
-**CBP_BaseBotCharacter**
-1. Add Component → **NoFear Combat**. `Team Id` = 1 (NPC).
-2. Компонент сам включает `Use Acceleration For Paths` у Character Movement — без этого motion matching не видит ускорения при движении по пути.
+Отношения команд:
 
-**BP_BaseMonster** (компонент не нужен)
-1. Character Movement → Nav Movement → включить **Use Acceleration For Paths**.
+| | Игрок | Противник | Монстр | Бешеный | Союзник | Мирный |
+|---|---|---|---|---|---|---|
+| **Игрок** | свой | враг | враг | враг | свой | — |
+| **Противник** | враг | свой | враг | враг | враг | — |
+| **Монстр** | враг | враг | свой | враг | враг | враг |
+| **Бешеный** | враг | враг | враг | **враг** | враг | враг |
+| **Союзник** | свой | враг | враг | враг | свой | — |
+| **Мирный** | — | — | враг | враг | — | свой |
 
-## 3. Блэкборд BB_BaseBot
+«—» — нейтрально: не нападают друг на друга. Таблица меняется в **Project Settings → Game → NoFear Teams**: пары враждебных и дружественных команд, список команд, которые враждуют сами с собой (сейчас там только бешеные монстры), и отношение по умолчанию.
 
-Добавить ключи (имена точно такие — компонент ищет их по имени):
+## 2. Иерархия классов
 
-| Ключ | Тип |
+```
+Тела (Blueprint)                              Контроллеры (C++)
+CBP_SandboxCharacter                          AAIController
+└── CBP_NoFearBot             (серый)         └── ANoFearAIController             восприятие, выбор цели, память, блэкборд, походка
+    ├── CBP_Bot_Civilian                          ├── ANoFearCivilianAIController     не атакует, BT_NoFear_Civilian
+    ├── CBP_Bot_Monster       + Melee             ├── ANoFearMonsterAIController      ближний бой, BT_NoFear_Monster
+    │   └── CBP_Bot_AggroMonster                  └── ANoFearShooterAIController      оружие, точность, поводок, BT_NoFear_Soldier
+    └── CBP_NoFearBot_Soldier + винтовка, Combat          └── ANoFearCompanionAIController    лидер, следование
+        ├── CBP_Bot_Enemy
+        ├── CBP_Bot_Ally
+        └── CBP_Bot_Companion + Recruitable
+```
+
+- Команда, цвет, имя и класс контроллера задаются в теле (Class Defaults). Новую разновидность бота проще всего сделать дочерним Blueprint от нужного тела.
+- Контроллер сам добавит телу недостающий компонент: монстр — `NoFearMeleeComponent`, стрелок — `NoFearCombatComponent`, напарник — `NoFearRecruitableComponent` (флаги `Add … Component If Missing`).
+- Дерево поведения прописано в конструкторе каждого контроллера. Чтобы дать боту другое дерево, сделайте Blueprint от контроллера, поменяйте ему `Behavior Tree` и укажите его в теле как `AI Controller Class`.
+
+## 3. Расстановка на уровне
+
+1. На уровне нужен **Nav Mesh Bounds Volume** на всю проходимую область (клавиша **P** подсвечивает навмеш зелёным). Без навмеша боты стоят на месте. Сейчас он есть только в вашей незакоммиченной версии `DefaultLevel`.
+2. Перетащить `CBP_Bot_*` из `Content/Blueprints/Bots` на уровень. Точка, где бот появился, становится его «домом»: туда возвращаются стрелки, вокруг неё бродят монстры.
+3. Быстро вызвать ботов во время игры — консоль (**~**):
+
+```
+NoFearSpawnBot Monster 3
+```
+
+Типы: `Civilian`, `Monster`, `AggroMonster`, `Enemy`, `Ally`, `Companion`. Боты встают в ряд перед камерой лицом к игроку, не больше 20 за раз.
+
+## 4. Генератор ассетов
+
+Код — `Source/NoFearEditor/Private/NoFearBotAssetsLibrary.cpp`. Создаёт:
+
+- `Content/AI/BB_NoFearBot` — блэкборд;
+- `Content/AI/BT_NoFear_Soldier`, `BT_NoFear_Monster`, `BT_NoFear_Civilian` — деревья;
+- `Content/Blueprints/Bots/CBP_*` — тела из таблицы выше.
+
+Запуск — консоль редактора:
+
+```
+NoFear.GenerateBotAssets [trees] [bodies]
+```
+
+- Без аргументов создаёт только то, чего нет, и ничего не перезаписывает.
+- `trees` пересобирает деревья заново: ручные правки в них пропадут.
+- `bodies` заново выставляет готовым телам родителя, команду, цвет, имя, контроллер и оружие; остальные правки тел сохраняются.
+
+Из Python: `unreal.NoFearBotAssetsLibrary.generate_bot_assets(True, False)`.
+
+## 5. Блэкборд BB_NoFearBot
+
+Контроллер пишет ключи каждые 0.25 с; деревья только читают их.
+
+| Ключ | Тип | Что значит |
+|---|---|---|
+| `AttackTarget` | Object | Текущая цель |
+| `HasLineOfSight` | Bool | Цель видна прямо сейчас |
+| `CanFire` | Bool | Стрелок видит цель, прицелился и может стрелять |
+| `IsSuppressed` | Bool | Бот под плотным огнём |
+| `Suppression` | Float | Уровень подавления 0–1 |
+| `LastKnownLocation` | Vector | Где цель видели последний раз |
+| `HomeLocation` | Vector | Дом бота |
+| `MoveGoal` | Vector | Куда идти (заполняют задачи Find …) |
+| `InvestigateLocation` | Vector | Что проверить: откуда стреляли, где был шум, где потеряли цель |
+| `Leader` | Object | За кем идёт напарник |
+| `IsFollowing` | Bool | Напарник сейчас следует за лидером |
+
+## 6. Деревья
+
+**BT_NoFear_Soldier** (противник, союзник, напарник):
+
+```
+Стрелок (Selector)
+├── Бой                [AttackTarget задан, прерывание Both]
+│   ├── Shoot          [CanFire]
+│   ├── Сблизиться: Find Chase Location → Move To MoveGoal → Wait 0.3
+│   └── Wait 0.5 ± 0.2
+├── За лидером         [IsFollowing]: Move To Leader (радиус 250) → Wait 0.4
+├── Проверить          [InvestigateLocation задан]: Move To → Wait 3 ± 1 → очистить ключ
+└── На точке: Move To HomeLocation → Wait 3 ± 1
+```
+
+**BT_NoFear_Monster**:
+
+```
+Монстр (Selector)
+├── Атака              [AttackTarget задан]: Move To AttackTarget (радиус 150) → Melee Attack
+├── Проверить          [InvestigateLocation задан]: Move To → Wait 2 ± 1 → очистить ключ
+└── Бродить: Find Wander Location → Move To MoveGoal → Wait 3 ± 1.5
+```
+
+**BT_NoFear_Civilian**: просто `Wait 5 ± 1`.
+
+Задачи на C++, которые можно использовать в своих деревьях:
+
+| Задача | Что делает |
 |---|---|
-| `HasLineOfSight` | Bool |
-| `CanFire` | Bool |
-| `IsSuppressed` | Bool |
-| `Suppression` | Float |
-| `LastKnownLocation` | Vector |
-| `CoverLocation` | Vector |
+| **NoFear Shoot** | Стреляет очередями, пока `CanFire`. Очередь 0.35–1 с, пауза 0.3–0.8 с, 2–4 очереди за раз. Одиночное оружие жмёт спуск раз в 0.25–0.5 с |
+| **NoFear Melee Attack** | Удар компонентом ближнего боя по цели; ждёт до 2 с, пока удар станет доступен |
+| **NoFear Find Wander Location** | Случайная точка на навмеше в радиусе 800 от `HomeLocation`, не ближе 200 к боту |
+| **NoFear Find Chase Location** | Точка на навмеше у последнего известного места цели, не доходя 150 |
+| **NoFear Clear Key** | Очищает ключ блэкборда |
 
-## 4. EQS-запрос укрытия
+## 7. Общие настройки контроллера
 
-Content Browser → Artificial Intelligence → Environment Query → `EQ_FindCover`.
-
-- Генератор **Points: Pathing Grid**: Generate Around = Querier, Grid Half Size = 1500, Space Between = 150.
-- Тест **Distance**: Distance To = **NoFear Threat**, Test Purpose = Filter Only, Filter Type = Minimum, Float Value Min = 500 (не прятаться вплотную к врагу).
-- Тест **Distance**: Distance To = Querier, Test Purpose = Score Only, Scoring Factor = **-1** (ближе — лучше).
-- Тест **NoFear: Cover**: настройки по умолчанию (фильтр от 0.1 и оценка).
-
-Проверка: поставить на уровень `EQSTestingPawn`, указать ему запрос — увидите точки и их оценки.
-
-## 5. Перемещение по NavMesh
-
-В **BT_BaseBot** и **BT_BaseMonster** заменить `BTT_MoveToLocation` и `BTT_MoveToTarget` на встроенный **Move To**:
-- вместо `BTT_MoveToLocation` — Move To с ключом `InvestigationLocation`, Acceptable Radius = 100;
-- вместо `BTT_MoveToTarget` (монстры) — Move To с ключом `AttackTarget`, Acceptable Radius = 200, **Observe Blackboard Value** включён — монстр преследует движущуюся цель.
-
-Старые `SetMovingTarget` и таймер с `AddMovementInput` в персонажах после этого не используются.
-
-## 6. Ветка боя в BT_BaseBot
-
-Ветку Battle (декоратор `State == Battle`) сделать Selector-ом из четырёх веток по приоритету:
-
-```
-Battle (Selector)
-├── Укрыться        [Blackboard: IsSuppressed Is Set, Observer Aborts = Lower Priority]
-│   ├── BTT_Bot_StopFire
-│   ├── Run EQS Query: EQ_FindCover → CoverLocation (Single Best Item)
-│   ├── Move To: CoverLocation (Acceptable Radius 50, Allow Strafe)
-│   └── Wait 2.0 ± 1.0
-├── Перезарядка     [BTD_Bot_NeedReloadWeapon]
-│   ├── BTT_Bot_StopFire
-│   ├── Run EQS Query: EQ_FindCover → CoverLocation
-│   ├── Move To: CoverLocation
-│   └── BTT_Bot_ReloadWeapon
-├── Огонь           [Blackboard: CanFire Is Set, Observer Aborts = Both]
-│   ├── (существующие Equip / SetFocus / ChangeAim)
-│   ├── BTT_Bot_StartFire
-│   ├── Wait 0.6 ± 0.4      ← длина очереди
-│   ├── BTT_Bot_StopFire
-│   └── Wait 0.4 ± 0.3      ← пауза между очередями
-└── Сблизиться
-    ├── BTT_Bot_StopFire
-    └── Move To: LastKnownLocation (Acceptable Radius 300)
-```
-
-`BTT_Bot_StopFire` в начале остальных веток нужен потому, что при прерывании ветки «Огонь» оружие иначе продолжит стрелять. Надёжнее ещё и добавить в `BTT_Bot_StartFire` событие **Receive Abort AI** → StopFireAttack → Finish Abort.
-
-## 7. BP_Weapon → FireTracing
-
-**Выстрел бота.** В ветке ИИ конечную точку трассировки считать нодой **Compute AI Shot End**:
-- Shooter = Self (оружие; компонент найдётся у владельца);
-- Muzzle Location = позиция сокета `Muzzle`;
-- Range = дальность оружия;
-- Fallback Aim Point = позиция `GetAttackTarget` (на случай, если у стрелка нет NoFear Combat).
-
-Результат подать в `End` у `LineTraceSingle`. Случайный разброс из BP для ИИ убрать, иначе разброс посчитается дважды.
-
-**Подавление.** Сразу после `LineTraceSingle` (и для игрока, и для ботов) вызвать **Report Shot**:
-- Shooter = Self, Trace Start / Trace End — те же, что у трассировки, Hit = Out Hit.
-- У дробовика трассировка идёт на каждую дробину — для него в продвинутых пинах поставить Suppression Amount = 0.05.
-
-## 8. Реакции (по желанию)
-
-В CBP_BaseBotCharacter у компонента NoFear Combat есть события:
-- **On Under Fire** (Shooter, Shot Origin, Suppression Added) — если бот в Idle, перевести AIC_BaseBot в Investigating с `InvestigationLocation = Shot Origin`: бот пойдёт проверить, откуда стреляли.
-- **On Suppressed Changed** — анимация вздрагивания, звук, присед.
-
-## Настройки точности (NoFear Combat → Accuracy)
+Class Defaults контроллера → **NoFear | AI**:
 
 | Параметр | По умолчанию | Смысл |
 |---|---|---|
+| Can Attack | да | Выбирать цели. У мирных выключено |
+| Update Interval | 0.25 с | Как часто бот пересматривает цели и обновляет блэкборд |
+| Max Target Distance | 5000 | Дальше цель не выбирается |
+| Target Memory Time | 6 с | Сколько бот помнит цель, которую перестал видеть |
+| Attacker Memory Time | 6 с | Сколько помнит того, кто его ранил |
+| Target Stickiness | 0.35 | Насколько неохотно меняет цель на другую |
+| Investigate Lost Target | да | Идти туда, где потерял цель |
+| Investigate Noises | да | Идти на звук выстрелов. У мирных выключено |
+| Walk When Calm | да | Без цели ходить шагом, а не бегом |
+| Strafe In Combat | да | В бою двигаться боком, лицом к цели. У монстров выключено |
+| Leash Radius | 0 | Не уходить от дома дальше этого (0 — без ограничения). У стрелков 1500 |
+
+Восприятие: зрение 3000 см (теряет на 3500), угол 75° в каждую сторону, видит только врагов; слух 4000 см.
+
+Походку (боком, прицел, шагом) контроллер выставляет в структуре `CharacterInputState` тела GASP при каждом обновлении. Имя структуры задаётся в `Input State Property`; если её в теле переименовать, бот перестанет ходить шагом и прицеливаться.
+
+## 8. Монстры: удар с рывком
+
+`NoFearMeleeComponent` на теле монстра, раздел **Melee**:
+
+| Параметр | По умолчанию | Смысл |
+|---|---|---|
+| Damage | 25 | Урон за удар |
+| Attack Range | 300 | С какого расстояния начинает удар |
+| Hit Reach / Hit Radius | 90 / 80 | Куда и какой сферой бьёт перед собой |
+| Windup Time | 0.3 с | Замах: доворачивается к цели |
+| Hit Window | 0.45 с | Рывок; удар засчитывается в это время |
+| Recovery Time | 0.4 с | Пауза после удара |
+| Cooldown | 1.4 с | Время между ударами |
+| Lunge Speed / Lunge Up Speed | 700 / 220 | Скорость рывка вперёд и вверх |
+| Montage, Swing Sound, Hit Sound | — | Анимация и звуки удара (пока пустые) |
+
+События `On Attack Started` и `On Attack Hit` можно использовать в Blueprint для эффектов.
+
+## 9. Стрелки
+
+`NoFearShooterAIController`: **Infinite Reserve Ammo** (бесконечный запас патронов, магазин перезаряжается как у игрока) и **Aim In Combat** (в бою держит оружие у плеча). Оружие — `DA_Rifle` в `Starting Weapons` у `CBP_NoFearBot_Soldier`.
+
+Точность — компонент **NoFear Combat** на теле, раздел **NoFear | Accuracy**:
+
+| Параметр | По умолчанию | Смысл |
+|---|---|---|
+| Reaction Time Min / Max | 0.25 / 0.6 с | Задержка перед первым выстрелом |
 | Base Spread Degrees | 1.2 | Разброс в идеальных условиях |
+| Max Spread Degrees | 10 | Предел разброса |
 | Acquire Spread Multiplier | 3 | Во сколько раз хуже первые выстрелы после обнаружения |
 | Aim Settle Time | 1.5 с | За сколько бот прицеливается полностью |
 | Target Moving Spread | 1 | +100 % разброса по цели, бегущей 6 м/с |
 | Self Moving Spread | 0.8 | +80 % разброса, когда бежит сам бот |
 | Effective Range | 1500 | Дальше разброс растёт дополнительно |
 | Suppressed Spread Multiplier | 2.5 | Разброс при полном подавлении |
+| Blind Fire Spread Multiplier | 2 | Стрельба по последней известной позиции |
 | Tracking Lag | 0.15 с | Прицел запаздывает за движущейся целью |
 | Headshot Chance | 0.08 | Доля выстрелов в голову |
-| Reaction Time Min / Max | 0.25 / 0.6 с | Задержка перед первым выстрелом |
 
-Пуля рядом сбивает прицеливание. Подавленный бот реагирует медленнее.
+Пуля рядом сбивает прицеливание и копит подавление; подавленный бот реагирует медленнее и стреляет хуже.
+
+## 10. Напарник
+
+- Подойти к зелёному боту и нажать **E** («Завербовать»). Подсказка появляется, когда бот ближе 300 см и примерно перед камерой.
+- **E** у своего напарника переключает «Жди здесь» / «За мной». Ждущий напарник остаётся на месте и воюет оттуда, как союзник.
+- Напарник идёт за игроком шагом, когда тот рядом и не бежит; отстав дальше 600 см — бежит. В бою не отходит от игрока дальше 900 см, а отстав на 1600 см — бросает цель и догоняет.
+- Сколько напарников можно иметь сразу — **Max Companions** у `NoFearPlayerController` (по умолчанию 1). Если лимит занят, самый старый напарник отпускается и остаётся союзником на месте.
+- Смерть напарника окончательная, он просто пропадает из списка.
+
+Настройки — `NoFearCompanionAIController`, раздел **NoFear | AI | Companion**:
+
+| Параметр | По умолчанию | Смысл |
+|---|---|---|
+| Follow Leash Radius | 900 | В бою не отходить от лидера дальше |
+| Break Off Distance | 1600 | Отстал дальше — бросить цель и догонять |
+| Run To Leader Distance | 600 | Дальше — бежит, ближе — подстраивается под шаг лидера |
+| Leader Run Speed | 300 см/с | Лидер быстрее — напарник тоже бежит |
+
+Тексты подсказок — у `NoFearRecruitableComponent` на теле: `Recruit Text`, `Wait Text`, `Follow Text`; дальность — `Interaction Distance`.
+
+**Интерфейс** (`NoFearHUD`):
+
+- панель в левом верхнем углу: «НАПАРНИК», имя, здоровье и состояние — «идёт за вами», «ждёт» или «в бою»;
+- зелёный ромб над головой напарника, а когда он за краем экрана — стрелка у края, указывающая, где он;
+- ромбы над ещё не завербованными напарниками ближе 2500 см;
+- подсказка «E Завербовать» чуть ниже центра экрана.
+
+Всё это отключается флагами `Show Companions`, `Show Companion Markers`, `Show Recruitable Markers`, `Show Interaction Prompt` в `NoFearHUD`.
+
+## 11. Перекраска
+
+Тело красится на старте через динамический материал манекена. Поля в Class Defaults → **NoFear | Appearance**:
+
+- `Apply Body Color` — красить ли вообще;
+- `Body Color` — основной цвет;
+- `Body Part Colors` — отдельные цвета для частей (голова, торс, руки и т. д.);
+- `Body Material` — материал, который подменяется (по умолчанию `M_UEFN_Mannequin_Masked`).
+
+Во время игры цвет меняет функция **Set Body Color**.
+
+## 12. Чего пока нет
+
+- Мирные не убегают от опасности — просто стоят.
+- У монстров нет анимации удара: работает рывок, слот `Montage` пустой.
+- Укрытий нет. Классы `EnvQueryContext_NoFearThreat` и `EnvQueryTest_NoFearCover` для EQS остались, но в деревьях не используются. Подавление считается и ключ `IsSuppressed` пишется, но отдельной ветки «укрыться» нет.
 
 ## Отладка
 
-Во время игры клавиша **'** (на русской раскладке — **Э**) открывает Gameplay Debugger: дерево, блэкборд, EQS, восприятие выбранного бота.
+Во время игры клавиша **'** (на русской раскладке — **Э**) открывает Gameplay Debugger: дерево, блэкборд и восприятие бота, на которого смотрит камера. Клавиши цифрового блока переключают категории.

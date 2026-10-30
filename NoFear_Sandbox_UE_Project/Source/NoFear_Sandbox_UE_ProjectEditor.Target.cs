@@ -9,5 +9,6 @@ public class NoFear_Sandbox_UE_ProjectEditorTarget : TargetRules
 		DefaultBuildSettings = BuildSettingsVersion.V7;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_8;
 		ExtraModuleNames.Add("NoFear");
+		ExtraModuleNames.Add("NoFearEditor");
 	}
 }

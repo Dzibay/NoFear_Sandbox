@@ -10,18 +10,95 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "UObject/ConstructorHelpers.h"
+#include "Perception/AIPerceptionComponent.h"
 #include "Perception/AIPerceptionSystem.h"
+#include "Perception/AISense_Sight.h"
 #include "Weapons/NoFearWeaponComponent.h"
 
 ANoFearCharacter::ANoFearCharacter()
 {
 	WeaponComponent = CreateDefaultSubobject<UNoFearWeaponComponent>(TEXT("WeaponComponent"));
 	HealthComponent = CreateDefaultSubobject<UNoFearHealthComponent>(TEXT("HealthComponent"));
+
+	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> MaskedMaterial(
+		TEXT("/Game/Characters/UEFN_Mannequin/Materials/M_UEFN_Mannequin_Masked.M_UEFN_Mannequin_Masked"));
+	BodyMaterial = MaskedMaterial.Get();
+}
+
+FText ANoFearCharacter::GetCharacterDisplayName() const
+{
+	return CharacterName.IsEmpty() ? FText::FromString(GetName()) : CharacterName;
+}
+
+void ANoFearCharacter::SetBodyColor(FLinearColor NewColor)
+{
+	bApplyBodyColor = true;
+	BodyColor = NewColor;
+	ApplyBodyColor();
+}
+
+void ANoFearCharacter::ApplyBodyColor()
+{
+	USkeletalMeshComponent* CharacterMesh = GetMesh();
+	if (!bApplyBodyColor || !BodyMaterial || !CharacterMesh)
+	{
+		return;
+	}
+
+	TArray<FMaterialParameterInfo> ColorParameters;
+	TArray<FGuid> ParameterIds;
+	BodyMaterial->GetAllVectorParameterInfo(ColorParameters, ParameterIds);
+
+	for (int32 Slot = 0; Slot < CharacterMesh->GetNumMaterials(); ++Slot)
+	{
+		UMaterialInstanceDynamic* Instance = Cast<UMaterialInstanceDynamic>(CharacterMesh->GetMaterial(Slot));
+		if (!Instance || Instance->Parent != BodyMaterial)
+		{
+			Instance = UMaterialInstanceDynamic::Create(BodyMaterial, this);
+			CharacterMesh->SetMaterial(Slot, Instance);
+		}
+		for (const FMaterialParameterInfo& Parameter : ColorParameters)
+		{
+			const FLinearColor* PartColor = BodyPartColors.Find(Parameter.Name);
+			Instance->SetVectorParameterValue(Parameter.Name, PartColor ? *PartColor : BodyColor);
+		}
+	}
+}
+
+void ANoFearCharacter::OnConstruction(const FTransform& Transform)
+{
+	Super::OnConstruction(Transform);
+
+	// И в редакторе (превью Blueprint, актор на уровне), и в игре.
+	ApplyBodyColor();
 }
 
 void ANoFearCharacter::SetTeam(ENoFearTeam NewTeam)
 {
+	if (Team == NewTeam)
+	{
+		return;
+	}
 	Team = NewTeam;
+
+	// Зрение решает «свой/чужой» при регистрации источника: после смены команды регистрируем тело заново.
+	if (HasActorBegunPlay() && !UNoFearHealthComponent::IsActorDead(this))
+	{
+		if (UAIPerceptionSystem* Perception = UAIPerceptionSystem::GetCurrent(this))
+		{
+			Perception->UnregisterSource(*this, UAISense_Sight::StaticClass());
+			Perception->RegisterSourceForSenseClass(UAISense_Sight::StaticClass(), *this);
+		}
+		if (AAIController* AIController = Cast<AAIController>(GetController()))
+		{
+			if (UAIPerceptionComponent* Listener = AIController->GetPerceptionComponent())
+			{
+				Listener->RequestStimuliListenerUpdate();
+			}
+		}
+	}
 }
 
 void ANoFearCharacter::SetGenericTeamId(const FGenericTeamId& NewTeamId)
@@ -52,6 +129,9 @@ void ANoFearCharacter::BeginPlay()
 	{
 		DisableLegacyCamera();
 	}
+
+	// Актор с уровня в игре конструктор не проходит заново — красим ещё раз (материал переиспользуется).
+	ApplyBodyColor();
 
 	if (USkeletalMeshComponent* CharacterMesh = GetMesh())
 	{

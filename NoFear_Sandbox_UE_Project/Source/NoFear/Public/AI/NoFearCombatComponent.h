@@ -98,12 +98,6 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "NoFear|Suppression")
 	FNoFearUnderFireSignature OnUnderFire;
 
-	// --- Команда ---
-
-	/** Индекс команды (как в E_DamageTeams: 0 Player, 1 NPC, 2 Monster, 3 AggroMonster). Пули своей команды не подавляют. -1 — без команды. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Team")
-	int32 TeamId = 1;
-
 	// --- Ключи блэкборда (None — не писать) ---
 
 	/** Object-ключ с текущей целью. */

@@ -16,7 +16,8 @@ public class NoFear : ModuleRules
 			"EnhancedInput",
 			"Niagara",
 			"PhysicsCore",
-			"RenderCore"
+			"RenderCore",
+			"DeveloperSettings"
 		});
 	}
 }

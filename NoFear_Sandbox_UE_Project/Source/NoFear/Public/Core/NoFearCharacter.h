@@ -7,6 +7,7 @@
 #include "Core/NoFearTeam.h"
 #include "NoFearCharacter.generated.h"
 
+class UMaterialInterface;
 class UNoFearWeaponComponent;
 
 /**
@@ -24,10 +25,42 @@ public:
 
 	/** Команда. Меняется у каждого экземпляра на уровне. Игрок получает Player при вселении. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Team", meta = (ExposeOnSpawn = true))
-	ENoFearTeam Team = ENoFearTeam::NPC;
+	ENoFearTeam Team = ENoFearTeam::Enemy;
 
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Team")
 	void SetTeam(ENoFearTeam NewTeam);
+
+	/** Имя для интерфейса (панель напарника, подсказка «[E] ...»). Пусто — имя актора. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Appearance")
+	FText CharacterName;
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Appearance")
+	FText GetCharacterDisplayName() const;
+
+	/**
+	 * Перекрасить тело. На все слоты меша ставится Body Material, а все его цветовые параметры
+	 * (Head, Torso, L Hand и т. д. у манекена UEFN) получают Body Color.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Appearance")
+	bool bApplyBodyColor = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Appearance", meta = (EditCondition = "bApplyBodyColor"))
+	FLinearColor BodyColor = FLinearColor::White;
+
+	/** Отдельные части поверх Body Color: имя параметра материала (Head, Torso, L Hand...) → цвет. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Appearance", meta = (EditCondition = "bApplyBodyColor"))
+	TMap<FName, FLinearColor> BodyPartColors;
+
+	/** Материал с цветовыми параметрами. По умолчанию M_UEFN_Mannequin_Masked (параметр на каждую часть тела). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Appearance", meta = (EditCondition = "bApplyBodyColor"))
+	TObjectPtr<UMaterialInterface> BodyMaterial;
+
+	/** Сменить цвет тела во время игры (включает Apply Body Color). */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Appearance")
+	void SetBodyColor(FLinearColor NewColor);
+
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Appearance")
+	void ApplyBodyColor();
 
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
 	UNoFearWeaponComponent* GetWeaponComponent() const { return WeaponComponent; }
@@ -74,6 +107,7 @@ public:
 	virtual float TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser) override;
 
 protected:
+	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void PostInitializeComponents() override;
 	virtual void BeginPlay() override;
 	virtual void PossessedBy(AController* NewController) override;
