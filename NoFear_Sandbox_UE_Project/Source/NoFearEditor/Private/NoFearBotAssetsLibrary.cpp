@@ -15,6 +15,7 @@
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Bool.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Float.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Int.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Vector.h"
 #include "BehaviorTree/BlackboardData.h"
@@ -123,6 +124,7 @@ namespace
 			{ FNoFearBotKeys::InvestigateLocation, UBlackboardKeyType_Vector::StaticClass(), TEXT("Что проверить: шум, место, где пропала цель") },
 			{ FNoFearBotKeys::Leader, UBlackboardKeyType_Object::StaticClass(), TEXT("За кем идёт напарник") },
 			{ FNoFearBotKeys::IsFollowing, UBlackboardKeyType_Bool::StaticClass(), TEXT("Напарник идёт за лидером") },
+			{ FNoFearBotKeys::AlertState, UBlackboardKeyType_Int::StaticClass(), TEXT("Тревога: 0 спокоен, 1 насторожен, 2 бой, 3 поиск (ENoFearAlertState)") },
 		};
 
 		bool bChanged = bCreated;

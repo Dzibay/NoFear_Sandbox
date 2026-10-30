@@ -1,5 +1,7 @@
 #include "Core/NoFearHUD.h"
 
+#include "AI/NoFearAIController.h"
+#include "AI/NoFearBotSubsystem.h"
 #include "AI/NoFearCompanionAIController.h"
 #include "AI/NoFearRecruitableComponent.h"
 #include "Camera/PlayerCameraManager.h"
@@ -16,6 +18,7 @@
 #include "RenderResource.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
+#include "HAL/IConsoleManager.h"
 #include "Weapons/NoFearWeapon.h"
 #include "Weapons/NoFearWeaponComponent.h"
 #include "Weapons/NoFearWeaponData.h"
@@ -29,6 +32,15 @@ namespace
 	/** Сколько секунд затухает красная вспышка после удара. */
 	constexpr float DamageFlashFadeTime = 0.8f;
 	constexpr int32 MaxDamageIndicators = 8;
+	/** Как часто пересчитывается прямая видимость панели над ботом. */
+	constexpr double BotVisibilityInterval = 0.2;
+	/** Сколько панелей над ботами рисуется за кадр: ближайшие, остальные пропускаются. */
+	constexpr int32 MaxBotPanels = 24;
+
+	TAutoConsoleVariable<int32> CVarBotIndicators(
+		TEXT("NoFear.HUD.BotIndicators"), 1,
+		TEXT("Панель над ботами (здоровье, «?» и «!»): 0 — выключить, 1 — по правилам, 2 — показывать у всех, даже сквозь стены."),
+		ECVF_Default);
 
 	/**
 	 * Рисует треугольники с цветом и прозрачностью в вершинах.
@@ -266,6 +278,10 @@ void ANoFearHUD::DrawHUD()
 	if (!bDead)
 	{
 		// Метки в мире — под прицелом и остальным HUD.
+		if (bShowBotIndicators)
+		{
+			DrawBotIndicators();
+		}
 		if (bShowRecruitableMarkers)
 		{
 			DrawRecruitableMarkers();
@@ -345,20 +361,22 @@ void ANoFearHUD::DrawLabel(const FString& Text, float X, float Y, const FLinearC
 	DrawText(Text, Color, X, Y, Font, Scale);
 }
 
-void ANoFearHUD::DrawBar(float X, float Y, float Width, float Height, float Fraction, const FLinearColor& Fill, float GhostFraction)
+void ANoFearHUD::DrawBar(float X, float Y, float Width, float Height, float Fraction, const FLinearColor& Fill, float GhostFraction, float Opacity)
 {
 	const float Border = FMath::Max(1.f, FMath::RoundToFloat(GetUIScale() * 2.f));
 	Fraction = FMath::Clamp(Fraction, 0.f, 1.f);
 
-	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.6f), X - Border, Y - Border, Width + Border * 2.f, Height + Border * 2.f);
-	DrawRect(FLinearColor(0.12f, 0.12f, 0.12f, 0.55f), X, Y, Width, Height);
+	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.6f * Opacity), X - Border, Y - Border, Width + Border * 2.f, Height + Border * 2.f);
+	DrawRect(FLinearColor(0.12f, 0.12f, 0.12f, 0.55f * Opacity), X, Y, Width, Height);
 	if (GhostFraction > Fraction)
 	{
-		DrawRect(FLinearColor(1.f, 1.f, 1.f, 0.55f), X, Y, Width * FMath::Clamp(GhostFraction, 0.f, 1.f), Height);
+		DrawRect(FLinearColor(1.f, 1.f, 1.f, 0.55f * Opacity), X, Y, Width * FMath::Clamp(GhostFraction, 0.f, 1.f), Height);
 	}
 	if (Fraction > 0.f)
 	{
-		DrawRect(Fill, X, Y, Width * Fraction, Height);
+		FLinearColor FillColor = Fill;
+		FillColor.A *= Opacity;
+		DrawRect(FillColor, X, Y, Width * Fraction, Height);
 	}
 }
 
@@ -1013,6 +1031,296 @@ void ANoFearHUD::DrawRecruitableMarkers()
 			continue;
 		}
 		DrawWorldMarker(GetOverheadLocation(Candidate), Color, 5.f * S, /*bEdgeArrow=*/false, FString());
+	}
+}
+
+void ANoFearHUD::DrawRing(const FVector2D& Center, float Radius, float Fraction, const FLinearColor& Color, float Thickness)
+{
+	constexpr int32 Segments = 32;
+	Fraction = FMath::Clamp(Fraction, 0.f, 1.f);
+	const int32 Count = FMath::CeilToInt(Fraction * Segments);
+	for (int32 Index = 0; Index < Count; ++Index)
+	{
+		const float From = static_cast<float>(Index) / Segments;
+		const float To = FMath::Min(static_cast<float>(Index + 1) / Segments, Fraction);
+		const float AngleFrom = -UE_HALF_PI + UE_TWO_PI * From;
+		const float AngleTo = -UE_HALF_PI + UE_TWO_PI * To;
+		DrawLine(
+			Center.X + Radius * FMath::Cos(AngleFrom), Center.Y + Radius * FMath::Sin(AngleFrom),
+			Center.X + Radius * FMath::Cos(AngleTo), Center.Y + Radius * FMath::Sin(AngleTo),
+			Color, Thickness);
+	}
+}
+
+void ANoFearHUD::DrawBotIndicators()
+{
+	const int32 Mode = CVarBotIndicators.GetValueOnGameThread();
+	const ANoFearPlayerController* PlayerController = Cast<ANoFearPlayerController>(GetOwningPlayerController());
+	const APawn* PlayerPawn = GetOwningPawn();
+	UWorld* World = GetWorld();
+	const UNoFearBotSubsystem* Subsystem = UNoFearBotSubsystem::Get(this);
+	if (Mode <= 0 || !PlayerController || !PlayerPawn || !World || !Subsystem || !Canvas)
+	{
+		BotPanels.Reset();
+		return;
+	}
+
+	FVector CameraLocation;
+	FRotator CameraRotation;
+	PlayerController->GetPlayerViewPoint(CameraLocation, CameraRotation);
+	const double Now = World->GetTimeSeconds();
+	const float S = GetUIScale();
+	const float MaxDistance = FMath::Max(BotPanelMaxDistance, 1.f);
+
+	// Кто сейчас под прицелом. Оружие в руках бота — часть бота.
+	const AActor* UnderCrosshair = nullptr;
+	{
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearBotPanelCrosshair), true, PlayerPawn);
+		FHitResult Hit;
+		if (World->LineTraceSingleByChannel(Hit, CameraLocation, CameraLocation + CameraRotation.Vector() * MaxDistance, ECC_Visibility, Params))
+		{
+			UnderCrosshair = Hit.GetActor();
+			while (UnderCrosshair && !UnderCrosshair->IsA<APawn>() && UnderCrosshair->GetAttachParentActor())
+			{
+				UnderCrosshair = UnderCrosshair->GetAttachParentActor();
+			}
+		}
+	}
+
+	struct FPanelDraw
+	{
+		const APawn* Pawn = nullptr;
+		const ANoFearAIController* Bot = nullptr;
+		FVector2D Screen = FVector2D::ZeroVector;
+		float Distance = 0.f;
+		bool bHealth = false;
+		bool bAlert = false;
+		bool bCompanion = false;
+		bool bHostile = false;
+		ENoFearTeam Team = ENoFearTeam::Neutral;
+	};
+	TArray<FPanelDraw> Panels;
+	TSet<const AActor*> Seen;
+
+	for (const ANoFearAIController* Bot : Subsystem->GetBots())
+	{
+		const APawn* Pawn = Bot->GetPawn();
+		const UNoFearHealthComponent* Health = Pawn ? UNoFearHealthComponent::FindHealth(Pawn) : nullptr;
+		if (!Pawn || Pawn == PlayerPawn || !Health || Health->IsDead())
+		{
+			continue;
+		}
+		Seen.Add(Pawn);
+
+		// Плавная полоска и «хвост» живут независимо от того, показана ли панель: появившись, она не дёргается.
+		FBotPanelState& State = BotPanels.FindOrAdd(Pawn);
+		const float Fraction = Health->GetHealthFraction();
+		if (State.LastUpdate < 0.0)
+		{
+			State.DisplayedHealth = State.GhostHealth = State.LastHealth = Fraction;
+		}
+		const float DeltaTime = State.LastUpdate < 0.0 ? 0.f : static_cast<float>(FMath::Min(Now - State.LastUpdate, 0.25));
+		State.LastUpdate = Now;
+		if (Fraction < State.LastHealth - KINDA_SMALL_NUMBER)
+		{
+			State.LastDamageSeen = Now;
+		}
+		State.LastHealth = Fraction;
+		State.DisplayedHealth = FMath::FInterpTo(State.DisplayedHealth, Fraction, DeltaTime, HealthInterpSpeed);
+		if (Fraction >= State.GhostHealth)
+		{
+			State.GhostHealth = Fraction;
+		}
+		else if (Now - State.LastDamageSeen > GhostHoldTime)
+		{
+			State.GhostHealth = FMath::Max(Fraction, State.GhostHealth - GhostDrainSpeed * DeltaTime);
+		}
+
+		// Что показывать (правила из AI_Roadmap.md, этап 1).
+		const float Distance = FVector::Dist(PlayerPawn->GetActorLocation(), Pawn->GetActorLocation());
+		const ENoFearTeam Team = UNoFearTeamLibrary::GetTeam(Pawn);
+		const bool bCompanion = PlayerController->IsCompanion(Pawn);
+		const bool bHostile = UNoFearTeamLibrary::AreHostile(PlayerPawn, Pawn);
+		const ENoFearAlertState Alert = Bot->GetAlertState();
+		const bool bRecentlyDamaged = Health->GetTimeSinceLastDamage() < BotRecentDamageTime;
+		const bool bAimed = Pawn == UnderCrosshair;
+
+		bool bWantHealth = false;
+		if (Mode >= 2 || bCompanion)
+		{
+			bWantHealth = true;
+		}
+		else
+		{
+			switch (Team)
+			{
+			case ENoFearTeam::Ally:
+				bWantHealth = Distance <= AllyPanelDistance || bRecentlyDamaged || bAimed;
+				break;
+			case ENoFearTeam::Enemy:
+				bWantHealth = bRecentlyDamaged || bAimed || Alert == ENoFearAlertState::Combat || Distance <= EnemyPanelDistance;
+				break;
+			case ENoFearTeam::Monster:
+			case ENoFearTeam::AggroMonster:
+				bWantHealth = bRecentlyDamaged || bAimed;
+				break;
+			default:
+				// Мирные и нейтралы: только раненые.
+				bWantHealth = Fraction < 0.999f && (bRecentlyDamaged || bAimed || Distance <= AllyPanelDistance);
+				break;
+			}
+		}
+		const bool bWantAlert = Alert != ENoFearAlertState::Calm && (bHostile || Mode >= 2);
+
+		bool bWant = (bWantHealth || bWantAlert) && Distance <= MaxDistance;
+
+		// На экране ли голова бота.
+		FVector2D Screen = FVector2D::ZeroVector;
+		if (bWant)
+		{
+			const FVector Overhead = GetOverheadLocation(Pawn);
+			bWant = CameraRotation.UnrotateVector(Overhead - CameraLocation).X > 10.f;
+			if (bWant)
+			{
+				const FVector Projected = Canvas->Project(Overhead, false);
+				Screen = FVector2D(Projected.X, Projected.Y);
+				const float Inset = 20.f * S;
+				bWant = Screen.X >= Inset && Screen.X <= Canvas->SizeX - Inset && Screen.Y >= Inset && Screen.Y <= Canvas->SizeY - Inset;
+			}
+		}
+
+		// Прямая видимость от камеры; напарников видно всегда, как и их ромб.
+		if (bWant && Mode < 2 && !bCompanion)
+		{
+			if (Now >= State.NextVisibilityCheck)
+			{
+				State.NextVisibilityCheck = Now + BotVisibilityInterval + FMath::FRand() * 0.05;
+				FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearBotPanelSight), false, PlayerPawn);
+				Params.AddIgnoredActor(Pawn);
+				TArray<AActor*> Attached;
+				Pawn->GetAttachedActors(Attached);
+				Params.AddIgnoredActors(Attached);
+				State.bLineOfSight = !World->LineTraceTestByChannel(CameraLocation, GetOverheadLocation(Pawn), ECC_Visibility, Params);
+			}
+			bWant = State.bLineOfSight;
+		}
+		else if (!bWant)
+		{
+			State.NextVisibilityCheck = 0.0;
+		}
+
+		State.Alpha = FMath::FInterpConstantTo(State.Alpha, bWant ? 1.f : 0.f, DeltaTime, 7.f);
+		if (State.Alpha <= 0.01f)
+		{
+			continue;
+		}
+
+		FPanelDraw& Panel = Panels.AddDefaulted_GetRef();
+		Panel.Pawn = Pawn;
+		Panel.Bot = Bot;
+		Panel.Screen = Screen;
+		Panel.Distance = Distance;
+		Panel.bHealth = bWantHealth;
+		Panel.bAlert = bWantAlert;
+		Panel.bCompanion = bCompanion;
+		Panel.bHostile = bHostile;
+		Panel.Team = Team;
+	}
+
+	for (auto It = BotPanels.CreateIterator(); It; ++It)
+	{
+		if (!It.Key().IsValid() || !Seen.Contains(It.Key().Get()))
+		{
+			It.RemoveCurrent();
+		}
+	}
+
+	// Ближайшие рисуются первыми и вытесняют дальние при переизбытке.
+	Panels.Sort([](const FPanelDraw& A, const FPanelDraw& B) { return A.Distance < B.Distance; });
+	if (Panels.Num() > MaxBotPanels)
+	{
+		Panels.SetNum(MaxBotPanels);
+	}
+
+	// Дальние первыми, чтобы ближние ложились поверх.
+	for (int32 Index = Panels.Num() - 1; Index >= 0; --Index)
+	{
+		const FPanelDraw& Panel = Panels[Index];
+		const FBotPanelState* State = BotPanels.Find(Panel.Pawn);
+		if (!State)
+		{
+			continue;
+		}
+
+		const float DistanceFade = 1.f - FMath::Clamp((Panel.Distance - MaxDistance * 0.8f) / (MaxDistance * 0.2f), 0.f, 1.f);
+		const float Opacity = State->Alpha * DistanceFade;
+		if (Opacity <= 0.01f)
+		{
+			continue;
+		}
+
+		const float Shrink = FMath::Lerp(1.f, 0.6f, FMath::Clamp((Panel.Distance - 800.f) / FMath::Max(MaxDistance - 800.f, 1.f), 0.f, 1.f));
+		const float PanelScale = S * Shrink;
+		const float CenterX = Panel.Screen.X;
+		// Над ромбом напарника (и его подписью с расстоянием).
+		float TopY = Panel.Screen.Y - (Panel.bCompanion ? 46.f * S : 4.f * S);
+
+		if (Panel.bHealth)
+		{
+			const float BarWidth = FMath::RoundToFloat(76.f * PanelScale);
+			const float BarHeight = FMath::Max(3.f, FMath::RoundToFloat(7.f * PanelScale));
+			const float BarX = FMath::RoundToFloat(CenterX - BarWidth * 0.5f);
+			const float BarY = FMath::RoundToFloat(TopY - BarHeight);
+
+			FLinearColor Fill = Panel.bCompanion ? CompanionColor : (Panel.bHostile ? BotEnemyColor : (Panel.Team == ENoFearTeam::Ally ? BotAllyColor : BotNeutralColor));
+			const float Fraction = State->LastHealth;
+			if (Fraction < LowHealthFraction)
+			{
+				// Почти мёртв: к красному и мигает.
+				Fill = FMath::Lerp(Fill, LowHealthColor, FMath::Clamp(1.f - Fraction / LowHealthFraction, 0.f, 1.f));
+				Fill.A *= 0.7f + 0.3f * FMath::Sin(static_cast<float>(Now) * 9.f);
+			}
+			DrawBar(BarX, BarY, BarWidth, BarHeight, State->DisplayedHealth, Fill, State->GhostHealth, Opacity);
+			TopY = BarY - 7.f * PanelScale;
+		}
+
+		if (Panel.bAlert)
+		{
+			const ENoFearAlertState Alert = Panel.Bot->GetAlertState();
+			FLinearColor Color = AlertSuspiciousColor;
+			FString Symbol = TEXT("?");
+			float RingFill = FMath::Clamp(Panel.Bot->GetTopAwareness(), 0.f, 1.f);
+			if (Alert == ENoFearAlertState::Combat)
+			{
+				Color = AlertCombatColor;
+				Symbol = TEXT("!");
+				RingFill = 1.f;
+			}
+			else if (Alert == ENoFearAlertState::Search)
+			{
+				Color = AlertSearchColor;
+				RingFill = 1.f;
+			}
+			Color.A = Opacity;
+
+			const float Radius = 13.f * PanelScale;
+			const float Thickness = FMath::Max(2.f, 3.f * PanelScale);
+			const FVector2D Center(CenterX, TopY - Radius - Thickness);
+
+			DrawRing(Center, Radius, 1.f, FLinearColor(0.f, 0.f, 0.f, 0.55f * Opacity), Thickness + 2.f * S);
+			FLinearColor Dim = Color;
+			Dim.A *= 0.3f;
+			DrawRing(Center, Radius, 1.f, Dim, Thickness);
+			DrawRing(Center, Radius, RingFill, Color, Thickness);
+
+			// Знак занимает примерно две трети внутреннего диаметра кольца, каким бы ни был шрифт.
+			float TextWidth = 0.f;
+			float TextHeight = 0.f;
+			GetTextSize(Symbol, TextWidth, TextHeight, GetFont(), 1.f);
+			const float TextScale = TextHeight > 1.f ? Radius * 2.2f / TextHeight : PanelScale;
+			GetTextSize(Symbol, TextWidth, TextHeight, GetFont(), TextScale);
+			DrawLabel(Symbol, Center.X, Center.Y - TextHeight * 0.5f, Color, TextScale, ELabelAlign::Center);
+		}
 	}
 }
 

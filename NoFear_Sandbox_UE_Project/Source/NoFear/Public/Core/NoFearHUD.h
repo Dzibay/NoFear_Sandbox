@@ -23,6 +23,8 @@ class UFont;
  * - Напарники: панель вверху слева, зелёная метка над головой, стрелка у края экрана, если напарника не видно.
  *   Бледные метки над ещё не завербованными напарниками поблизости.
  * - Подсказка взаимодействия под прицелом: «[E] Завербовать» и имя того, с кем.
+ * - Панель над ботами: полоска здоровья с «хвостом» и значок тревоги — «?» с кольцом-шкалой обнаружения, «!» в бою.
+ *   Показывается по правилам (раненым, в бою, под прицелом, рядом), только при прямой видимости; см. NoFear.HUD.BotIndicators.
  *
  * Подключается в ANoFearGameMode, настраивать в редакторе ничего не нужно. Состояние обновляется в Tick, а не при
  * отрисовке, поэтому его можно читать из Blueprint и тестов (Get...).
@@ -247,6 +249,52 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Companions")
 	FLinearColor CompanionColor = FLinearColor(0.3f, 0.95f, 0.4f, 1.f);
 
+	// --- Панель над ботами ---
+
+	/**
+	 * Полоска здоровья и значок «?» / «!» над ботами. Что именно показывать, решают правила ниже;
+	 * консольная переменная NoFear.HUD.BotIndicators: 0 — выключить, 1 — по правилам, 2 — показывать у всех.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots")
+	bool bShowBotIndicators = true;
+
+	/** Сколько секунд после урона над врагом или монстром висит полоска здоровья. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots", meta = (ClampMin = "0"))
+	float BotRecentDamageTime = 5.f;
+
+	/** Ближе этого враги показывают полоску здоровья всегда, дальше — только после урона, в бою или под прицелом. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots", meta = (ClampMin = "0"))
+	float EnemyPanelDistance = 1500.f;
+
+	/** Союзники (не напарники) показывают здоровье в этом радиусе. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots", meta = (ClampMin = "0"))
+	float AllyPanelDistance = 3500.f;
+
+	/** Дальше этого панель исчезает совсем. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots", meta = (ClampMin = "0"))
+	float BotPanelMaxDistance = 5000.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots")
+	FLinearColor BotEnemyColor = FLinearColor(0.95f, 0.2f, 0.15f, 1.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots")
+	FLinearColor BotAllyColor = FLinearColor(0.35f, 0.75f, 1.f, 1.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots")
+	FLinearColor BotNeutralColor = FLinearColor(0.75f, 0.75f, 0.75f, 1.f);
+
+	/** Кольцо и «?» у насторожённого бота. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots")
+	FLinearColor AlertSuspiciousColor = FLinearColor(1.f, 0.85f, 0.2f, 1.f);
+
+	/** «!» у бота, который вас заметил. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots")
+	FLinearColor AlertCombatColor = FLinearColor(1.f, 0.15f, 0.1f, 1.f);
+
+	/** «?» у бота, потерявшего вас и обыскивающего местность. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots")
+	FLinearColor AlertSearchColor = FLinearColor(1.f, 0.55f, 0.1f, 1.f);
+
 	// --- Взаимодействие ---
 
 	/** Подсказка «[E] Завербовать» под прицелом, когда есть с чем взаимодействовать. */
@@ -294,7 +342,24 @@ private:
 	void DrawCompanionPanel();
 	void DrawCompanionMarkers();
 	void DrawRecruitableMarkers();
+	void DrawBotIndicators();
 	void DrawInteractionPrompt();
+
+	/** Состояние панели одного бота: плавная полоска здоровья, «хвост», проверка видимости, плавное появление. */
+	struct FBotPanelState
+	{
+		float DisplayedHealth = 1.f;
+		float GhostHealth = 1.f;
+		float LastHealth = 1.f;
+		double LastDamageSeen = -1.0e9;
+		double NextVisibilityCheck = 0.0;
+		bool bLineOfSight = false;
+		float Alpha = 0.f;
+		double LastUpdate = -1.0;
+	};
+
+	/** Кольцо из отрезков, заполненное на Fraction по часовой стрелке от верхней точки. */
+	void DrawRing(const FVector2D& Center, float Radius, float Fraction, const FLinearColor& Color, float Thickness);
 
 	/**
 	 * Ромб над точкой мира с подписью сверху. Точка за краем экрана — при bEdgeArrow стрелка у края в её сторону.
@@ -307,7 +372,7 @@ private:
 	FString FormatDistance(float Centimeters) const;
 
 	void DrawLabel(const FString& Text, float X, float Y, const FLinearColor& Color, float Scale, ELabelAlign Align);
-	void DrawBar(float X, float Y, float Width, float Height, float Fraction, const FLinearColor& Fill, float GhostFraction = -1.f);
+	void DrawBar(float X, float Y, float Width, float Height, float Fraction, const FLinearColor& Fill, float GhostFraction = -1.f, float Opacity = 1.f);
 	/** Четырёхугольник из двух треугольников; цвета вершин по кругу A, B, C, D. */
 	void DrawColoredQuad(const FVector2D& A, const FVector2D& B, const FVector2D& C, const FVector2D& D, const FLinearColor& ColorA, const FLinearColor& ColorB, const FLinearColor& ColorC, const FLinearColor& ColorD);
 	UFont* GetFont() const;
@@ -325,6 +390,8 @@ private:
 	float DamageFlash = 0.f;
 
 	TArray<FDamageIndicator> DamageIndicators;
+
+	TMap<TWeakObjectPtr<const AActor>, FBotPanelState> BotPanels;
 
 	float HitMarkerAge = 1.0e9f;
 	bool bHitHeadshot = false;

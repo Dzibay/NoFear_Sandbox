@@ -10,6 +10,8 @@ ANoFearCompanionAIController::ANoFearCompanionAIController(const FObjectInitiali
 	: Super(ObjectInitializer)
 {
 	// Без лидера — обычный союзник со своим поводком (LeashRadius стрелка).
+	// Тела не отвлекают напарника от лидера и приказа «жди здесь».
+	bReactToCorpses = false;
 }
 
 void ANoFearCompanionAIController::OnPossess(APawn* InPawn)

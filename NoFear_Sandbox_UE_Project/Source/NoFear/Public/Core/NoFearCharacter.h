@@ -99,6 +99,38 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Camera")
 	bool bDisableLegacySpringArmCamera = true;
 
+	/** Шаги и приземление шумят: враги-боты в радиусе слышат и настораживаются (UNoFearBotSubsystem::ReportNoise). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Noise")
+	bool bMakeMovementNoise = true;
+
+	/** Через сколько сантиметров пути звучит шаг. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Noise", meta = (ClampMin = "50"))
+	float FootstepDistance = 220.f;
+
+	/** Слышимость шага шагом (до 320 см/с), см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Noise", meta = (ClampMin = "0"))
+	float WalkFootstepRange = 400.f;
+
+	/** Слышимость шага бегом (до 620 см/с), см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Noise", meta = (ClampMin = "0"))
+	float RunFootstepRange = 1200.f;
+
+	/** Слышимость шага спринтом, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Noise", meta = (ClampMin = "0"))
+	float SprintFootstepRange = 1800.f;
+
+	/** Слышимость шага пригнувшись, см. 0 — бесшумно. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Noise", meta = (ClampMin = "0"))
+	float CrouchFootstepRange = 0.f;
+
+	/** С какой скорости падения (см/с) приземление шумит. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Noise", meta = (ClampMin = "0"))
+	float LandingNoiseMinFallSpeed = 300.f;
+
+	/** Слышимость приземления при падении 1200 см/с и быстрее, см (на минимальной скорости 600). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Noise", meta = (ClampMin = "0"))
+	float LandingNoiseRange = 1800.f;
+
 	// IGenericTeamAgentInterface
 	virtual void SetGenericTeamId(const FGenericTeamId& NewTeamId) override;
 	virtual FGenericTeamId GetGenericTeamId() const override;
@@ -106,10 +138,13 @@ public:
 	/** Урон от оружия, взрывов и ApplyDamage сходится в UNoFearHealthComponent::ProcessDamage. */
 	virtual float TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser) override;
 
+	virtual void Landed(const FHitResult& Hit) override;
+
 protected:
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void PostInitializeComponents() override;
 	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaSeconds) override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void NotifyControllerChanged() override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
@@ -126,4 +161,12 @@ private:
 
 	void StartRagdoll(const FNoFearDamageInfo& Info);
 	void DisableLegacyCamera();
+	void UpdateMovementNoise(float DeltaSeconds);
+
+	FVector LastNoiseLocation = FVector::ZeroVector;
+	bool bHasLastNoiseLocation = false;
+	/** Пройдено по земле с прошлого шага. */
+	float FootstepTravel = 0.f;
+	/** Самая большая скорость падения в текущем прыжке. */
+	float MaxFallSpeed = 0.f;
 };

@@ -4,14 +4,58 @@
 #include "BehaviorTree/BlackboardComponent.h"
 #include "Core/NoFearCharacter.h"
 #include "Core/NoFearTeam.h"
+#include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "NavigationSystem.h"
 #include "Perception/AIPerceptionComponent.h"
 #include "Perception/AISenseConfig_Hearing.h"
 #include "Perception/AISenseConfig_Sight.h"
 #include "Perception/AISense_Hearing.h"
 #include "Perception/AISense_Sight.h"
 #include "TimerManager.h"
+
+namespace
+{
+	TAutoConsoleVariable<int32> CVarAIDebug(
+		TEXT("NoFear.AI.Debug"), 0,
+		TEXT("Над ботами показывать состояние тревоги, шкалу обнаружения, цель и точки поиска. 0 — выключено."),
+		ECVF_Cheat);
+
+	/** Скорость, при которой враг считается бегущим для шкалы обнаружения (см/с). */
+	constexpr float RunSpeedForDetection = 500.f;
+
+	/** Как часто искать глазами тела погибших. */
+	constexpr float CorpseScanInterval = 0.5f;
+
+	/** Доля 0..1, на которую Value продвинулась от A к B. Если диапазон вырожден — 1. */
+	float Remap01(float Value, float A, float B)
+	{
+		return B > A ? FMath::Clamp((Value - A) / (B - A), 0.f, 1.f) : 1.f;
+	}
+
+	FColor GetAlertColor(ENoFearAlertState State)
+	{
+		switch (State)
+		{
+		case ENoFearAlertState::Suspicious: return FColor::Yellow;
+		case ENoFearAlertState::Combat: return FColor::Red;
+		case ENoFearAlertState::Search: return FColor::Orange;
+		default: return FColor::Green;
+		}
+	}
+
+	const TCHAR* GetAlertName(ENoFearAlertState State)
+	{
+		switch (State)
+		{
+		case ENoFearAlertState::Suspicious: return TEXT("Suspicious");
+		case ENoFearAlertState::Combat: return TEXT("Combat");
+		case ENoFearAlertState::Search: return TEXT("Search");
+		default: return TEXT("Calm");
+		}
+	}
+}
 
 const FName FNoFearBotKeys::AttackTarget(TEXT("AttackTarget"));
 const FName FNoFearBotKeys::HasLineOfSight(TEXT("HasLineOfSight"));
@@ -22,6 +66,7 @@ const FName FNoFearBotKeys::MoveGoal(TEXT("MoveGoal"));
 const FName FNoFearBotKeys::InvestigateLocation(TEXT("InvestigateLocation"));
 const FName FNoFearBotKeys::Leader(TEXT("Leader"));
 const FName FNoFearBotKeys::IsFollowing(TEXT("IsFollowing"));
+const FName FNoFearBotKeys::AlertState(TEXT("AlertState"));
 
 ANoFearAIController::ANoFearAIController(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -40,7 +85,7 @@ ANoFearAIController::ANoFearAIController(const FObjectInitializer& ObjectInitial
 	SightConfig->DetectionByAffiliation.bDetectFriendlies = false;
 	SightConfig->SetMaxAge(TargetMemoryTime);
 
-	// Слух: выстрелы (оружие сообщает шум). Свои не интересны.
+	// Слух: выстрелы (оружие сообщает шум). Свои не интересны. Шаги и приземление идут мимо него, через UNoFearBotSubsystem.
 	HearingConfig = CreateDefaultSubobject<UAISenseConfig_Hearing>(TEXT("HearingConfig"));
 	HearingConfig->HearingRange = 4000.f;
 	HearingConfig->DetectionByAffiliation.bDetectEnemies = true;
@@ -84,6 +129,25 @@ FVector ANoFearAIController::GetLastKnownTargetLocation() const
 	return GetPawn() ? GetPawn()->GetActorLocation() : FVector::ZeroVector;
 }
 
+float ANoFearAIController::GetAwarenessOf(const AActor* Actor) const
+{
+	const FNoFearKnownActor* Knowledge = KnownActors.Find(TWeakObjectPtr<AActor>(const_cast<AActor*>(Actor)));
+	return Knowledge ? Knowledge->Awareness : 0.f;
+}
+
+float ANoFearAIController::GetTopAwareness() const
+{
+	float Top = 0.f;
+	for (const TPair<TWeakObjectPtr<AActor>, FNoFearKnownActor>& Pair : KnownActors)
+	{
+		if (Pair.Key.IsValid() && UNoFearTeamLibrary::AreHostile(GetPawn(), Pair.Key.Get()))
+		{
+			Top = FMath::Max(Top, Pair.Value.Awareness);
+		}
+	}
+	return Top;
+}
+
 void ANoFearAIController::SetHomeLocation(FVector NewHome)
 {
 	HomeLocation = NewHome;
@@ -107,6 +171,12 @@ void ANoFearAIController::OnPossess(APawn* InPawn)
 	HomeLocation = InPawn->GetActorLocation();
 	KnownActors.Reset();
 	CurrentTarget.Reset();
+	AlertState = ENoFearAlertState::Calm;
+	SuspiciousUntil = -1.0e9;
+	bSuspicionFocus = false;
+	EndSearch();
+	NoticedCorpses.Reset();
+	LastUpdateTime = GetNow();
 
 	// Motion matching GASP ждёт ускорения, а не готовой скорости от следования по пути.
 	if (const ACharacter* BotCharacter = Cast<ACharacter>(InPawn))
@@ -144,6 +214,11 @@ void ANoFearAIController::OnPossess(APawn* InPawn)
 
 	UpdateMovementStance();
 
+	if (UNoFearBotSubsystem* Subsystem = UNoFearBotSubsystem::Get(this))
+	{
+		Subsystem->RegisterBot(this);
+	}
+
 	// Разносим обновления ботов по кадрам.
 	GetWorldTimerManager().SetTimer(UpdateTimer, this, &ANoFearAIController::UpdateBot, UpdateInterval, true, FMath::FRandRange(0.05f, UpdateInterval));
 }
@@ -151,6 +226,10 @@ void ANoFearAIController::OnPossess(APawn* InPawn)
 void ANoFearAIController::OnUnPossess()
 {
 	GetWorldTimerManager().ClearTimer(UpdateTimer);
+	if (UNoFearBotSubsystem* Subsystem = UNoFearBotSubsystem::Get(this))
+	{
+		Subsystem->UnregisterBot(this);
+	}
 	if (UNoFearHealthComponent* Health = BoundHealth.Get())
 	{
 		Health->OnDamaged.RemoveDynamic(this, &ANoFearAIController::HandlePawnDamaged);
@@ -163,6 +242,10 @@ void ANoFearAIController::OnUnPossess()
 void ANoFearAIController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	GetWorldTimerManager().ClearTimer(UpdateTimer);
+	if (UNoFearBotSubsystem* Subsystem = UNoFearBotSubsystem::Get(this))
+	{
+		Subsystem->UnregisterBot(this);
+	}
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -174,18 +257,15 @@ void ANoFearAIController::UpdateBot()
 		return;
 	}
 
-	// Пока враг в поле зрения, его позиция и время свежие.
 	const double Now = GetNow();
-	for (TPair<TWeakObjectPtr<AActor>, FNoFearKnownActor>& Pair : KnownActors)
-	{
-		if (const AActor* Actor = Pair.Key.Get(); Actor && Pair.Value.bVisible)
-		{
-			Pair.Value.LastKnownLocation = Actor->GetActorLocation();
-			Pair.Value.LastSeenTime = Now;
-		}
-	}
-	ForgetStaleActors();
+	const float DeltaTime = FMath::Clamp(static_cast<float>(Now - LastUpdateTime), 0.f, 0.5f);
+	LastUpdateTime = Now;
 
+	UpdateAwareness(DeltaTime);
+	ForgetStaleActors();
+	ScanCorpses();
+
+	// Целью становится только тот, в ком бот уверен (шкала полна).
 	AActor* BestTarget = nullptr;
 	if (bCanAttack)
 	{
@@ -193,7 +273,7 @@ void ANoFearAIController::UpdateBot()
 		for (const TPair<TWeakObjectPtr<AActor>, FNoFearKnownActor>& Pair : KnownActors)
 		{
 			AActor* Candidate = Pair.Key.Get();
-			if (!IsValidTarget(Candidate))
+			if (Pair.Value.Awareness < 1.f || !IsValidTarget(Candidate))
 			{
 				continue;
 			}
@@ -210,6 +290,7 @@ void ANoFearAIController::UpdateBot()
 	// Видимую цель отслеживаем взглядом, невидимую — смотрим туда, где видели последний раз (сквозь стены не подглядываем).
 	if (AActor* Target = CurrentTarget.Get())
 	{
+		bSuspicionFocus = false;
 		const FNoFearKnownActor* Knowledge = KnownActors.Find(Target);
 		if (!Knowledge || Knowledge->bVisible)
 		{
@@ -220,9 +301,172 @@ void ANoFearAIController::UpdateBot()
 			SetFocalPoint(Knowledge->LastKnownLocation);
 		}
 	}
+	else if (bCanAttack && Now < SuspiciousUntil)
+	{
+		// Насторожен и цели нет: смотрим туда, откуда донеслось подозрительное.
+		SetFocalPoint(SuspicionLocation);
+		bSuspicionFocus = true;
+	}
+	else if (bSuspicionFocus)
+	{
+		ClearFocus(EAIFocusPriority::Gameplay);
+		bSuspicionFocus = false;
+	}
 
+	ShareAlarm();
+	PumpSearch();
+	UpdateAlertState();
 	UpdateMovementStance();
 	WriteBlackboard();
+	DrawDebug();
+}
+
+void ANoFearAIController::UpdateAwareness(float DeltaTime)
+{
+	const APawn* MyPawn = GetPawn();
+	const double Now = GetNow();
+
+	for (TPair<TWeakObjectPtr<AActor>, FNoFearKnownActor>& Pair : KnownActors)
+	{
+		AActor* Actor = Pair.Key.Get();
+		FNoFearKnownActor& Knowledge = Pair.Value;
+		if (!Actor || UNoFearHealthComponent::IsActorDead(Actor) || !UNoFearTeamLibrary::AreHostile(MyPawn, Actor))
+		{
+			Knowledge.bVisible = false;
+			continue;
+		}
+
+		const float PreviousAwareness = Knowledge.Awareness;
+		bool bRising = false;
+
+		if (Knowledge.bInView)
+		{
+			if (Knowledge.Awareness < 1.f)
+			{
+				const float Rate = ComputeDetectionRate(Actor, Knowledge);
+				if (Rate > 0.f)
+				{
+					bRising = true;
+					Knowledge.Awareness = FMath::Min(1.f, Knowledge.Awareness + Rate * DeltaTime);
+				}
+			}
+			// Пока враг в поле зрения и шкала растёт (или полна), его позиция и время свежие.
+			if (bRising || Knowledge.Awareness >= 1.f)
+			{
+				Knowledge.LastKnownLocation = Actor->GetActorLocation();
+				Knowledge.LastKnownVelocity = Actor->GetVelocity();
+				Knowledge.LastSeenTime = Now;
+			}
+		}
+
+		// Не видно (или укрыт) и шкала не полна: после паузы она остывает.
+		const double LastContact = FMath::Max3(Knowledge.LastSeenTime, Knowledge.LastHeardTime, Knowledge.LastAttackedTime);
+		if (!bRising && Knowledge.Awareness < 1.f && Now - LastContact > AwarenessDecayDelay)
+		{
+			Knowledge.Awareness = FMath::Max(0.f, Knowledge.Awareness - AwarenessDecayRate * DeltaTime);
+		}
+
+		Knowledge.bVisible = Knowledge.bInView && Knowledge.Awareness >= 1.f;
+
+		// Шкала перешла порог — насторожен и идёт проверить; пока она растёт выше порога, подозрение освежается.
+		if (Knowledge.Awareness >= SuspiciousThreshold && (bRising || PreviousAwareness < SuspiciousThreshold))
+		{
+			NoteSuspicion(Knowledge.LastKnownLocation, PreviousAwareness < SuspiciousThreshold);
+		}
+	}
+}
+
+float ANoFearAIController::ComputeDetectionRate(const AActor* Target, const FNoFearKnownActor& Knowledge) const
+{
+	if (!GetPawn() || !Target || !SightConfig)
+	{
+		return 0.f;
+	}
+
+	FVector EyeLocation;
+	FRotator EyeRotation;
+	GetActorEyesViewPoint(EyeLocation, EyeRotation);
+	const FVector ToTarget = Target->GetActorLocation() - EyeLocation;
+	const float Distance = ToTarget.Size();
+
+	// Чем дальше, тем дольше: вплотную мгновенно, на краю зрения секунды.
+	float DetectTime;
+	if (Distance <= MidDetectDistance)
+	{
+		DetectTime = FMath::Lerp(CloseDetectTime, MidDetectTime, Remap01(Distance, CloseDetectDistance, MidDetectDistance));
+	}
+	else
+	{
+		DetectTime = FMath::Lerp(MidDetectTime, FarDetectTime, Remap01(Distance, MidDetectDistance, SightConfig->SightRadius));
+	}
+	float Rate = 1.f / FMath::Max(DetectTime, 0.01f);
+
+	// Боковое зрение медленнее прямого.
+	const float AngleDegrees = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(FVector::DotProduct(EyeRotation.Vector(), ToTarget.GetSafeNormal()), -1.f, 1.f)));
+	if (AngleDegrees > CenterViewAngle)
+	{
+		Rate *= FMath::Lerp(1.f, PeripheralDetectFactor, Remap01(AngleDegrees, CenterViewAngle, SightConfig->PeripheralVisionAngleDegrees));
+	}
+
+	// Пригнувшегося заметить трудно, бегущего легко.
+	if (const ACharacter* TargetCharacter = Cast<ACharacter>(Target); TargetCharacter && TargetCharacter->IsCrouched())
+	{
+		Rate *= CrouchDetectFactor;
+	}
+	Rate *= FMath::Lerp(1.f, MovingDetectFactor, FMath::Clamp(Target->GetVelocity().Size2D() / RunSpeedForDetection, 0.f, 1.f));
+
+	// Насторожен — смотрит внимательнее.
+	if (AlertState != ENoFearAlertState::Calm)
+	{
+		Rate *= SuspiciousRateMultiplier;
+	}
+
+	return Rate * ComputeExposure(Target) * DetectionSpeedMultiplier;
+}
+
+float ANoFearAIController::ComputeExposure(const AActor* Target) const
+{
+	const APawn* MyPawn = GetPawn();
+	UWorld* World = GetWorld();
+	if (!MyPawn || !Target || !World)
+	{
+		return 0.f;
+	}
+
+	FVector EyeLocation;
+	FRotator EyeRotation;
+	GetActorEyesViewPoint(EyeLocation, EyeRotation);
+
+	float Radius = 0.f;
+	float HalfHeight = 0.f;
+	Target->GetSimpleCollisionCylinder(Radius, HalfHeight);
+	if (HalfHeight <= 0.f)
+	{
+		HalfHeight = 88.f;
+	}
+
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearDetectionExposure), true, MyPawn);
+	Params.AddIgnoredActor(Target);
+	TArray<AActor*> AttachedActors;
+	MyPawn->GetAttachedActors(AttachedActors, false, true);
+	Target->GetAttachedActors(AttachedActors, false, true);
+	Params.AddIgnoredActors(AttachedActors);
+
+	// Голова, центр, ноги: чем больше открыто, тем быстрее замечают.
+	const FVector Center = Target->GetActorLocation();
+	const FVector Offset(0.f, 0.f, HalfHeight * 0.8f);
+	const FVector Points[3] = { Center + Offset, Center, Center - Offset };
+	int32 VisiblePoints = 0;
+	for (const FVector& Point : Points)
+	{
+		if (!World->LineTraceTestByChannel(EyeLocation, Point, ECC_Visibility, Params))
+		{
+			++VisiblePoints;
+		}
+	}
+
+	static constexpr float Exposure[4] = { 0.f, 0.4f, 0.7f, 1.f };
+	return Exposure[VisiblePoints];
 }
 
 void ANoFearAIController::ForgetStaleActors()
@@ -233,16 +477,18 @@ void ANoFearAIController::ForgetStaleActors()
 		AActor* Actor = It.Key().Get();
 		const FNoFearKnownActor& Knowledge = It.Value();
 		const bool bDead = !Actor || UNoFearHealthComponent::IsActorDead(Actor);
-		const double LastContact = FMath::Max(Knowledge.LastSeenTime, Knowledge.LastAttackedTime);
-		const bool bStale = !Knowledge.bVisible && Now - LastContact > TargetMemoryTime;
-		if (!bDead && !bStale)
+		const double LastContact = FMath::Max3(Knowledge.LastSeenTime, Knowledge.LastHeardTime, Knowledge.LastAttackedTime);
+		const bool bStale = !Knowledge.bInView && Now - LastContact > TargetMemoryTime;
+		// Шкала остыла до нуля и врага не видно — тихо забываем (бот так и не понял, что это был враг).
+		const bool bDissipated = !Knowledge.bInView && Knowledge.Awareness <= 0.f;
+		if (!bDead && !bStale && !bDissipated)
 		{
 			continue;
 		}
-		// Цель не погибла, а потерялась: проверить, где её видели последней.
+		// Цель не погибла, а потерялась: проверить, где её видели последней, и осмотреться рядом.
 		if (!bDead && Actor == CurrentTarget.Get() && bInvestigateLostTarget)
 		{
-			SetInvestigateLocation(Knowledge.LastKnownLocation);
+			BeginSearch(Knowledge.LastKnownLocation, Knowledge.LastKnownVelocity, SearchPointCount);
 		}
 		It.RemoveCurrent();
 	}
@@ -289,6 +535,12 @@ void ANoFearAIController::SetTarget(AActor* NewTarget)
 		return;
 	}
 	CurrentTarget = NewTarget;
+	if (NewTarget)
+	{
+		// Нашёл — поиск и настороженность больше не нужны.
+		EndSearch();
+		SuspiciousUntil = -1.0e9;
+	}
 	HandleTargetChanged(NewTarget, OldTarget);
 	OnTargetChanged.Broadcast(NewTarget, OldTarget);
 }
@@ -322,6 +574,341 @@ void ANoFearAIController::SetInvestigateLocation(const FVector& Location)
 	}
 }
 
+// --- Тревога ---
+
+void ANoFearAIController::UpdateAlertState()
+{
+	bool bAnyAware = false;
+	bool bAnySuspicious = false;
+	for (const TPair<TWeakObjectPtr<AActor>, FNoFearKnownActor>& Pair : KnownActors)
+	{
+		if (!Pair.Key.IsValid() || !UNoFearTeamLibrary::AreHostile(GetPawn(), Pair.Key.Get()))
+		{
+			continue;
+		}
+		bAnyAware |= Pair.Value.Awareness >= 1.f;
+		bAnySuspicious |= Pair.Value.Awareness >= SuspiciousThreshold;
+	}
+
+	ENoFearAlertState NewState = ENoFearAlertState::Calm;
+	if (CurrentTarget.IsValid() || (!bCanAttack && bAnyAware))
+	{
+		NewState = ENoFearAlertState::Combat;
+	}
+	else if (GetNow() < SuspiciousUntil || bAnySuspicious)
+	{
+		NewState = ENoFearAlertState::Suspicious;
+	}
+	else if (bSearching)
+	{
+		NewState = ENoFearAlertState::Search;
+	}
+	SetAlertState(NewState);
+}
+
+void ANoFearAIController::SetAlertState(ENoFearAlertState NewState)
+{
+	if (NewState == AlertState)
+	{
+		return;
+	}
+	const ENoFearAlertState OldState = AlertState;
+	AlertState = NewState;
+	OnAlertStateChanged.Broadcast(this, NewState, OldState);
+}
+
+void ANoFearAIController::NoteSuspicion(const FVector& Location, bool bInvestigate)
+{
+	SuspiciousUntil = GetNow() + SuspiciousHoldTime;
+	SuspicionLocation = Location;
+
+	// Идти проверять, только если бот сейчас ничем не занят (не перебиваем уже выбранную точку).
+	if (bInvestigate && bCanAttack && bInvestigateNoises && !CurrentTarget.IsValid())
+	{
+		const UBlackboardComponent* BlackboardComp = GetBlackboardComponent();
+		if (BlackboardComp && !BlackboardComp->IsVectorValueSet(FNoFearBotKeys::InvestigateLocation))
+		{
+			SetInvestigateLocation(Location);
+		}
+	}
+}
+
+void ANoFearAIController::HearNoise(AActor* Source, FVector Location, ENoFearNoiseType Type)
+{
+	const APawn* MyPawn = GetPawn();
+	if (!MyPawn || !Source || Source == MyPawn || UNoFearHealthComponent::IsActorDead(MyPawn) || UNoFearHealthComponent::IsActorDead(Source)
+		|| !UNoFearTeamLibrary::AreHostile(MyPawn, Source))
+	{
+		return;
+	}
+
+	FNoFearKnownActor& Knowledge = KnownActors.FindOrAdd(Source);
+	Knowledge.LastHeardTime = GetNow();
+
+	if (Type == ENoFearNoiseType::Gunshot)
+	{
+		// Выстрел выдаёт стрелка: если он в поле зрения — бот уверен сразу, иначе знает хотя бы направление.
+		if (Knowledge.bInView)
+		{
+			Knowledge.Awareness = 1.f;
+		}
+		else
+		{
+			Knowledge.Awareness = FMath::Max(Knowledge.Awareness, GunshotHiddenAwareness);
+			Knowledge.LastKnownLocation = Location;
+		}
+		NoteSuspicion(Location, false);
+		// Выстрел важнее прежней точки проверки.
+		if (bCanAttack && bInvestigateNoises && !CurrentTarget.IsValid())
+		{
+			SetInvestigateLocation(Location);
+		}
+		return;
+	}
+
+	// Шаги и приземление: подозрение растёт, но уверенным бот становится, только увидев (или если шум совсем рядом).
+	const float Distance = FVector::Dist(MyPawn->GetActorLocation(), Location);
+	const float Cap = Distance <= CloseFootstepDistance ? 1.f : FootstepAwarenessCap;
+	if (Knowledge.Awareness < Cap)
+	{
+		Knowledge.Awareness = FMath::Min(Cap, Knowledge.Awareness + FootstepAwarenessGain);
+	}
+	if (!Knowledge.bInView)
+	{
+		Knowledge.LastKnownLocation = Location;
+	}
+	NoteSuspicion(Location, true);
+}
+
+void ANoFearAIController::ReceiveAlarm(AActor* Threat, FVector ThreatLocation)
+{
+	const APawn* MyPawn = GetPawn();
+	if (!bCanAttack || !MyPawn || !Threat || Threat == MyPawn || UNoFearHealthComponent::IsActorDead(MyPawn) || UNoFearHealthComponent::IsActorDead(Threat)
+		|| !UNoFearTeamLibrary::AreHostile(MyPawn, Threat))
+	{
+		return;
+	}
+
+	// Бот узнаёт угрозу и её положение; целью она станет при ближайшем плановом обновлении (звать UpdateBot отсюда незачем).
+	FNoFearKnownActor& Knowledge = KnownActors.FindOrAdd(Threat);
+	Knowledge.Awareness = 1.f;
+	Knowledge.LastHeardTime = GetNow();
+	if (!Knowledge.bInView)
+	{
+		Knowledge.LastKnownLocation = ThreatLocation;
+	}
+}
+
+void ANoFearAIController::ShareAlarm()
+{
+	if (AlertShareRadius <= 0.f || !CurrentTarget.IsValid() || !IsTargetVisible())
+	{
+		return;
+	}
+	const double Now = GetNow();
+	if (Now < NextAlarmTime)
+	{
+		return;
+	}
+	NextAlarmTime = Now + AlarmInterval;
+
+	if (UNoFearBotSubsystem* Subsystem = UNoFearBotSubsystem::Get(this))
+	{
+		Subsystem->BroadcastAlarm(this, CurrentTarget.Get(), CurrentTarget->GetActorLocation());
+	}
+}
+
+// --- Поиск ---
+
+void ANoFearAIController::BeginSearch(const FVector& Origin, const FVector& Velocity, int32 NumPoints)
+{
+	bSearching = true;
+	SearchEndTime = GetNow() + SearchDuration;
+	SearchLingerUntil = 0.0;
+	SearchPoints.Reset();
+
+	SetInvestigateLocation(Origin);
+	GenerateSearchPoints(Origin, Velocity, NumPoints);
+}
+
+void ANoFearAIController::EndSearch()
+{
+	bSearching = false;
+	SearchLingerUntil = 0.0;
+	SearchPoints.Reset();
+}
+
+void ANoFearAIController::PumpSearch()
+{
+	if (!bSearching)
+	{
+		return;
+	}
+	const double Now = GetNow();
+	const UBlackboardComponent* BlackboardComp = GetBlackboardComponent();
+	if (CurrentTarget.IsValid() || !BlackboardComp || Now > SearchEndTime)
+	{
+		EndSearch();
+		return;
+	}
+
+	// Дерево очищает InvestigateLocation, когда бот дошёл и постоял: тогда даём следующую точку.
+	if (BlackboardComp->IsVectorValueSet(FNoFearBotKeys::InvestigateLocation))
+	{
+		return;
+	}
+	if (SearchPoints.Num() > 0)
+	{
+		SetInvestigateLocation(SearchPoints[0]);
+		SearchPoints.RemoveAt(0);
+		SearchLingerUntil = 0.0;
+	}
+	else if (SearchLingerUntil <= 0.0)
+	{
+		SearchLingerUntil = Now + SearchLingerTime;
+	}
+	else if (Now >= SearchLingerUntil)
+	{
+		EndSearch();
+	}
+}
+
+void ANoFearAIController::GenerateSearchPoints(const FVector& Origin, const FVector& Velocity, int32 NumPoints)
+{
+	UWorld* World = GetWorld();
+	UNavigationSystemV1* NavSystem = World ? FNavigationSystem::GetCurrent<UNavigationSystemV1>(World) : nullptr;
+	if (!NavSystem || NumPoints <= 0 || SearchRadius <= 0.f)
+	{
+		return;
+	}
+	FNavLocation Projected;
+	if (!NavSystem->ProjectPointToNavigation(Origin, Projected, FVector(300.f, 300.f, 500.f)))
+	{
+		return;
+	}
+
+	const FVector MoveDirection = Velocity.GetSafeNormal2D();
+	const FVector Anchor = GetLeashAnchor();
+	const float Leash = GetLeashRadius();
+	const FVector EyeOffset(0.f, 0.f, 60.f);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearSearchPoint), false, GetPawn());
+
+	struct FCandidate
+	{
+		FVector Location;
+		float Score;
+	};
+	TArray<FCandidate> Candidates;
+	constexpr int32 CandidateCount = 8;
+	for (int32 Index = 0; Index < CandidateCount; ++Index)
+	{
+		FNavLocation Random;
+		if (!NavSystem->GetRandomReachablePointInRadius(Projected.Location, SearchRadius, Random))
+		{
+			continue;
+		}
+		const float DistanceFromOrigin = FVector::Dist2D(Random.Location, Origin);
+		if (DistanceFromOrigin < 300.f)
+		{
+			continue;
+		}
+		if (Leash > 0.f && FVector::Dist2D(Random.Location, Anchor) > Leash + 500.f)
+		{
+			continue;
+		}
+
+		// Лучше точки по ходу движения цели и те, что не видны из места пропажи (куда можно спрятаться).
+		float Score = FMath::FRand() * 0.5f + FMath::Clamp(DistanceFromOrigin / SearchRadius, 0.f, 1.f) * 0.2f;
+		if (!MoveDirection.IsNearlyZero())
+		{
+			Score += FVector::DotProduct((Random.Location - Origin).GetSafeNormal2D(), MoveDirection);
+		}
+		if (World->LineTraceTestByChannel(Origin + EyeOffset, Random.Location + EyeOffset, ECC_Visibility, Params))
+		{
+			Score += 0.5f;
+		}
+		Candidates.Add({ Random.Location, Score });
+	}
+	Candidates.Sort([](const FCandidate& A, const FCandidate& B) { return A.Score > B.Score; });
+
+	// Жадно берём лучшие, но чтобы точки не лежали кучей.
+	constexpr float MinSeparation = 400.f;
+	for (const FCandidate& Candidate : Candidates)
+	{
+		if (SearchPoints.Num() >= NumPoints)
+		{
+			break;
+		}
+		const bool bTooClose = SearchPoints.ContainsByPredicate([&](const FVector& Point) { return FVector::Dist2D(Point, Candidate.Location) < MinSeparation; });
+		if (!bTooClose)
+		{
+			SearchPoints.Add(Candidate.Location);
+		}
+	}
+}
+
+// --- Трупы ---
+
+void ANoFearAIController::ScanCorpses()
+{
+	const APawn* MyPawn = GetPawn();
+	const double Now = GetNow();
+	if (!bReactToCorpses || !bCanAttack || !MyPawn || CurrentTarget.IsValid() || Now < NextCorpseScanTime)
+	{
+		return;
+	}
+	NextCorpseScanTime = Now + CorpseScanInterval;
+
+	UNoFearBotSubsystem* Subsystem = UNoFearBotSubsystem::Get(this);
+	UWorld* World = GetWorld();
+	if (!Subsystem || !World || !SightConfig)
+	{
+		return;
+	}
+
+	FVector EyeLocation;
+	FRotator EyeRotation;
+	GetActorEyesViewPoint(EyeLocation, EyeRotation);
+	const FVector Forward = EyeRotation.Vector();
+	const float MinDot = FMath::Cos(FMath::DegreesToRadians(SightConfig->PeripheralVisionAngleDegrees));
+
+	for (ANoFearCharacter* Corpse : Subsystem->GetCorpses())
+	{
+		// Тела врагов не пугают: пугают тела своих и нейтральных.
+		if (!Corpse || NoticedCorpses.Contains(Corpse) || UNoFearTeamLibrary::AreHostile(MyPawn, Corpse))
+		{
+			continue;
+		}
+		const FVector ToCorpse = Corpse->GetActorLocation() - EyeLocation;
+		if (ToCorpse.SizeSquared() > FMath::Square(CorpseNoticeDistance) || FVector::DotProduct(Forward, ToCorpse.GetSafeNormal()) < MinDot)
+		{
+			continue;
+		}
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearCorpseSight), true, MyPawn);
+		Params.AddIgnoredActor(Corpse);
+		TArray<AActor*> AttachedActors;
+		MyPawn->GetAttachedActors(AttachedActors, false, true);
+		Corpse->GetAttachedActors(AttachedActors, false, true);
+		Params.AddIgnoredActors(AttachedActors);
+		if (World->LineTraceTestByChannel(EyeLocation, Corpse->GetActorLocation() + FVector(0.f, 0.f, 30.f), ECC_Visibility, Params))
+		{
+			continue;
+		}
+		NoteCorpse(Corpse);
+		return;
+	}
+}
+
+void ANoFearAIController::NoteCorpse(ANoFearCharacter* Corpse)
+{
+	NoticedCorpses.Add(Corpse);
+	NoteSuspicion(Corpse->GetActorLocation(), false);
+	// Подойти к телу и осмотреться: убийца где-то рядом.
+	BeginSearch(Corpse->GetActorLocation(), FVector::ZeroVector, SearchPointCount);
+}
+
+// --- Урон и восприятие ---
+
 void ANoFearAIController::ReportThreat(AActor* Threat)
 {
 	APawn* MyPawn = GetPawn();
@@ -330,9 +917,11 @@ void ANoFearAIController::ReportThreat(AActor* Threat)
 		return;
 	}
 
+	// Напавшего узнают сразу, без шкалы.
 	FNoFearKnownActor& Knowledge = KnownActors.FindOrAdd(Threat);
 	Knowledge.LastAttackedTime = GetNow();
-	if (!Knowledge.bVisible)
+	Knowledge.Awareness = 1.f;
+	if (!Knowledge.bInView)
 	{
 		Knowledge.LastKnownLocation = Threat->GetActorLocation();
 	}
@@ -353,22 +942,34 @@ void ANoFearAIController::HandlePerceptionUpdated(AActor* Actor, FAIStimulus Sti
 
 	if (Stimulus.Type == UAISense::GetSenseID<UAISense_Sight>())
 	{
-		FNoFearKnownActor& Knowledge = KnownActors.FindOrAdd(Actor);
-		Knowledge.bVisible = Stimulus.WasSuccessfullySensed();
-		Knowledge.LastKnownLocation = Knowledge.bVisible ? Actor->GetActorLocation() : Stimulus.StimulusLocation;
-		Knowledge.LastSeenTime = GetNow();
-		if (Knowledge.bVisible && !CurrentTarget.IsValid())
+		// Память о потерянных ведём сами: сообщение о том, что UE забыл стимул, не нужно.
+		if (Stimulus.IsExpired())
 		{
-			UpdateBot();
+			return;
 		}
+		FNoFearKnownActor& Knowledge = KnownActors.FindOrAdd(Actor);
+		Knowledge.bInView = Stimulus.WasSuccessfullySensed();
+		if (Knowledge.bInView)
+		{
+			Knowledge.LastKnownLocation = Actor->GetActorLocation();
+			Knowledge.LastKnownVelocity = Actor->GetVelocity();
+		}
+		else
+		{
+			// Вышел из поля зрения: запоминаем, где и куда он шёл.
+			Knowledge.bVisible = false;
+			Knowledge.LastKnownLocation = Stimulus.StimulusLocation;
+			if (Knowledge.LastKnownVelocity.IsNearlyZero())
+			{
+				Knowledge.LastKnownVelocity = Actor->GetVelocity();
+			}
+		}
+		Knowledge.LastSeenTime = GetNow();
 	}
 	else if (Stimulus.Type == UAISense::GetSenseID<UAISense_Hearing>() && Stimulus.WasSuccessfullySensed())
 	{
-		// Звук выстрела: Actor — стрелявший. Без цели идём посмотреть, кто там.
-		if (bCanAttack && bInvestigateNoises && !CurrentTarget.IsValid() && UNoFearTeamLibrary::AreHostile(GetPawn(), Actor))
-		{
-			SetInvestigateLocation(Stimulus.StimulusLocation);
-		}
+		// Звук выстрела: Actor — стрелявший.
+		HearNoise(Actor, Stimulus.StimulusLocation, Stimulus.Tag == TEXT("Gunshot") ? ENoFearNoiseType::Gunshot : ENoFearNoiseType::Other);
 	}
 }
 
@@ -380,7 +981,18 @@ void ANoFearAIController::HandlePawnDamaged(UNoFearHealthComponent* Component, c
 		Attacker = Info.DamageCauser->GetInstigator() ? Info.DamageCauser->GetInstigator() : Info.DamageCauser.Get();
 	}
 	ReportThreat(Attacker);
+
+	// Остальные поблизости: свои пострадавшего узнают нападавшего, свои нападавшего — пострадавшего.
+	if (Attacker && GetPawn())
+	{
+		if (UNoFearBotSubsystem* Subsystem = UNoFearBotSubsystem::Get(this))
+		{
+			Subsystem->NotifyAttack(GetPawn(), Attacker);
+		}
+	}
 }
+
+// --- Походка и блэкборд ---
 
 bool ANoFearAIController::ShouldWalk() const
 {
@@ -389,8 +1001,10 @@ bool ANoFearAIController::ShouldWalk() const
 
 void ANoFearAIController::UpdateMovementStance()
 {
+	// В бою: боком и с прицелом. Насторожен: боком (смотрит на источник), оружие пока опущено.
 	const bool bCombatStance = CurrentTarget.IsValid() && bStrafeInCombat;
-	SetMovementFlags(bCombatStance, bCombatStance, ShouldWalk());
+	const bool bAlertStance = bCanAttack && !CurrentTarget.IsValid() && AlertState == ENoFearAlertState::Suspicious && bStrafeInCombat;
+	SetMovementFlags(bCombatStance || bAlertStance, bCombatStance, ShouldWalk());
 }
 
 void ANoFearAIController::SetMovementFlags(bool bStrafe, bool bAim, bool bWalk)
@@ -430,5 +1044,50 @@ void ANoFearAIController::WriteBlackboard()
 	if (UBlackboardComponent* BlackboardComp = GetBlackboardComponent())
 	{
 		BlackboardComp->SetValueAsVector(FNoFearBotKeys::HomeLocation, HomeLocation);
+		BlackboardComp->SetValueAsInt(FNoFearBotKeys::AlertState, static_cast<int32>(AlertState));
 	}
+}
+
+void ANoFearAIController::DrawDebug() const
+{
+#if ENABLE_DRAW_DEBUG
+	if (CVarAIDebug.GetValueOnGameThread() <= 0)
+	{
+		return;
+	}
+	const APawn* MyPawn = GetPawn();
+	UWorld* World = GetWorld();
+	if (!MyPawn || !World)
+	{
+		return;
+	}
+
+	const float Duration = UpdateInterval + 0.05f;
+	const FColor Color = GetAlertColor(AlertState);
+	const FVector Location = MyPawn->GetActorLocation();
+
+	FString Text = FString::Printf(TEXT("%s  %.2f"), GetAlertName(AlertState), GetTopAwareness());
+	if (SearchPoints.Num() > 0)
+	{
+		Text += FString::Printf(TEXT("  search +%d"), SearchPoints.Num());
+	}
+	if (const AActor* Target = CurrentTarget.Get())
+	{
+		Text += FString::Printf(TEXT("\n-> %s%s"), *Target->GetName(), IsTargetVisible() ? TEXT("") : TEXT(" (lost)"));
+		DrawDebugLine(World, Location, Target->GetActorLocation(), Color, false, Duration, 0, 2.f);
+	}
+	DrawDebugString(World, Location + FVector(0.f, 0.f, 140.f), Text, nullptr, Color, Duration, true);
+
+	if (const UBlackboardComponent* BlackboardComp = GetBlackboardComponent();
+		BlackboardComp && BlackboardComp->IsVectorValueSet(FNoFearBotKeys::InvestigateLocation))
+	{
+		const FVector Investigate = BlackboardComp->GetValueAsVector(FNoFearBotKeys::InvestigateLocation);
+		DrawDebugLine(World, Location, Investigate, FColor::Yellow, false, Duration, 0, 1.f);
+		DrawDebugSphere(World, Investigate, 50.f, 8, FColor::Yellow, false, Duration);
+	}
+	for (const FVector& Point : SearchPoints)
+	{
+		DrawDebugSphere(World, Point, 40.f, 8, FColor::Orange, false, Duration);
+	}
+#endif
 }

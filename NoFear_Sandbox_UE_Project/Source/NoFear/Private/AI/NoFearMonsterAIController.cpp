@@ -14,6 +14,9 @@ ANoFearMonsterAIController::ANoFearMonsterAIController(const FObjectInitializer&
 	LeashRadius = 0.f;
 	MaxTargetDistance = 4000.f;
 
+	// Рык стаи слышно дальше, чем крик стрелка.
+	AlertShareRadius = 3000.f;
+
 	SightConfig->SightRadius = 2500.f;
 	SightConfig->LoseSightRadius = 3000.f;
 	SightConfig->PeripheralVisionAngleDegrees = 80.f;

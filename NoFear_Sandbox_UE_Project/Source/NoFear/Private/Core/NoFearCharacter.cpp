@@ -1,6 +1,7 @@
 #include "Core/NoFearCharacter.h"
 
 #include "AIController.h"
+#include "AI/NoFearBotSubsystem.h"
 #include "Animation/AnimInstance.h"
 #include "BrainComponent.h"
 #include "Camera/CameraComponent.h"
@@ -151,8 +152,79 @@ float ANoFearCharacter::TakeDamage(float DamageAmount, FDamageEvent const& Damag
 	return HealthComponent ? HealthComponent->ProcessDamage(ActualDamage, DamageEvent, EventInstigator, DamageCauser) : ActualDamage;
 }
 
+void ANoFearCharacter::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+	if (bMakeMovementNoise && !IsDead())
+	{
+		UpdateMovementNoise(DeltaSeconds);
+	}
+}
+
+void ANoFearCharacter::UpdateMovementNoise(float DeltaSeconds)
+{
+	const UCharacterMovementComponent* Movement = GetCharacterMovement();
+	const FVector Location = GetActorLocation();
+	if (!Movement || DeltaSeconds <= 0.f)
+	{
+		return;
+	}
+	const float Moved = bHasLastNoiseLocation ? FVector::Dist2D(Location, LastNoiseLocation) : 0.f;
+	LastNoiseLocation = Location;
+	bHasLastNoiseLocation = true;
+
+	if (Movement->IsFalling())
+	{
+		MaxFallSpeed = FMath::Max(MaxFallSpeed, -Movement->Velocity.Z);
+		FootstepTravel = 0.f;
+		return;
+	}
+	// Рывок на сотни сантиметров за кадр — телепорт, а не шаги.
+	constexpr float TeleportDistance = 400.f;
+	const float Speed = GetVelocity().Size2D();
+	if (!Movement->IsMovingOnGround() || Moved > TeleportDistance || Speed < 30.f)
+	{
+		return;
+	}
+
+	FootstepTravel += Moved;
+	if (FootstepTravel < FootstepDistance)
+	{
+		return;
+	}
+	FootstepTravel = FMath::Fmod(FootstepTravel, FootstepDistance);
+
+	const float Range = IsCrouched() ? CrouchFootstepRange : Speed < 320.f ? WalkFootstepRange : Speed < 620.f ? RunFootstepRange : SprintFootstepRange;
+	if (Range > 0.f)
+	{
+		UNoFearBotSubsystem::ReportNoise(this, this, Location, Range, ENoFearNoiseType::Footstep);
+	}
+}
+
+void ANoFearCharacter::Landed(const FHitResult& Hit)
+{
+	Super::Landed(Hit);
+
+	const float FallSpeed = MaxFallSpeed;
+	MaxFallSpeed = 0.f;
+	FootstepTravel = 0.f;
+	if (!bMakeMovementNoise || IsDead() || FallSpeed < LandingNoiseMinFallSpeed)
+	{
+		return;
+	}
+	constexpr float MaxNoiseFallSpeed = 1200.f;
+	constexpr float MinLandingRange = 600.f;
+	const float Alpha = FMath::Clamp((FallSpeed - LandingNoiseMinFallSpeed) / FMath::Max(MaxNoiseFallSpeed - LandingNoiseMinFallSpeed, 1.f), 0.f, 1.f);
+	UNoFearBotSubsystem::ReportNoise(this, this, GetActorLocation(), FMath::Lerp(MinLandingRange, LandingNoiseRange, Alpha), ENoFearNoiseType::Landing);
+}
+
 void ANoFearCharacter::HandleDeath(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info)
 {
+	if (UNoFearBotSubsystem* Subsystem = UNoFearBotSubsystem::Get(this))
+	{
+		Subsystem->RegisterCorpse(this);
+	}
+
 	if (WeaponComponent)
 	{
 		WeaponComponent->HandleOwnerDeath();

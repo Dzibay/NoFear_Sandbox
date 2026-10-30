@@ -12,6 +12,10 @@ ANoFearShooterAIController::ANoFearShooterAIController(const FObjectInitializer&
 {
 	LeashRadius = 1500.f;
 
+	// Стрелки зовут своих в бою и замечают тела погибших своих.
+	AlertShareRadius = 2500.f;
+	bReactToCorpses = true;
+
 	static ConstructorHelpers::FObjectFinderOptional<UBehaviorTree> Tree(TEXT("/Game/AI/BT_NoFear_Soldier.BT_NoFear_Soldier"));
 	BehaviorTree = Tree.Get();
 }
