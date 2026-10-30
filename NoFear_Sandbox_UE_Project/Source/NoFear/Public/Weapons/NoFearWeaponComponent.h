@@ -154,6 +154,12 @@ public:
 	/** Сменился контроллер: отпустить спуск, чтобы ничего не продолжало стрелять. */
 	void HandleControllerChanged();
 
+	/** Владелец погиб: все стволы прерывают действия, дальнейшие команды игнорируются. Вызывает ANoFearCharacter. */
+	void HandleOwnerDeath();
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
+	bool IsOwnerDead() const { return bOwnerDead; }
+
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 protected:
@@ -181,6 +187,7 @@ private:
 	int32 CurrentIndex = INDEX_NONE;
 	int32 LastEquippedIndex = 0;
 	bool bWantsToAim = false;
+	bool bOwnerDead = false;
 
 	// Идёт убирание текущего оружия; после него достаём PendingIndex.
 	bool bSwitching = false;

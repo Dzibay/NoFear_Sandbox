@@ -41,6 +41,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
 	static UNoFearCombatComponent* FindCombatComponent(AActor* Actor);
 
+	/**
+	 * Актор погиб: все, кто целился в него или прятался от него, забывают цель. Вызывается из
+	 * UNoFearHealthComponent автоматически, вручную нужен только для смерти без компонента здоровья.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|AI")
+	static void NotifyActorDied(AActor* DeadActor);
+
 private:
 	static AActor* ResolveShooterPawn(AActor* Shooter);
 

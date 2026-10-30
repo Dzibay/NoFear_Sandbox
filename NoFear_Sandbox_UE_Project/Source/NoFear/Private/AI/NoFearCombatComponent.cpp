@@ -37,6 +37,49 @@ void UNoFearCombatComponent::BeginPlay()
 	{
 		Subsystem->RegisterCombatant(this);
 	}
+
+	if (UNoFearHealthComponent* Health = UNoFearHealthComponent::FindHealth(GetOwner()))
+	{
+		Health->OnDeath.AddDynamic(this, &UNoFearCombatComponent::HandleOwnerDeath);
+	}
+}
+
+void UNoFearCombatComponent::HandleOwnerDeath(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info)
+{
+	SetComponentTickEnabled(false);
+	if (UNoFearCombatSubsystem* Subsystem = GetWorld()->GetSubsystem<UNoFearCombatSubsystem>())
+	{
+		Subsystem->UnregisterCombatant(this);
+	}
+
+	bManualTarget = false;
+	if (CurrentTarget.IsValid())
+	{
+		ChangeTarget(nullptr);
+	}
+	Suppression = 0.f;
+	RefreshSuppressedState();
+	WriteBlackboard();
+}
+
+void UNoFearCombatComponent::HandleActorDied(AActor* DeadActor)
+{
+	if (LastShooter.Get() == DeadActor)
+	{
+		LastShooter.Reset();
+	}
+	if (CurrentTarget.Get() != DeadActor)
+	{
+		return;
+	}
+
+	bManualTarget = false;
+	ChangeTarget(nullptr);
+	if (UBlackboardComponent* Blackboard = GetBlackboard(); Blackboard && !TargetKeyName.IsNone())
+	{
+		Blackboard->ClearValue(TargetKeyName);
+	}
+	WriteBlackboard();
 }
 
 void UNoFearCombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)

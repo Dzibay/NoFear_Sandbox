@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Engine/EngineTypes.h"
+#include "Core/NoFearHealthComponent.h"
 #include "NoFearCombatComponent.generated.h"
 
 class UBlackboardComponent;
@@ -85,6 +86,9 @@ public:
 
 	UPROPERTY(BlueprintAssignable, Category = "NoFear|Combat")
 	FNoFearTargetChangedSignature OnTargetChanged;
+
+	/** Кто-то погиб: если это была цель или обидчик, они забываются. Вызывает UNoFearCombatSubsystem::NotifyActorDied. */
+	void HandleActorDied(AActor* DeadActor);
 
 	/** Бот стал подавлен или пришёл в себя. */
 	UPROPERTY(BlueprintAssignable, Category = "NoFear|Suppression")
@@ -230,6 +234,10 @@ protected:
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 private:
+	/** Погиб сам бот: перестаёт думать, целиться и попадать в реестр. */
+	UFUNCTION()
+	void HandleOwnerDeath(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info);
+
 	void ChangeTarget(AActor* NewTarget);
 	void StartAcquisition();
 	void UpdateLineOfSight();

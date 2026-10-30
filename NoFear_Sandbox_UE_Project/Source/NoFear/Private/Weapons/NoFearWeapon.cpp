@@ -255,6 +255,33 @@ void ANoFearWeapon::Holster()
 	SetState(ENoFearWeaponState::Holstered);
 }
 
+void ANoFearWeapon::Abandon()
+{
+	CancelActions();
+
+	if (Data)
+	{
+		StopCharacterMontage(Data->CharacterEquipMontage);
+		StopCharacterMontage(Data->CharacterHolsterMontage);
+	}
+
+	SetActorTickEnabled(false);
+	// Holstered: из этого состояния оружие не стреляет и не перезаряжается, что бы ни вызвали.
+	SetState(ENoFearWeaponState::Holstered);
+}
+
+float ANoFearWeapon::GetReloadProgress() const
+{
+	if (State != ENoFearWeaponState::Reloading || !GetWorld())
+	{
+		return 0.f;
+	}
+
+	const FTimerManager& Timers = GetWorldTimerManager();
+	const float Rate = Timers.GetTimerRate(ReloadTimer);
+	return Rate > KINDA_SMALL_NUMBER ? FMath::Clamp(Timers.GetTimerElapsed(ReloadTimer) / Rate, 0.f, 1.f) : 0.f;
+}
+
 void ANoFearWeapon::CancelActions()
 {
 	ClearFireRequest();

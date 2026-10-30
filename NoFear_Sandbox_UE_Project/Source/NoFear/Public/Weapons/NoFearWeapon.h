@@ -56,6 +56,12 @@ public:
 	/** Убрать мгновенно: прервать стрельбу и перезарядку, повесить на HolsterSocket (или спрятать). */
 	void Holster();
 
+	/**
+	 * Владелец погиб: прервать всё и больше не стрелять. Ствол остаётся там, где был (в руке или в кобуре),
+	 * и падает вместе с рэгдоллом.
+	 */
+	void Abandon();
+
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Weapon")
 	void StartFire();
 
@@ -86,6 +92,10 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
 	bool IsAiming() const { return bAiming; }
+
+	/** Сколько перезарядки прошло: 0..1 в состоянии Reloading, иначе 0 (для полоски в UI). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
+	float GetReloadProgress() const;
 
 	/** Текущий разброс в градусах (для прицела в UI). */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")

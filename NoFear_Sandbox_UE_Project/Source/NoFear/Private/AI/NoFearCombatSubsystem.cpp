@@ -125,6 +125,25 @@ UNoFearCombatComponent* UNoFearCombatSubsystem::FindCombatComponent(AActor* Acto
 	return ShooterPawn && ShooterPawn != Actor ? ShooterPawn->FindComponentByClass<UNoFearCombatComponent>() : nullptr;
 }
 
+void UNoFearCombatSubsystem::NotifyActorDied(AActor* DeadActor)
+{
+	const UWorld* World = DeadActor ? DeadActor->GetWorld() : nullptr;
+	const UNoFearCombatSubsystem* Subsystem = World ? World->GetSubsystem<UNoFearCombatSubsystem>() : nullptr;
+	if (!Subsystem)
+	{
+		return;
+	}
+
+	// Копия списка: обработчик смерти цели может менять реестр.
+	for (UNoFearCombatComponent* Combatant : Subsystem->GetCombatants())
+	{
+		if (Combatant->GetOwner() != DeadActor)
+		{
+			Combatant->HandleActorDied(DeadActor);
+		}
+	}
+}
+
 AActor* UNoFearCombatSubsystem::ResolveShooterPawn(AActor* Shooter)
 {
 	if (!Shooter || Shooter->IsA<APawn>())

@@ -15,7 +15,8 @@ public class NoFear : ModuleRules
 			"NavigationSystem",
 			"EnhancedInput",
 			"Niagara",
-			"PhysicsCore"
+			"PhysicsCore",
+			"RenderCore"
 		});
 	}
 }

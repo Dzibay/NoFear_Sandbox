@@ -129,6 +129,10 @@ void UNoFearWeaponComponent::HolsterWeapon()
 
 void UNoFearWeaponComponent::RequestWeapon(int32 Index)
 {
+	if (bOwnerDead)
+	{
+		return;
+	}
 	if (bSwitching)
 	{
 		// Старое оружие уже убирается: просто меняем цель, таймер смены тот же.
@@ -228,6 +232,10 @@ ANoFearWeapon* UNoFearWeaponComponent::GetCurrentWeapon() const
 
 void UNoFearWeaponComponent::StartFire()
 {
+	if (bOwnerDead)
+	{
+		return;
+	}
 	if (ANoFearWeapon* Weapon = GetCurrentWeapon())
 	{
 		Weapon->StartFire();
@@ -248,6 +256,10 @@ void UNoFearWeaponComponent::StopFire()
 
 void UNoFearWeaponComponent::Reload()
 {
+	if (bOwnerDead)
+	{
+		return;
+	}
 	if (ANoFearWeapon* Weapon = GetCurrentWeapon())
 	{
 		Weapon->Reload();
@@ -256,7 +268,7 @@ void UNoFearWeaponComponent::Reload()
 
 void UNoFearWeaponComponent::SetAiming(bool bNewAiming)
 {
-	bWantsToAim = bNewAiming;
+	bWantsToAim = bNewAiming && !bOwnerDead;
 	if (ANoFearWeapon* Weapon = GetCurrentWeapon())
 	{
 		Weapon->SetAiming(bNewAiming);
@@ -267,6 +279,32 @@ void UNoFearWeaponComponent::HandleControllerChanged()
 {
 	StopFire();
 	SetAiming(false);
+}
+
+void UNoFearWeaponComponent::HandleOwnerDeath()
+{
+	if (bOwnerDead)
+	{
+		return;
+	}
+	bOwnerDead = true;
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(SwitchTimer);
+	}
+	bSwitching = false;
+	PendingIndex = INDEX_NONE;
+	bWantsToAim = false;
+
+	// Оружие, которое в этот момент убиралось или доставалось, остаётся там, где было.
+	for (ANoFearWeapon* Weapon : Weapons)
+	{
+		if (Weapon)
+		{
+			Weapon->Abandon();
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
