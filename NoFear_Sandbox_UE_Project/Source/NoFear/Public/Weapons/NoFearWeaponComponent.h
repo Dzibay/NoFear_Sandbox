@@ -103,11 +103,20 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Weapon")
 	ANoFearWeapon* AddWeapon(UNoFearWeaponData* WeaponData);
 
+	/**
+	 * Достать оружие с этим номером. Текущее сначала убирается с анимацией; если во время убирания
+	 * запросить другое, достанется последнее запрошенное.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Weapon")
 	void EquipWeapon(int32 Index);
 
+	/** Убрать оружие с анимацией. */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Weapon")
 	void HolsterWeapon();
+
+	/** Оружие, которое будет в руках, когда закончится смена. INDEX_NONE — никакого. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
+	int32 GetTargetWeaponIndex() const { return bSwitching ? PendingIndex : CurrentIndex; }
 
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Weapon")
 	void NextWeapon();
@@ -152,6 +161,12 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
+	/** Общая точка для EquipWeapon/HolsterWeapon. Index == INDEX_NONE — остаться без оружия. */
+	void RequestWeapon(int32 Index);
+	void FinishSwitch();
+	/** Убранное старое оружие заменяется новым (или ничем) без анимации убирания. */
+	void CompleteSwitch(int32 NewIndex);
+
 	void SetOverlayState(FName StateName) const;
 	void UpdateArmRecoilVariables();
 
@@ -166,6 +181,11 @@ private:
 	int32 CurrentIndex = INDEX_NONE;
 	int32 LastEquippedIndex = 0;
 	bool bWantsToAim = false;
+
+	// Идёт убирание текущего оружия; после него достаём PendingIndex.
+	bool bSwitching = false;
+	int32 PendingIndex = INDEX_NONE;
+	FTimerHandle SwitchTimer;
 
 	// Переменные отдачи в AnimInstance; ищутся заново, если сменился класс анимблюпринта.
 	TWeakObjectPtr<UClass> RecoilAnimClass;

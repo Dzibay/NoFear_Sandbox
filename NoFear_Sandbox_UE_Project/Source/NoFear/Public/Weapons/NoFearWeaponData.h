@@ -14,6 +14,7 @@ class UDamageType;
 class UFXSystemAsset;
 class UMaterialInterface;
 class USkeletalMesh;
+class USoundAttenuation;
 class USoundBase;
 class UTexture2D;
 
@@ -59,6 +60,23 @@ struct FNoFearImpactEffect
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = 0))
 	float DecalLifeSpan = 20.f;
+};
+
+/** Звук, который играется через заданное время после начала действия: перезарядки, доставания или убирания. */
+USTRUCT(BlueprintType)
+struct FNoFearTimedSound
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	TObjectPtr<USoundBase> Sound = nullptr;
+
+	/** Через сколько секунд после начала действия играть звук. 0 — сразу. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = 0))
+	float Time = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (ClampMin = 0))
+	float VolumeMultiplier = 1.f;
 };
 
 /**
@@ -157,6 +175,29 @@ public:
 	/** Перезаряжать само, когда магазин пуст и нажат огонь. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ammo")
 	bool bAutoReload = true;
+
+	// --- Доставание и убирание ---
+
+	/**
+	 * Время убирания оружия. 0 — по длине монтажа убирания. Если монтажа убирания нет, проигрывается
+	 * монтаж доставания задом наперёд: он растягивается или сжимается под это время.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Handling", meta = (ClampMin = 0))
+	float HolsterTime = 0.f;
+
+	/**
+	 * Через сколько секунд после начала доставания ствол перепрыгивает с кобуры в руку (когда рука дотянулась до кобуры).
+	 * 0 — сразу в начале.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Handling", meta = (ClampMin = 0))
+	float EquipGrabTime = 0.f;
+
+	/**
+	 * Через сколько секунд после начала убирания ствол уходит из руки на кобуру.
+	 * 0 — в самом конце убирания.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Handling", meta = (ClampMin = 0))
+	float HolsterStowTime = 0.f;
 
 	// --- Урон ---
 
@@ -287,8 +328,21 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Effects")
 	TObjectPtr<USoundBase> DryFireSound = nullptr;
 
+	/** Звуки перезарядки (магазин, затвор…). Время отсчитывается от начала перезарядки. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Effects")
-	TObjectPtr<USoundBase> ReloadSound = nullptr;
+	TArray<FNoFearTimedSound> ReloadSounds;
+
+	/** Звуки доставания оружия. Время отсчитывается от начала доставания. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Effects")
+	TArray<FNoFearTimedSound> EquipSounds;
+
+	/** Звуки убирания оружия. Время отсчитывается от начала убирания. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Effects")
+	TArray<FNoFearTimedSound> HolsterSounds;
+
+	/** Затухание для звуков перезарядки, доставания и убирания. Пусто — как настроено в самом звуке. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Effects")
+	TObjectPtr<USoundAttenuation> HandlingAttenuation = nullptr;
 
 	/** Вспышка у дула (Niagara или Cascade). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Effects")
@@ -319,6 +373,10 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
 	TObjectPtr<UAnimMontage> CharacterEquipMontage = nullptr;
+
+	/** Монтаж убирания. Пусто — монтаж доставания проигрывается задом наперёд. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UAnimMontage> CharacterHolsterMontage = nullptr;
 
 	/** Анимация самого оружия при выстреле (затвор). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")

@@ -8,6 +8,7 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/PlayerController.h"
 #include "InputActionValue.h"
+#include "TimerManager.h"
 #include "Weapons/NoFearWeapon.h"
 #include "Weapons/NoFearWeaponData.h"
 
@@ -50,6 +51,12 @@ void UNoFearWeaponComponent::BeginPlay()
 
 void UNoFearWeaponComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(SwitchTimer);
+	}
+	bSwitching = false;
+
 	for (ANoFearWeapon* Weapon : Weapons)
 	{
 		if (IsValid(Weapon))
@@ -109,20 +116,75 @@ ANoFearWeapon* UNoFearWeaponComponent::AddWeapon(UNoFearWeaponData* WeaponData)
 
 void UNoFearWeaponComponent::EquipWeapon(int32 Index)
 {
-	if (!Weapons.IsValidIndex(Index) || Index == CurrentIndex)
+	if (Weapons.IsValidIndex(Index))
+	{
+		RequestWeapon(Index);
+	}
+}
+
+void UNoFearWeaponComponent::HolsterWeapon()
+{
+	RequestWeapon(INDEX_NONE);
+}
+
+void UNoFearWeaponComponent::RequestWeapon(int32 Index)
+{
+	if (bSwitching)
+	{
+		// Старое оружие уже убирается: просто меняем цель, таймер смены тот же.
+		PendingIndex = Index;
+		return;
+	}
+	if (Index == CurrentIndex)
 	{
 		return;
 	}
 
+	if (ANoFearWeapon* OldWeapon = GetCurrentWeapon())
+	{
+		const float HolsterDuration = OldWeapon->BeginHolster();
+		if (HolsterDuration > KINDA_SMALL_NUMBER)
+		{
+			bSwitching = true;
+			PendingIndex = Index;
+			GetWorld()->GetTimerManager().SetTimer(SwitchTimer, this, &UNoFearWeaponComponent::FinishSwitch, HolsterDuration, false);
+			return;
+		}
+	}
+
+	CompleteSwitch(Index);
+}
+
+void UNoFearWeaponComponent::FinishSwitch()
+{
+	bSwitching = false;
+	const int32 NewIndex = PendingIndex;
+	PendingIndex = INDEX_NONE;
+	CompleteSwitch(NewIndex);
+}
+
+void UNoFearWeaponComponent::CompleteSwitch(int32 NewIndex)
+{
 	ANoFearWeapon* OldWeapon = GetCurrentWeapon();
-	if (OldWeapon)
+	if (OldWeapon && OldWeapon->GetWeaponState() != ENoFearWeaponState::Holstered)
 	{
 		OldWeapon->Holster();
 	}
 
-	CurrentIndex = Index;
-	LastEquippedIndex = Index;
-	ANoFearWeapon* NewWeapon = Weapons[Index];
+	if (!Weapons.IsValidIndex(NewIndex))
+	{
+		CurrentIndex = INDEX_NONE;
+		SetOverlayState(UnarmedOverlayState);
+		if (OldWeapon)
+		{
+			OnWeaponChanged.Broadcast(nullptr, OldWeapon);
+		}
+		return;
+	}
+
+	CurrentIndex = NewIndex;
+	LastEquippedIndex = NewIndex;
+	ANoFearWeapon* NewWeapon = Weapons[NewIndex];
 
 	// Поза ставится до доставания, чтобы монтаж доставания играл уже в нужной стойке.
 	SetOverlayState(NewWeapon->GetWeaponData()->OverlayState);
@@ -132,28 +194,15 @@ void UNoFearWeaponComponent::EquipWeapon(int32 Index)
 	OnWeaponChanged.Broadcast(NewWeapon, OldWeapon);
 }
 
-void UNoFearWeaponComponent::HolsterWeapon()
-{
-	ANoFearWeapon* OldWeapon = GetCurrentWeapon();
-	if (!OldWeapon)
-	{
-		return;
-	}
-
-	OldWeapon->Holster();
-	CurrentIndex = INDEX_NONE;
-	SetOverlayState(UnarmedOverlayState);
-
-	OnWeaponChanged.Broadcast(nullptr, OldWeapon);
-}
-
 void UNoFearWeaponComponent::NextWeapon()
 {
 	if (Weapons.Num() == 0)
 	{
 		return;
 	}
-	const int32 From = CurrentIndex == INDEX_NONE ? LastEquippedIndex - 1 : CurrentIndex;
+	// Отсчитываем от цели, а не от текущего оружия: быстрая прокрутка колеса листает дальше, не дожидаясь смены.
+	const int32 Target = GetTargetWeaponIndex();
+	const int32 From = Target == INDEX_NONE ? LastEquippedIndex - 1 : Target;
 	EquipWeapon((From + 1 + Weapons.Num()) % Weapons.Num());
 }
 
@@ -163,7 +212,8 @@ void UNoFearWeaponComponent::PreviousWeapon()
 	{
 		return;
 	}
-	const int32 From = CurrentIndex == INDEX_NONE ? LastEquippedIndex + 1 : CurrentIndex;
+	const int32 Target = GetTargetWeaponIndex();
+	const int32 From = Target == INDEX_NONE ? LastEquippedIndex + 1 : Target;
 	EquipWeapon((From - 1 + Weapons.Num()) % Weapons.Num());
 }
 
@@ -298,7 +348,7 @@ void UNoFearWeaponComponent::OnSwitchWeaponInput(const FInputActionValue& Value)
 
 void UNoFearWeaponComponent::OnHolsterInput()
 {
-	if (GetCurrentWeapon())
+	if (GetTargetWeaponIndex() != INDEX_NONE)
 	{
 		HolsterWeapon();
 	}

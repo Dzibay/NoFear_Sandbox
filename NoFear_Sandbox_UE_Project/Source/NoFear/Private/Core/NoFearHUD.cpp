@@ -54,7 +54,7 @@ void ANoFearHUD::DrawCrosshair(ANoFearWeapon* Weapon)
 
 	FLinearColor Color = IsEnemyUnderCrosshair(Weapon) ? EnemyColor : DefaultColor;
 	const ENoFearWeaponState State = Weapon->GetWeaponState();
-	if (State == ENoFearWeaponState::Reloading || State == ENoFearWeaponState::Equipping)
+	if (State == ENoFearWeaponState::Reloading || State == ENoFearWeaponState::Equipping || State == ENoFearWeaponState::Holstering)
 	{
 		Color.A *= BusyOpacity;
 	}

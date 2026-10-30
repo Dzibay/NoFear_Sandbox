@@ -128,15 +128,25 @@ void ANoFearWeapon::Equip(ACharacter* InCharacter)
 	}
 
 	Character = InCharacter;
-	AttachToComponent(Character->GetMesh(), FAttachmentTransformRules::SnapToTargetNotIncludingScale, Data->AttachSocket);
-	Mesh->SetRelativeTransform(Data->AttachOffset);
-	SetActorHiddenInGame(false);
+	CancelActions();
 	SetActorTickEnabled(true);
 
-	ClearFireRequest();
+	if (Data->EquipGrabTime > KINDA_SMALL_NUMBER)
+	{
+		// Рука ещё тянется к кобуре: ствол остаётся на ней, а в руку перепрыгивает в момент хвата.
+		AttachToHolster();
+		GetWorldTimerManager().SetTimer(SocketSwapTimer, this, &ANoFearWeapon::AttachToHand, Data->EquipGrabTime, false);
+	}
+	else
+	{
+		AttachToHand();
+	}
+
 	SetState(ENoFearWeaponState::Equipping);
 
 	const float MontageLength = PlayCharacterMontage(Data->CharacterEquipMontage);
+	PlayTimedSounds(Data->EquipSounds);
+
 	const float Duration = Data->EquipTime > 0.f ? Data->EquipTime : MontageLength;
 	if (Duration > KINDA_SMALL_NUMBER)
 	{
@@ -153,24 +163,112 @@ void ANoFearWeapon::FinishEquip()
 {
 	if (State == ENoFearWeaponState::Equipping)
 	{
+		// Если ствол так и не добрался до руки (EquipGrabTime больше времени доставания) — отдаём его сейчас.
+		AttachToHand();
+		GetWorldTimerManager().ClearTimer(SocketSwapTimer);
+
 		SetState(ENoFearWeaponState::Idle);
 		// Если кнопку зажали ещё во время доставания — сразу стреляем.
 		HandleFireRequest();
 	}
 }
 
+float ANoFearWeapon::BeginHolster()
+{
+	if (!Data || State == ENoFearWeaponState::Holstered)
+	{
+		return 0.f;
+	}
+
+	FTimerManager& Timers = GetWorldTimerManager();
+	if (State == ENoFearWeaponState::Holstering)
+	{
+		return FMath::Max(Timers.GetTimerRemaining(HolsterTimer), 0.f);
+	}
+
+	UAnimMontage* HolsterMontage = Data->CharacterHolsterMontage;
+	UAnimMontage* EquipMontage = Data->CharacterEquipMontage;
+	// Нет монтажа убирания — играем доставание задом наперёд.
+	const bool bReversed = !HolsterMontage && EquipMontage;
+	UAnimMontage* Montage = HolsterMontage ? HolsterMontage : EquipMontage;
+	UAnimInstance* AnimInstance = GetCharacterAnimInstance();
+
+	// Если доставание ещё не доиграло, убираем с того места, где оно остановилось, иначе поза скачет.
+	const float Length = Montage ? Montage->GetPlayLength() : 0.f;
+	float Fraction = 1.f;
+	if (bReversed && Length > KINDA_SMALL_NUMBER && State == ENoFearWeaponState::Equipping && AnimInstance
+		&& AnimInstance->Montage_IsPlaying(EquipMontage))
+	{
+		Fraction = FMath::Clamp(AnimInstance->Montage_GetPosition(EquipMontage) / Length, 0.f, 1.f);
+	}
+
+	CancelActions();
+
+	// HolsterTime растягивает или сжимает весь монтаж; Fraction укорачивает убирание недоигранного доставания.
+	const float FullDuration = Data->HolsterTime > 0.f ? Data->HolsterTime : Length;
+	const float Duration = FullDuration * Fraction;
+
+	PlayTimedSounds(Data->HolsterSounds);
+
+	if (Duration <= 0.05f)
+	{
+		Holster();
+		return 0.f;
+	}
+
+	if (Montage && AnimInstance && Length > KINDA_SMALL_NUMBER)
+	{
+		const float PlayRate = Length / FullDuration;
+		if (bReversed)
+		{
+			AnimInstance->Montage_Play(Montage, -PlayRate, EMontagePlayReturnType::MontageLength, Length * Fraction);
+		}
+		else
+		{
+			AnimInstance->Montage_Play(Montage, PlayRate);
+		}
+	}
+
+	const float StowTime = Data->HolsterStowTime * Fraction;
+	if (StowTime > KINDA_SMALL_NUMBER && StowTime < Duration)
+	{
+		Timers.SetTimer(SocketSwapTimer, this, &ANoFearWeapon::AttachToHolster, StowTime, false);
+	}
+
+	SetState(ENoFearWeaponState::Holstering);
+	Timers.SetTimer(HolsterTimer, this, &ANoFearWeapon::Holster, Duration, false);
+	return Duration;
+}
+
 void ANoFearWeapon::Holster()
+{
+	CancelActions();
+
+	if (Data)
+	{
+		StopCharacterMontage(Data->CharacterEquipMontage);
+		StopCharacterMontage(Data->CharacterHolsterMontage);
+	}
+
+	AttachToHolster();
+	SetActorTickEnabled(false);
+	SetState(ENoFearWeaponState::Holstered);
+}
+
+void ANoFearWeapon::CancelActions()
 {
 	ClearFireRequest();
 	FTimerManager& Timers = GetWorldTimerManager();
 	Timers.ClearTimer(RefireTimer);
 	Timers.ClearTimer(ReloadTimer);
 	Timers.ClearTimer(EquipTimer);
+	Timers.ClearTimer(HolsterTimer);
+	Timers.ClearTimer(SocketSwapTimer);
+	ClearTimedSounds();
 
 	if (Data)
 	{
 		StopCharacterMontage(Data->CharacterReloadMontage);
-		StopCharacterMontage(Data->CharacterEquipMontage);
 		StopCharacterMontage(Data->CharacterFireMontage);
 	}
 
@@ -185,10 +283,17 @@ void ANoFearWeapon::Holster()
 	{
 		Mesh->SetAnimation(nullptr);
 	}
+}
 
-	AttachToHolster();
-	SetActorTickEnabled(false);
-	SetState(ENoFearWeaponState::Holstered);
+void ANoFearWeapon::AttachToHand()
+{
+	if (!Data || !Character)
+	{
+		return;
+	}
+	AttachToComponent(Character->GetMesh(), FAttachmentTransformRules::SnapToTargetNotIncludingScale, Data->AttachSocket);
+	Mesh->SetRelativeTransform(Data->AttachOffset);
+	SetActorHiddenInGame(false);
 }
 
 void ANoFearWeapon::AttachToHolster()
@@ -204,6 +309,45 @@ void ANoFearWeapon::AttachToHolster()
 	{
 		SetActorHiddenInGame(true);
 	}
+}
+
+void ANoFearWeapon::PlayTimedSounds(const TArray<FNoFearTimedSound>& Sounds)
+{
+	FTimerManager& Timers = GetWorldTimerManager();
+	for (const FNoFearTimedSound& Entry : Sounds)
+	{
+		if (!Entry.Sound)
+		{
+			continue;
+		}
+		if (Entry.Time <= KINDA_SMALL_NUMBER)
+		{
+			PlayHandlingSound(Entry);
+			continue;
+		}
+		FTimerHandle& Handle = SoundTimers.AddDefaulted_GetRef();
+		Timers.SetTimer(Handle, FTimerDelegate::CreateUObject(this, &ANoFearWeapon::PlayHandlingSound, Entry), Entry.Time, false);
+	}
+}
+
+void ANoFearWeapon::PlayHandlingSound(FNoFearTimedSound Sound)
+{
+	if (!Sound.Sound || !Data)
+	{
+		return;
+	}
+	UGameplayStatics::SpawnSoundAttached(Sound.Sound, Mesh, NAME_None, FVector::ZeroVector, EAttachLocation::KeepRelativeOffset,
+		false, Sound.VolumeMultiplier, 1.f, 0.f, Data->HandlingAttenuation);
+}
+
+void ANoFearWeapon::ClearTimedSounds()
+{
+	FTimerManager& Timers = GetWorldTimerManager();
+	for (FTimerHandle& Handle : SoundTimers)
+	{
+		Timers.ClearTimer(Handle);
+	}
+	SoundTimers.Reset();
 }
 
 // ---------------------------------------------------------------------------
@@ -654,7 +798,7 @@ void ANoFearWeapon::Tick(float DeltaSeconds)
 
 void ANoFearWeapon::SetAiming(bool bNewAiming)
 {
-	bAiming = bNewAiming && State != ENoFearWeaponState::Holstered;
+	bAiming = bNewAiming && State != ENoFearWeaponState::Holstered && State != ENoFearWeaponState::Holstering;
 }
 
 // ---------------------------------------------------------------------------
@@ -680,10 +824,8 @@ bool ANoFearWeapon::Reload()
 	{
 		Mesh->PlayAnimation(Data->WeaponReloadAnimation, false);
 	}
-	if (Data->ReloadSound)
-	{
-		UGameplayStatics::SpawnSoundAttached(Data->ReloadSound, Mesh);
-	}
+	ClearTimedSounds();
+	PlayTimedSounds(Data->ReloadSounds);
 
 	float Duration = Data->ReloadTime > 0.f ? Data->ReloadTime : MontageLength;
 	if (Duration <= KINDA_SMALL_NUMBER)
@@ -754,23 +896,20 @@ FVector ANoFearWeapon::GetMuzzleLocation() const
 	return Mesh->GetComponentLocation();
 }
 
+UAnimInstance* ANoFearWeapon::GetCharacterAnimInstance() const
+{
+	return Character && Character->GetMesh() ? Character->GetMesh()->GetAnimInstance() : nullptr;
+}
+
 float ANoFearWeapon::PlayCharacterMontage(UAnimMontage* Montage) const
 {
-	if (!Montage || !Character)
-	{
-		return 0.f;
-	}
-	UAnimInstance* AnimInstance = Character->GetMesh() ? Character->GetMesh()->GetAnimInstance() : nullptr;
+	UAnimInstance* AnimInstance = Montage ? GetCharacterAnimInstance() : nullptr;
 	return AnimInstance ? AnimInstance->Montage_Play(Montage) : 0.f;
 }
 
 void ANoFearWeapon::StopCharacterMontage(UAnimMontage* Montage) const
 {
-	if (!Montage || !Character)
-	{
-		return;
-	}
-	if (UAnimInstance* AnimInstance = Character->GetMesh() ? Character->GetMesh()->GetAnimInstance() : nullptr)
+	if (UAnimInstance* AnimInstance = Montage ? GetCharacterAnimInstance() : nullptr)
 	{
 		AnimInstance->Montage_Stop(0.2f, Montage);
 	}

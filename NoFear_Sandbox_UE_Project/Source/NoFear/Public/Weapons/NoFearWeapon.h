@@ -8,6 +8,7 @@ class ACharacter;
 class UNoFearWeaponData;
 class USkeletalMeshComponent;
 struct FNoFearImpactEffect;
+struct FNoFearTimedSound;
 
 UENUM(BlueprintType)
 enum class ENoFearWeaponState : uint8
@@ -16,7 +17,9 @@ enum class ENoFearWeaponState : uint8
 	Holstered,
 	Equipping,
 	Idle,
-	Reloading
+	Reloading,
+	/** Убирается с анимацией; после неё становится Holstered. */
+	Holstering
 };
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNoFearAmmoChangedSignature, int32, MagazineAmmo, int32, ReserveAmmo);
@@ -44,7 +47,13 @@ public:
 	/** Взять в руки: прикрепить к сокету персонажа и проиграть доставание. */
 	void Equip(ACharacter* InCharacter);
 
-	/** Убрать: прервать стрельбу и перезарядку, повесить на HolsterSocket (или спрятать). */
+	/**
+	 * Убрать с анимацией и звуками. Возвращает, сколько секунд это займёт; по их истечении оружие само
+	 * перейдёт в Holstered. 0 — убрано мгновенно (нет анимации убирания).
+	 */
+	float BeginHolster();
+
+	/** Убрать мгновенно: прервать стрельбу и перезарядку, повесить на HolsterSocket (или спрятать). */
 	void Holster();
 
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Weapon")
@@ -137,10 +146,20 @@ private:
 	void ApplyRecoil(float DeltaSeconds);
 	void KickArms();
 	void AttachToHolster();
+	void AttachToHand();
+
+	/** Прервать всё, что делало оружие: стрельбу, перезарядку, доставание, их таймеры и звуки. */
+	void CancelActions();
 
 	void FinishReload();
 	void FinishEquip();
 
+	/** Расставить звуки по таймерам. Звуки с нулевым временем играют сразу. */
+	void PlayTimedSounds(const TArray<FNoFearTimedSound>& Sounds);
+	void PlayHandlingSound(FNoFearTimedSound Sound);
+	void ClearTimedSounds();
+
+	class UAnimInstance* GetCharacterAnimInstance() const;
 	float PlayCharacterMontage(class UAnimMontage* Montage) const;
 	void StopCharacterMontage(class UAnimMontage* Montage) const;
 
@@ -161,6 +180,10 @@ private:
 	FTimerHandle RefireTimer;
 	FTimerHandle ReloadTimer;
 	FTimerHandle EquipTimer;
+	FTimerHandle HolsterTimer;
+	/** Переносит ствол между кобурой и рукой посреди доставания/убирания. */
+	FTimerHandle SocketSwapTimer;
+	TArray<FTimerHandle> SoundTimers;
 
 	// Разброс и отдача
 	float Bloom = 0.f;

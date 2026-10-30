@@ -68,7 +68,8 @@
 | Holster Socket | `spine_weapon_first_socket` | `pelvis_weapon_first_socket` | `spine_weapon_second_socket` |
 | Character Fire Montage | — | — | — |
 | Character Reload Montage | `AM_CharacterRifle_Reload_Montage` | `AM_CharacterPistol_Reload_Montage` | `AM_CharacterShotGun_Reload_Montage` |
-| Character Equip Montage | — | `AM_CharacterPistol_Equip_Montage` | — |
+| Character Equip Montage | `AM_CharacterRifle_Equip_Montage` | `AM_CharacterPistol_Equip_Montage` | `AM_CharacterRifle_Equip_Montage` |
+| Character Holster Montage | — (играется доставание задом наперёд) | — | — |
 | Weapon Fire Animation | `A_Rifle_Fire` | `A_Pistol_Fire` | `A_Shotgun_Fire` |
 | Weapon Reload Animation | `A_Rifle_Reload` | `A_Pistol_Reload` | `A_Shotgun_Reload` |
 
@@ -209,3 +210,41 @@
 ## 8. Камера при прицеливании
 
 Камеру ведёт GASP (`CameraAsset_SandboxCharacter`): в `CBP_SandboxCharacter` она вызывается через `IA_Aim → WantsToAim → риг Aim`. В проекте остались старые `Camera(NotUsedByDefault)` и `SpringArm`, они были активны и перебивали камеру GASP, поэтому прицел ничего не менял. Теперь `ANoFearCharacter::BeginPlay` гасит старую камеру, если на персонаже есть `GameplayCamera` (флаг `bDisableLegacySpringArmCamera`, по умолчанию включён). Делать в редакторе ничего не нужно.
+
+## 9. Звуки и анимации перезарядки, доставания и убирания
+
+Всё настраивается в `DA_*` и уже заполнено (звуки из Lyra, `Content/External/LyraContent/Audio/Sounds`). В редакторе делать ничего не нужно; ниже то, что можно подкрутить.
+
+### Звуки
+
+Раздел **Effects** в Data Asset. Каждое поле — список записей `Sound / Time / Volume Multiplier`: звук стартует через `Time` секунд после начала действия (0 — сразу).
+
+| Поле | DA_Rifle | DA_Pistol | DA_Shotgun |
+|---|---|---|---|
+| Reload Sounds | ClipOut 0.45 с, ClipIn 0.95 с, `Rifle2_Mech_01` 1.55 с | ClipOut 0.4 с, ClipIn 0.95 с, Slide 1.45 с | ClipOut 0.6 с, ClipIn 1.25 с, `Shotgun_Mech_02` 2.0 с |
+| Equip Sounds | `Lyra_WeaponSwap_01` 0.05 с | `Lyra_WeaponSwap_03` 0.4 с (в момент хвата) | `Lyra_WeaponSwap_01` 0.05 с |
+| Holster Sounds | `Lyra_WeaponSwap_02` 0 с | `Lyra_WeaponSwap_02` 0.1 с | `Lyra_WeaponSwap_03` 0 с |
+
+- Звуки магазина и затвора в исходниках тихие (громкость ассета 0.15–0.2), поэтому у них **Volume Multiplier** 2.5–3. Foley доставания/убирания громкий, ему поставлено 0.4–0.5.
+- Тайминги подогнаны под монтажи: `ClipOut` — когда рука вынимает магазин, `ClipIn` — когда вставляет. Сменил монтаж перезарядки — сдвинь `Time`.
+- Звук привязан к стволу и затухает по **Handling Attenuation** (`ATT_Default`). Перезарядка и смена оружия прерываются вместе со своими звуками: недоигранные звуки не звучат.
+
+### Убирание оружия
+
+Убирание теперь не мгновенное: ствол остаётся в руке, пока играет анимация, и только после неё уходит в кобуру (состояние `Holstering`, в нём нельзя стрелять, перезаряжаться и целиться).
+
+- **Character Holster Montage** — монтаж убирания. Если поля пустое, берётся **Character Equip Montage**, проигранный задом наперёд.
+- **Holster Time** — за сколько секунд проиграть убирание (монтаж растягивается/сжимается). 0 — по длине монтажа. Сейчас: автомат и дробовик 0.8 с, пистолет 0.7 с.
+- **Equip Grab Time** — через сколько секунд после начала доставания ствол перескакивает из кобуры в руку. 0 — сразу. Пистолет 0.5 с (рука берёт его из кобуры на 0.5 с монтажа), у автомата и дробовика ствол на спине и сразу в руке.
+- **Holster Stow Time** — через сколько секунд убирания ствол перескакивает из руки в кобуру. 0 — в самом конце. Пистолет 0.45 с: ровно тогда, когда при обратном проигрывании доставания рука отпускает ствол.
+- Если убрать оружие, пока оно ещё достаётся, убирание начнётся с того места, где остановилось доставание, и займёт пропорционально меньше времени.
+
+### Смена оружия
+
+`UNoFearWeaponComponent` сначала убирает текущее оружие, потом достаёт новое. Во время убирания можно запросить другое оружие или убрать совсем: сработает **последний** запрос. Колесо мыши листает от «целевого» оружия, а не от того, что в руках, поэтому быстрая прокрутка не залипает. Поза персонажа (Overlay State) меняется в момент доставания нового оружия.
+
+Пока оружие в руках не сменилось, `GetTargetWeaponIndex()` возвращает то, что будет в руках после смены.
+
+### Монтаж доставания автомата
+
+`AM_CharacterRifle_Equip_Montage` собран из `MM_Rifle_Equip` (слот `UpperBody`, блендинг 0.25 с). Если нужно другое доставание автомата и дробовика, подставь свой монтаж в **Character Equip Montage**: он должен играть в слоте `UpperBody`.
