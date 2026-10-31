@@ -133,6 +133,25 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|AI", meta = (ClampMin = "0"))
 	float TokenPassDelay = 2.f;
 
+	// --- Бронь укрытий ---
+
+	/** Занять укрытие: другие стрелки не выберут точку ближе ReserveRadius к нему. Прежняя бронь Owner снимается. */
+	void ReserveCover(AActor* Owner, const FVector& Location);
+
+	/** Снять бронь Owner (ушёл из укрытия, погиб). */
+	void ReleaseCover(AActor* Owner);
+
+	/** Занята ли точка чужой бронью (ближе Radius). Бронь Except не считается. */
+	bool IsCoverReserved(const FVector& Location, float Radius, const AActor* Except) const;
+
+	/** Бронь Owner. false — нет брони. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	bool GetReservedCover(const AActor* Owner, FVector& OutLocation) const;
+
+	/** Сколько укрытий сейчас занято. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	int32 GetReservedCoverCount() const;
+
 	/** Пуля пролетела от Start до End: боты ближе NearMissRadius к её пути получают опасность NearMiss. */
 	static void ReportBulletPath(const UObject* WorldContextObject, AActor* Shooter, const FVector& Start, const FVector& End);
 
@@ -164,4 +183,5 @@ private:
 	TMap<TWeakObjectPtr<AActor>, FAttackTokens> AttackTokens;
 	TArray<TWeakObjectPtr<ANoFearCharacter>> Corpses;
 	TArray<TWeakObjectPtr<ANoFearGrenade>> Grenades;
+	TMap<TWeakObjectPtr<AActor>, FVector> CoverReservations;
 };

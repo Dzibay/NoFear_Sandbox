@@ -2,7 +2,9 @@
 
 #include "AI/EnvQueryContext_NoFearThreat.h"
 #include "AI/NoFearCombatComponent.h"
+#include "AI/NoFearBotSubsystem.h"
 #include "AI/NoFearCombatSubsystem.h"
+#include "AI/NoFearCoverLibrary.h"
 #include "AIController.h"
 #include "CollisionQueryParams.h"
 #include "Engine/HitResult.h"
@@ -103,12 +105,15 @@ void UEnvQueryTest_NoFearCover::RunTest(FEnvQueryInstance& QueryInstance) const
 	TraceParams.AddIgnoredActors(AttachedActors);
 
 	const float OccupiedRadiusSq = FMath::Square(OccupiedRadius);
+	const UNoFearBotSubsystem* Bots = World->GetSubsystem<UNoFearBotSubsystem>();
+	const AActor* QuerierActor = Cast<AActor>(QueryOwner);
 
 	for (FEnvQueryInstance::ItemIterator It(this, QueryInstance); It; ++It)
 	{
 		const FVector ItemLocation = GetItemLocation(QueryInstance, It.GetIndex());
 
-		bool bOccupied = false;
+		// Укрытие, забронированное другим стрелком, занято.
+		bool bOccupied = OccupiedRadius > 0.f && Bots && Bots->IsCoverReserved(ItemLocation, OccupiedRadius, QuerierActor);
 		for (const FVector& Occupied : OccupiedLocations)
 		{
 			if (FVector::DistSquared2D(ItemLocation, Occupied) < OccupiedRadiusSq)
@@ -125,19 +130,17 @@ void UEnvQueryTest_NoFearCover::RunTest(FEnvQueryInstance& QueryInstance) const
 			Score = 1.f;
 			for (const FVector& ThreatEyes : ThreatLocations)
 			{
-				FHitResult LowHit;
-				const FVector LowPoint = ItemLocation + FVector(0.f, 0.f, LowCoverHeight);
-				if (!World->LineTraceSingleByChannel(LowHit, LowPoint, ThreatEyes, TraceChannel, TraceParams))
+				float ObstacleDistance = 0.f;
+				const ENoFearCoverType Cover = UNoFearCoverLibrary::EvaluateCover(World, ItemLocation, ThreatEyes, TraceParams, TraceChannel,
+					&ObstacleDistance, LowCoverHeight, HighCoverHeight);
+				if (Cover == ENoFearCoverType::None)
 				{
 					Score = 0.f;
 					break;
 				}
 
-				const FVector HighPoint = ItemLocation + FVector(0.f, 0.f, HighCoverHeight);
-				const bool bHighBlocked = World->LineTraceTestByChannel(HighPoint, ThreatEyes, TraceChannel, TraceParams);
-
-				float ThreatScore = bHighBlocked ? FullCoverScore : LowCoverScore;
-				if (MaxCoverDistance > 0.f && LowHit.Distance > MaxCoverDistance)
+				float ThreatScore = Cover == ENoFearCoverType::High ? FullCoverScore : LowCoverScore;
+				if (MaxCoverDistance > 0.f && ObstacleDistance > MaxCoverDistance)
 				{
 					ThreatScore *= DistantCoverMultiplier;
 				}

@@ -365,3 +365,58 @@ void UNoFearBotSubsystem::ReportBulletPath(const UObject* WorldContextObject, AA
 		}
 	}
 }
+
+void UNoFearBotSubsystem::ReserveCover(AActor* Owner, const FVector& Location)
+{
+	if (Owner)
+	{
+		CoverReservations.Add(Owner, Location);
+	}
+}
+
+void UNoFearBotSubsystem::ReleaseCover(AActor* Owner)
+{
+	CoverReservations.Remove(Owner);
+}
+
+bool UNoFearBotSubsystem::IsCoverReserved(const FVector& Location, float Radius, const AActor* Except) const
+{
+	const float RadiusSquared = FMath::Square(Radius);
+	for (const TPair<TWeakObjectPtr<AActor>, FVector>& Pair : CoverReservations)
+	{
+		const AActor* Owner = Pair.Key.Get();
+		// Бронь погибшего или исчезнувшего не держит точку (снимется при следующей брони или уходе).
+		if (!Owner || Owner == Except || UNoFearHealthComponent::IsActorDead(Owner))
+		{
+			continue;
+		}
+		if (FVector::DistSquared2D(Pair.Value, Location) < RadiusSquared)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool UNoFearBotSubsystem::GetReservedCover(const AActor* Owner, FVector& OutLocation) const
+{
+	if (const FVector* Location = CoverReservations.Find(TWeakObjectPtr<AActor>(const_cast<AActor*>(Owner))))
+	{
+		OutLocation = *Location;
+		return true;
+	}
+	return false;
+}
+
+int32 UNoFearBotSubsystem::GetReservedCoverCount() const
+{
+	int32 Count = 0;
+	for (const TPair<TWeakObjectPtr<AActor>, FVector>& Pair : CoverReservations)
+	{
+		if (Pair.Key.IsValid() && !UNoFearHealthComponent::IsActorDead(Pair.Key.Get()))
+		{
+			++Count;
+		}
+	}
+	return Count;
+}

@@ -1,5 +1,6 @@
 #include "NoFearBotAssetsLibrary.h"
 
+#include "AI/BTTask_NoFearCoverFight.h"
 #include "AI/BTTask_NoFearFindLocation.h"
 #include "AI/BTTask_NoFearLookAround.h"
 #include "AI/BTTask_NoFearMeleeAttack.h"
@@ -138,6 +139,11 @@ namespace
 			{ FNoFearBotKeys::ReturnHome, UBlackboardKeyType_Bool::StaticClass(), TEXT("Монстр бросил цель за территорией и идёт домой") },
 			{ FNoFearBotKeys::WanderCenter, UBlackboardKeyType_Vector::StaticClass(), TEXT("Вокруг чего бродить: дом или вожак стаи") },
 			{ FNoFearBotKeys::KeepAway, UBlackboardKeyType_Bool::StaticClass(), TEXT("Плевун отступает, держит дистанцию") },
+			{ FNoFearBotKeys::CoverLocation, UBlackboardKeyType_Vector::StaticClass(), TEXT("Укрытие стрелка (не задано — укрытия нет)") },
+			{ FNoFearBotKeys::InCover, UBlackboardKeyType_Bool::StaticClass(), TEXT("Стрелок стоит в своём укрытии") },
+			{ FNoFearBotKeys::CoverIsLow, UBlackboardKeyType_Bool::StaticClass(), TEXT("Укрытие низкое: сидеть за ним, стрелять стоя") },
+			{ FNoFearBotKeys::IsRetreating, UBlackboardKeyType_Bool::StaticClass(), TEXT("Раненый стрелок отходит в дальнее укрытие") },
+			{ FNoFearBotKeys::InWeaponRange, UBlackboardKeyType_Bool::StaticClass(), TEXT("Цель в удобной дистанции оружия") },
 		};
 
 		bool bChanged = bCreated;
@@ -369,7 +375,8 @@ namespace
 
 	/**
 	 * Стрелок (враги, союзники, напарник):
-	 *   есть цель → стрелять, пока можно, иначе подойти туда, где её видели (в пределах поводка);
+	 *   есть цель и укрытие → дойти до укрытия и драться из него (спрятаться, выглянуть, очередь, назад);
+	 *   есть цель без укрытия → стрелять, если цель в дистанции оружия, и сменить точку; иначе подойти;
 	 *   напарник идёт за лидером → держаться рядом;
 	 *   есть что проверить → сходить, осмотреться, забыть;
 	 *   иначе → вернуться на свою точку и стоять.
@@ -380,12 +387,23 @@ namespace
 
 		UBehaviorTreeGraphNode* Combat = Builder.Selector(Root, TEXT("Бой"));
 		Builder.IfSet(Combat, FNoFearBotKeys::AttackTarget, TEXT("Both"), TEXT("Есть цель?"));
-		UBehaviorTreeGraphNode* Shoot = Builder.Task(Combat, UBTTask_NoFearShoot::StaticClass());
-		Builder.IfSet(Shoot, FNoFearBotKeys::CanFire, TEXT("Both"), TEXT("Можно стрелять?"));
-		UBehaviorTreeGraphNode* Chase = Builder.Sequence(Combat, TEXT("Сблизиться"));
-		Builder.Task(Chase, UBTTask_NoFearFindChaseLocation::StaticClass());
-		Builder.MoveTo(Chase, FNoFearBotKeys::MoveGoal, 50.f, TEXT("К цели"));
-		Builder.Wait(Chase, 0.3f);
+		UBehaviorTreeGraphNode* InCover = Builder.Sequence(Combat, TEXT("Укрытие"));
+		Builder.IfSet(InCover, FNoFearBotKeys::CoverLocation, TEXT("Both"), TEXT("Есть укрытие?"));
+		Builder.MoveTo(InCover, FNoFearBotKeys::CoverLocation, 30.f, TEXT("В укрытие"));
+		Builder.Task(InCover, UBTTask_NoFearCoverFight::StaticClass());
+		UBehaviorTreeGraphNode* Open = Builder.Sequence(Combat, TEXT("В открытую"));
+		// Только LowerPriority: CanFire мигает на ходу, а начатый шаг вбок надо дошагать.
+		Builder.IfSet(Open, FNoFearBotKeys::CanFire, TEXT("LowerPriority"), TEXT("Можно стрелять?"));
+		Builder.IfSet(Open, FNoFearBotKeys::InWeaponRange, TEXT("LowerPriority"), TEXT("В дистанции оружия?"));
+		Builder.Task(Open, UBTTask_NoFearShoot::StaticClass(), { { TEXT("BurstsMin"), TEXT("1") }, { TEXT("BurstsMax"), TEXT("2") } });
+		UBehaviorTreeGraphNode* OpenFind = Builder.Task(Open, UBTTask_NoFearFindCombatPosition::StaticClass());
+		Builder.Decorator(OpenFind, UBTDecorator_ForceSuccess::StaticClass());
+		UBehaviorTreeGraphNode* OpenMove = Builder.MoveTo(Open, FNoFearBotKeys::MoveGoal, 50.f, TEXT("На новую точку"));
+		Builder.Decorator(OpenMove, UBTDecorator_ForceSuccess::StaticClass());
+		UBehaviorTreeGraphNode* Reposition = Builder.Sequence(Combat, TEXT("Сменить позицию"));
+		Builder.Task(Reposition, UBTTask_NoFearFindCombatPosition::StaticClass());
+		Builder.MoveTo(Reposition, FNoFearBotKeys::MoveGoal, 50.f, TEXT("К точке боя"));
+		Builder.Wait(Reposition, 0.3f);
 		Builder.Wait(Combat, 0.5f, 0.2f);
 
 		UBehaviorTreeGraphNode* Follow = Builder.Sequence(Root, TEXT("За лидером"));

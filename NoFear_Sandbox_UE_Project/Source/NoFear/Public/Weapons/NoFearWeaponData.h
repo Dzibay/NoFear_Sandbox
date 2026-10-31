@@ -208,6 +208,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage", meta = (ClampMin = 100))
 	float Range = 15000.f;
 
+	/**
+	 * На какой дистанции до цели бот с этим оружием держится, см (укрытия и позиции выбираются в ней).
+	 * 0 / 0 — по типу оружия: дробовик 0–700 (сближается), пистолет 400–1200, винтовка 800–2000.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage", meta = (ClampMin = 0))
+	FVector2D BotPreferredRange = FVector2D::ZeroVector;
+
 	/** С какого расстояния урон начинает падать, см. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage", meta = (ClampMin = 0))
 	float FalloffStart = 3000.f;
@@ -386,6 +393,21 @@ public:
 	TObjectPtr<UAnimSequenceBase> WeaponReloadAnimation = nullptr;
 
 	float GetFireInterval() const { return 60.f / FMath::Max(RoundsPerMinute, 1.f); }
+
+	/** BotPreferredRange или значение по типу оружия. */
+	FVector2D GetBotPreferredRange() const
+	{
+		if (BotPreferredRange.Y > 0.f)
+		{
+			return BotPreferredRange;
+		}
+		switch (WeaponType)
+		{
+		case ENoFearWeaponType::Shotgun: return FVector2D(0.f, 700.f);
+		case ENoFearWeaponType::Pistol: return FVector2D(400.f, 1200.f);
+		default: return FVector2D(800.f, 2000.f);
+		}
+	}
 
 	const FNoFearImpactEffect& GetImpactEffect(EPhysicalSurface Surface) const
 	{

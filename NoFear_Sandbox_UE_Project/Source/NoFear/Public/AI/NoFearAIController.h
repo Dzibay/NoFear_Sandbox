@@ -56,6 +56,16 @@ struct NOFEAR_API FNoFearBotKeys
 	static const FName WanderCenter;
 	/** Bool: цель слишком близко, монстр (плевун) отступает, чтобы держать дистанцию. */
 	static const FName KeepAway;
+	/** Vector: укрытие стрелка (не задано — укрытия нет). */
+	static const FName CoverLocation;
+	/** Bool: стрелок стоит в своём укрытии. */
+	static const FName InCover;
+	/** Bool: укрытие низкое (сидеть за ним). */
+	static const FName CoverIsLow;
+	/** Bool: раненый стрелок отходит. */
+	static const FName IsRetreating;
+	/** Bool: цель в удобной дистанции оружия. */
+	static const FName InWeaponRange;
 };
 
 /** Уровень тревоги бота. Пишется в блэкборд (AlertState) и показывается значком над головой. */

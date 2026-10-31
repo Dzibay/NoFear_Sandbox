@@ -48,9 +48,23 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Combat")
 	FVector GetLastKnownTargetLocation() const { return LastKnownTargetLocation; }
 
-	/** Цель видна и время реакции после её обнаружения прошло. */
+	/** Цель видна, время реакции после её обнаружения прошло и на линии огня нет своих. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Combat")
 	bool IsReadyToFire() const;
+
+	/** На линии огня до цели стоит свой или нейтральный (стрелять нельзя). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Combat")
+	bool IsFriendlyInLineOfFire() const { return BlockingFriend.IsValid(); }
+
+	/** Кто загораживает линию огня (пусто — никто). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Combat")
+	AActor* GetBlockingFriend() const { return BlockingFriend.Get(); }
+
+	/**
+	 * Свой или нейтральный Shooter персонаж ближе Clearance к отрезку Start–End (кроме концов: стрелка и цели).
+	 * Враги не мешают — по ним можно стрелять.
+	 */
+	static AActor* FindFriendInLine(const AActor* Shooter, const AActor* Target, const FVector& Start, const FVector& End, float Clearance);
 
 	// --- Точность ---
 
@@ -190,6 +204,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Accuracy", meta = (ClampMin = "0"))
 	float TrackingLag = 0.15f;
 
+	/** Не стрелять, если свой ближе этого к линии огня (к капсуле), см. 0 — не проверять. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Accuracy", meta = (ClampMin = "0"))
+	float FriendlyFireClearance = 40.f;
+
 	/** Вероятность целиться в голову, а не в корпус. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Accuracy", meta = (ClampMin = "0", ClampMax = "1"))
 	float HeadshotChance = 0.08f;
@@ -246,6 +264,7 @@ private:
 
 	TWeakObjectPtr<AActor> CurrentTarget;
 	TWeakObjectPtr<AActor> LastShooter;
+	TWeakObjectPtr<AActor> BlockingFriend;
 	bool bManualTarget = false;
 
 	bool bHasLineOfSight = false;

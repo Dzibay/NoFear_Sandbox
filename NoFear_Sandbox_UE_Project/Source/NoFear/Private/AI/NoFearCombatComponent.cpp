@@ -2,6 +2,9 @@
 
 #include "AI/NoFearCombatSubsystem.h"
 #include "Animation/NoFearPoseComponent.h"
+#include "Core/NoFearHealthComponent.h"
+#include "Core/NoFearTeam.h"
+#include "EngineUtils.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "Blueprint/AIBlueprintHelperLibrary.h"
 #include "CollisionQueryParams.h"
@@ -149,7 +152,41 @@ float UNoFearCombatComponent::GetTimeSinceTargetSeen() const
 bool UNoFearCombatComponent::IsReadyToFire() const
 {
 	// Пошатнувшийся не стреляет (UNoFearPoseComponent::Stagger).
-	return CurrentTarget.IsValid() && bHasLineOfSight && GetNow() >= ReadyToFireTime && !UNoFearPoseComponent::IsActorStaggered(GetOwner());
+	return CurrentTarget.IsValid() && bHasLineOfSight && GetNow() >= ReadyToFireTime && !BlockingFriend.IsValid()
+		&& !UNoFearPoseComponent::IsActorStaggered(GetOwner());
+}
+
+AActor* UNoFearCombatComponent::FindFriendInLine(const AActor* Shooter, const AActor* Target, const FVector& Start, const FVector& End, float Clearance)
+{
+	UWorld* World = Shooter ? Shooter->GetWorld() : nullptr;
+	if (!World || Clearance <= 0.f)
+	{
+		return nullptr;
+	}
+	for (TActorIterator<ACharacter> It(World); It; ++It)
+	{
+		ACharacter* Other = *It;
+		if (Other == Shooter || Other == Target || UNoFearHealthComponent::IsActorDead(Other) || UNoFearTeamLibrary::AreHostile(Shooter, Other))
+		{
+			continue;
+		}
+		const UCapsuleComponent* Capsule = Other->GetCapsuleComponent();
+		if (!Capsule)
+		{
+			continue;
+		}
+		// Ось капсулы против линии огня.
+		const float Radius = Capsule->GetScaledCapsuleRadius();
+		const float AxisHalf = FMath::Max(Capsule->GetScaledCapsuleHalfHeight() - Radius, 0.f);
+		const FVector Center = Capsule->GetComponentLocation();
+		FVector OnLine, OnAxis;
+		FMath::SegmentDistToSegmentSafe(Start, End, Center - FVector(0.f, 0.f, AxisHalf), Center + FVector(0.f, 0.f, AxisHalf), OnLine, OnAxis);
+		if (FVector::Dist(OnLine, OnAxis) < Radius + Clearance)
+		{
+			return Other;
+		}
+	}
+	return nullptr;
 }
 
 FVector UNoFearCombatComponent::ComputeShotDirection(FVector MuzzleLocation)
@@ -291,6 +328,7 @@ void UNoFearCombatComponent::UpdateLineOfSight()
 	if (!Target)
 	{
 		bHasLineOfSight = false;
+		BlockingFriend = nullptr;
 		return;
 	}
 
@@ -325,6 +363,9 @@ void UNoFearCombatComponent::UpdateLineOfSight()
 	}
 
 	bHasLineOfSight = bVisible;
+
+	// Свои на линии огня: не стрелять, пока не отойдут (или пока бот не сместится).
+	BlockingFriend = bVisible && FriendlyFireClearance > 0.f ? FindFriendInLine(Owner, Target, Eyes, Chest, FriendlyFireClearance) : nullptr;
 }
 
 void UNoFearCombatComponent::UpdateSuppression(float DeltaTime)
