@@ -35,7 +35,7 @@ public:
 
 	/**
 	 * Стая монстра. Монстры с одинаковым именем — одна стая, где бы ни стояли. Пусто — стая собирается сама
-	 * из монстров без имени, стоящих рядом (ANoFearMonsterAIController::PackFormRadius).
+	 * из монстров без имени, стоящих рядом (UNoFearPackSubsystem::PackFormRadius).
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Team")
 	FName PackName;

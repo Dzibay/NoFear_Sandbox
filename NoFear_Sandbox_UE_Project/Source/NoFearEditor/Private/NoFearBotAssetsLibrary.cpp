@@ -130,14 +130,15 @@ namespace
 			{ FNoFearBotKeys::Leader, UBlackboardKeyType_Object::StaticClass(), TEXT("За кем идёт напарник") },
 			{ FNoFearBotKeys::IsFollowing, UBlackboardKeyType_Bool::StaticClass(), TEXT("Напарник идёт за лидером") },
 			{ FNoFearBotKeys::AlertState, UBlackboardKeyType_Int::StaticClass(), TEXT("Тревога: 0 спокоен, 1 насторожен, 2 бой, 3 поиск (ENoFearAlertState)") },
-			{ FNoFearBotKeys::FleeLocation, UBlackboardKeyType_Vector::StaticClass(), TEXT("Куда бежать или отходить (мирные)") },
+			{ FNoFearBotKeys::FleeLocation, UBlackboardKeyType_Vector::StaticClass(), TEXT("Куда бежать или отходить (мирные; монстр, когда стая разбегается)") },
 			{ FNoFearBotKeys::IsPanicking, UBlackboardKeyType_Bool::StaticClass(), TEXT("Мирный в панике и бежит") },
 			{ FNoFearBotKeys::IsCowering, UBlackboardKeyType_Bool::StaticClass(), TEXT("Мирный прячется: присел, закрыл голову") },
 			{ FNoFearBotKeys::IsWary, UBlackboardKeyType_Bool::StaticClass(), TEXT("Мирный насторожен и отходит шагом") },
 			{ FNoFearBotKeys::HasAttackToken, UBlackboardKeyType_Bool::StaticClass(), TEXT("Монстру можно бить цель (жетон атаки)") },
 			{ FNoFearBotKeys::IsRoaring, UBlackboardKeyType_Bool::StaticClass(), TEXT("Монстр рычит и стоит") },
-			{ FNoFearBotKeys::ReturnHome, UBlackboardKeyType_Bool::StaticClass(), TEXT("Монстр бросил цель за территорией и идёт домой") },
-			{ FNoFearBotKeys::WanderCenter, UBlackboardKeyType_Vector::StaticClass(), TEXT("Вокруг чего бродить: дом или вожак стаи") },
+			{ FNoFearBotKeys::PackGoal, UBlackboardKeyType_Vector::StaticClass(), TEXT("Куда стая ведёт монстра: место в строю или в кольце вокруг цели") },
+			{ FNoFearBotKeys::IsScattering, UBlackboardKeyType_Bool::StaticClass(), TEXT("Вожак погиб, монстр разбегается к FleeLocation") },
+			{ FNoFearBotKeys::WanderCenter, UBlackboardKeyType_Vector::StaticClass(), TEXT("Вокруг чего бродить: точка впереди по курсу или вожак стаи") },
 			{ FNoFearBotKeys::KeepAway, UBlackboardKeyType_Bool::StaticClass(), TEXT("Плевун отступает, держит дистанцию") },
 			{ FNoFearBotKeys::CoverLocation, UBlackboardKeyType_Vector::StaticClass(), TEXT("Укрытие стрелка (не задано — укрытия нет)") },
 			{ FNoFearBotKeys::InCover, UBlackboardKeyType_Bool::StaticClass(), TEXT("Стрелок стоит в своём укрытии") },
@@ -424,14 +425,16 @@ namespace
 	}
 
 	/**
-	 * Монстр (обычный и агрессивный):
+	 * Монстр (обычный и агрессивный). Куда встать, решает стая (UNoFearPackSubsystem), дерево только исполняет:
 	 *   рычит → стоять;
+	 *   вожак погиб → бежать к FleeLocation;
 	 *   есть цель и надо держать дистанцию (плевун) → отбежать от неё;
- *   есть цель и жетон → догнать и ударить (атаку выбирает UNoFearMeleeComponent);
-	 *   есть цель без жетона → кружить вокруг неё на 400–600 см;
-	 *   цель ушла за территорию → шагом домой;
+	 *   есть цель и жетон (своя волна, самооборона, одиночка) → догнать и ударить (атаку выбирает UNoFearMeleeComponent);
+	 *   есть цель и место от стаи → бежать цепью к цели, на своё место в кольце и стоять там;
+	 *   есть цель без жетона и стаи → кружить вокруг неё на 400–600 см;
+	 *   есть место в строю → идти клином за вожаком;
 	 *   есть что проверить → сбегать, осмотреться, забыть;
-	 *   иначе → бродить вокруг дома (вожак) или вожака (остальные).
+	 *   иначе → бродить вперёд по курсу (вожак, одиночка) или вокруг вожака.
 	 */
 	void BuildMonsterTree(FTreeBuilder& Builder)
 	{
@@ -439,6 +442,12 @@ namespace
 
 		UBehaviorTreeGraphNode* RoarWait = Builder.Wait(Root, 1.2f);
 		Builder.IfSet(RoarWait, FNoFearBotKeys::IsRoaring, TEXT("Both"), TEXT("Рычит?"));
+
+		UBehaviorTreeGraphNode* Scatter = Builder.Sequence(Root, TEXT("Разбежаться"));
+		Builder.IfSet(Scatter, FNoFearBotKeys::IsScattering, TEXT("Both"), TEXT("Вожак погиб?"));
+		UBehaviorTreeGraphNode* RunAway = Builder.MoveTo(Scatter, FNoFearBotKeys::FleeLocation, 150.f, TEXT("Прочь"));
+		Builder.Decorator(RunAway, UBTDecorator_ForceSuccess::StaticClass());
+		Builder.Wait(Scatter, 0.5f);
 
 		UBehaviorTreeGraphNode* Attack = Builder.Selector(Root, TEXT("Атака"));
 		Builder.IfSet(Attack, FNoFearBotKeys::AttackTarget, TEXT("Both"), TEXT("Есть цель?"));
@@ -450,17 +459,22 @@ namespace
 		Builder.IfSet(Hit, FNoFearBotKeys::HasAttackToken, TEXT("Both"), TEXT("Есть жетон?"));
 		Builder.Task(Hit, UBTTask_NoFearMeleeAttack::StaticClass());
 		Builder.Wait(Hit, 0.2f);
+		UBehaviorTreeGraphNode* Slot = Builder.Sequence(Attack, TEXT("На место"));
+		Builder.IfSet(Slot, FNoFearBotKeys::PackGoal, TEXT("Both"), TEXT("Стая указала место?"));
+		UBehaviorTreeGraphNode* GoSlot = Builder.MoveTo(Slot, FNoFearBotKeys::PackGoal, 80.f, TEXT("К месту"));
+		Builder.Decorator(GoSlot, UBTDecorator_ForceSuccess::StaticClass());
+		Builder.Wait(Slot, 0.3f);
 		UBehaviorTreeGraphNode* Circle = Builder.Sequence(Attack, TEXT("Кружить"));
 		Builder.Task(Circle, UBTTask_NoFearFindCircleLocation::StaticClass());
 		Builder.MoveTo(Circle, FNoFearBotKeys::MoveGoal, 60.f, TEXT("По кругу"));
 		Builder.Wait(Circle, 0.3f, 0.2f);
 		Builder.Wait(Attack, 0.3f);
 
-		UBehaviorTreeGraphNode* GoHome = Builder.Sequence(Root, TEXT("Домой"));
-		Builder.IfSet(GoHome, FNoFearBotKeys::ReturnHome, TEXT("Both"), TEXT("Возвращается?"));
-		UBehaviorTreeGraphNode* WalkHome = Builder.MoveTo(GoHome, FNoFearBotKeys::HomeLocation, 150.f, TEXT("К дому"));
-		Builder.Decorator(WalkHome, UBTDecorator_ForceSuccess::StaticClass());
-		Builder.Task(GoHome, UBTTask_NoFearClearBlackboardKey::StaticClass(), { { TEXT("BlackboardKey"), KeyValue(FNoFearBotKeys::ReturnHome) } });
+		UBehaviorTreeGraphNode* Follow = Builder.Sequence(Root, TEXT("За вожаком"));
+		Builder.IfSet(Follow, FNoFearBotKeys::PackGoal, TEXT("Both"), TEXT("Есть место в строю?"));
+		UBehaviorTreeGraphNode* GoFollow = Builder.MoveTo(Follow, FNoFearBotKeys::PackGoal, 120.f, TEXT("В строй"));
+		Builder.Decorator(GoFollow, UBTDecorator_ForceSuccess::StaticClass());
+		Builder.Wait(Follow, 0.5f);
 
 		UBehaviorTreeGraphNode* Investigate = Builder.Sequence(Root, TEXT("Проверить"));
 		Builder.IfSet(Investigate, FNoFearBotKeys::InvestigateLocation, TEXT("Both"), TEXT("Есть что проверить?"));

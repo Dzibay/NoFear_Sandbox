@@ -2,23 +2,27 @@
 
 #include "CoreMinimal.h"
 #include "AI/NoFearAIController.h"
+#include "AI/NoFearPackSubsystem.h"
 #include "NoFearMonsterAIController.generated.h"
 
 class UNoFearMeleeComponent;
 class UNoFearMonsterAttack;
 
 /**
- * Монстр: бродит стаей вокруг дома, заметив врага — рычит (стая в PackAlarmRadius бросается следом) и нападает
- * набором атак UNoFearMeleeComponent (удар с места, рывок...).
+ * Монстр: бродит стаей по карте, заметив врага — рычит, и стая нападает вся разом; бьёт набором атак
+ * UNoFearMeleeComponent (удар с места, рывок...).
  *
- * - Окружение: бить одну цель одновременно могут двое (жетоны атаки UNoFearBotSubsystem), остальные кружат вокруг
- *   на 400–600 см и ждут; ударивший уступает жетон ожидающему.
- * - Стая: монстры с одинаковым PackName у тела, а без имени — стоящие рядом (PackFormRadius). Спокойная стая бродит
- *   за вожаком, территория у стаи общая — вокруг дома вожака.
- * - Охотится на слух: видит хуже стрелков, зато слышит дальше и на шум бежит, а не идёт.
- * - Территория: цель дальше TerritoryRadius + TerritoryMargin от дома бросает и шагом идёт назад, но обидчика
- *   запоминает: вернётся на территорию — узнает сразу и нападёт в первую очередь.
- * - Агрессивный монстр (команда AggroMonster): одиночка без стаи, территории и очереди за жетоном, бьёт ближайшего,
+ * - Стая (UNoFearPackSubsystem): монстры с одинаковым PackName у тела, а без имени — стоящие рядом. Дома и территории
+ *   нет: вожак ведёт стаю куда глаза глядят, остальные идут клином следом. Цель, которую видит один (или которая
+ *   в него попала, хоть издалека), за долю секунды узнаёт вся стая и бежит к ней цепью.
+ * - Нападение: вожак подводит стаю к цели и ждёт отставших, стая расходится кольцом вокруг цели (на дальние места —
+ *   в обход) и бьёт волнами по 2–3 с разных сторон; остальные держат кольцо и отрезают отход. Подошедшего вплотную
+ *   бьёт и без очереди.
+ * - Погиб вожак — стая разбегается от угрозы, потом новый вожак рыком собирает её снова.
+ * - Охотится на слух: видит хуже стрелков, зато слышит дальше и на шум бежит, а не идёт. Обидчика помнит
+ *   (GrudgeTime) и гонит хоть через всю карту.
+ * - Монстр без стаи бьёт по жетонам атаки UNoFearBotSubsystem: одновременно двое на цель, остальные кружат.
+ * - Агрессивный монстр (команда AggroMonster): одиночка без стаи и очереди за жетоном, бьёт ближайшего,
  *   легко переключается и бьёт чаще.
  * Дерево: BT_NoFear_Monster.
  */
@@ -48,7 +52,15 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
 	int32 GetPackSize() const;
 
-	/** Можно бить цель (жетон атаки есть или он не нужен). */
+	/** Что сейчас делает стая монстра (одиночка — Roam). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
+	ENoFearPackState GetPackState() const;
+
+	/** Вожак погиб, монстр разбегается. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
+	bool IsScattering() const;
+
+	/** Можно бить цель (жетон атаки, очередь в волне стаи или он не нужен). */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
 	bool HasAttackToken() const { return bHasAttackToken; }
 
@@ -63,27 +75,22 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Monster")
 	void Roar();
 
-	/** Центр территории: дом вожака стаи. */
-	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
-	FVector GetTerritoryCenter() const;
-
-	/** Точка за границей территории (с запасом TerritoryMargin). Агрессивный монстр территории не имеет. */
-	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
-	bool IsOutsideTerritory(FVector Location) const;
-
-	/** Монстр помнит обиду на Actor (тот нападал на него или ушёл за территорию). */
+	/** Монстр помнит обиду на Actor (тот нападал на него). */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
 	bool HasGrudgeAgainst(const AActor* Actor) const;
 
-	/** Бросил цель за границей территории и идёт домой. */
+	/** Радиус кольца вокруг цели: середина CircleMinRadius..CircleMaxRadius, см. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
-	bool IsReturningHome() const;
+	float GetRingRadius() const { return 0.5f * (CircleMinRadius + CircleMaxRadius); }
+
+	/** Стая сообщает, где цель. Поднятый стаей сам не рычит: рычит тот, кто заметил. */
+	void ReceivePackAlarm(AActor* Threat, const FVector& ThreatLocation);
 
 	/** Если у тела нет UNoFearMeleeComponent, добавить его с настройками по умолчанию. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI")
 	bool bAddMeleeComponentIfMissing = true;
 
-	/** Становиться в очередь за жетоном атаки (не больше двоих на цель). */
+	/** Бить по очереди: в стае — волнами и встаёт в кольцо, без стаи — по жетонам (не больше двоих на цель). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster")
 	bool bUseAttackTokens = true;
 
@@ -94,26 +101,38 @@ public:
 	UPROPERTY(EditAnywhere, Instanced, BlueprintReadOnly, Category = "NoFear|Monster")
 	TArray<TObjectPtr<UNoFearMonsterAttack>> AttackSet;
 
-	/** На каком расстоянии от цели кружит без жетона (задача Find Circle Location), см. */
+	/** На каком расстоянии от цели кружит без жетона и стоит в кольце стаи (середина), см. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster", meta = (ClampMin = "0"))
 	float CircleMinRadius = 400.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster", meta = (ClampMin = "0"))
 	float CircleMaxRadius = 600.f;
 
+	/** Цель, которая сама била монстра (SelfDefenseTime) и стоит ближе этого, монстр бьёт без очереди, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster", meta = (ClampMin = "0"))
+	float SelfDefenseDistance = 700.f;
+
+	/** Сколько секунд после удара или попадания цели монстр отвечает ей без очереди. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster", meta = (ClampMin = "0"))
+	float SelfDefenseTime = 2.f;
+
+	/** Сколько помнит обидчика, сек. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster", meta = (ClampMin = "0"))
+	float GrudgeTime = 90.f;
+
+	/** Прибавка к оценке цели за обиду. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster", meta = (ClampMin = "0"))
+	float GrudgeScoreBonus = 1.f;
+
 	// --- Стая ---
 
-	/** Монстры без PackName ближе этого друг к другу (по цепочке) — одна стая, см. */
+	/** Прибавка к оценке цели стаи: стая бьёт одну цель. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pack", meta = (ClampMin = "0"))
-	float PackFormRadius = 1500.f;
+	float PackTargetBonus = 1.f;
 
-	/** Рык поднимает членов стаи в этом радиусе, см. */
+	/** Вожак (и одиночка) бродит шагами по столько вперёд по своему курсу, см. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pack", meta = (ClampMin = "0"))
-	float PackAlarmRadius = 3000.f;
-
-	/** Как часто пересобирать стаю, сек. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pack", meta = (ClampMin = "0.1"))
-	float PackUpdateInterval = 2.f;
+	float RoamStride = 1200.f;
 
 	/** Сколько длится рык, сек (монстр стоит). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pack", meta = (ClampMin = "0"))
@@ -126,24 +145,6 @@ public:
 	/** Рык слышно на столько, см (мирные настораживаются). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pack", meta = (ClampMin = "0"))
 	float RoarNoiseRange = 2500.f;
-
-	// --- Территория ---
-
-	/** Радиус территории вокруг дома вожака, см. 0 — без территории. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Territory", meta = (ClampMin = "0"))
-	float TerritoryRadius = 2500.f;
-
-	/** Уже выбранную цель преследует ещё столько за границей, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Territory", meta = (ClampMin = "0"))
-	float TerritoryMargin = 500.f;
-
-	/** Сколько помнит обидчика, сек. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Territory", meta = (ClampMin = "0"))
-	float GrudgeTime = 90.f;
-
-	/** Прибавка к оценке цели за обиду. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Territory", meta = (ClampMin = "0"))
-	float GrudgeScoreBonus = 1.f;
 
 	// --- Агрессивный ---
 
@@ -166,42 +167,51 @@ protected:
 	virtual void UpdateMovementStance() override;
 	virtual void WriteBlackboard() override;
 	virtual void ShareAlarm() override;
-	virtual bool CanInvestigateLocation(const FVector& Location) const override;
 
 	/** Настроить компонент ближнего боя тела под вид монстра: набор атак AttackSet и т. п. */
 	virtual void ConfigureMelee(UNoFearMeleeComponent* Melee);
 
-	/** Кружит вокруг цели без жетона. */
+	/** Кружит вокруг цели без жетона (или стоит на своём месте в кольце стаи). */
 	bool IsCircling() const;
 
 	/** Расстояние до текущей цели по горизонтали (без цели — очень большое). */
 	float GetTargetDistance2D() const;
 
+	/** Решение стаи для этого монстра. false — не в стае (одиночка или стая ещё не собрана). */
+	bool GetPackView(FNoFearPackMemberView& OutView) const;
+
+	/** Стая ведёт монстра к точке (место в строю, в кольце, бегство). */
+	bool GetPackGoal(FVector& OutGoal) const;
+
 private:
 	UFUNCTION()
 	void HandleAttackFinished(AActor* Target);
 
-	void UpdatePack();
 	void UpdateGrudges();
 	void UpdateAttackToken();
+	void ReleaseToken();
 	void AlarmPack(AActor* Threat);
 	void EndRoar();
 	void SetBlackboardBool(FName Key, bool bValue);
+	/** Куда бродить вожаку или одиночке: точка впереди по курсу, курс понемногу гуляет. */
+	FVector GetRoamCenter();
 
 	TWeakObjectPtr<UNoFearMeleeComponent> ConfiguredMelee;
-
-	TArray<TWeakObjectPtr<ANoFearMonsterAIController>> PackMembers;
-	TWeakObjectPtr<ANoFearMonsterAIController> PackLeader;
-	double NextPackUpdateTime = 0.0;
 
 	TMap<TWeakObjectPtr<AActor>, double> Grudges;
 
 	bool bHasAttackToken = false;
 	TWeakObjectPtr<AActor> TokenTarget;
+	/** Защищается от цели вплотную (с запасом, чтобы не дёргаться на границе). */
+	bool bSelfDefense = false;
 
 	bool bRoaring = false;
 	int32 RoarCount = 0;
 	double NextRoarTime = 0.0;
-	double NextPackAlarmTime = 0.0;
 	FTimerHandle RoarTimer;
+
+	FVector RoamHeading = FVector::ForwardVector;
+	double NextRoamTurnTime = 0.0;
+	FVector RoamCenter = FVector::ZeroVector;
+	double NextRoamCenterTime = 0.0;
 };

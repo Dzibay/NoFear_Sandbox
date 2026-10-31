@@ -132,8 +132,9 @@ bool ANoFearJumperAIController::Dodge(FVector AimDirection)
 void ANoFearJumperAIController::UpdateMovementStance()
 {
 	Super::UpdateMovementStance();
-	// К цели — спринтом.
-	if (CurrentTarget.IsValid() && !IsCircling())
+	// К цели — спринтом: в свою очередь или без стаи. На место в строю и в кольце бежит вместе со всеми.
+	FVector PackGoal;
+	if (CurrentTarget.IsValid() && !IsCircling() && !IsScattering() && (HasAttackToken() || !GetPackGoal(PackGoal)))
 	{
 		SetMovementFlags(false, false, false, true);
 	}

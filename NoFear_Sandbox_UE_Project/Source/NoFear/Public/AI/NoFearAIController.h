@@ -38,7 +38,7 @@ struct NOFEAR_API FNoFearBotKeys
 	static const FName IsFollowing;
 	/** Int: ENoFearAlertState (0 спокоен, 1 насторожен, 2 бой, 3 поиск). */
 	static const FName AlertState;
-	/** Vector: куда бежать или отходить (мирные). */
+	/** Vector: куда бежать или отходить (мирные; монстр, когда стая разбегается). */
 	static const FName FleeLocation;
 	/** Bool: мирный в панике и бежит. */
 	static const FName IsPanicking;
@@ -50,9 +50,11 @@ struct NOFEAR_API FNoFearBotKeys
 	static const FName HasAttackToken;
 	/** Bool: монстр рычит (стоит на месте). */
 	static const FName IsRoaring;
-	/** Bool: монстр бросил цель за границей территории и идёт домой. */
-	static const FName ReturnHome;
-	/** Vector: вокруг чего бродить спокойным (дом или вожак стаи). */
+	/** Vector: куда стая ведёт монстра — место в строю, в кольце вокруг цели (не задано — точки нет). */
+	static const FName PackGoal;
+	/** Bool: вожак стаи погиб, монстр разбегается (к FleeLocation). */
+	static const FName IsScattering;
+	/** Vector: вокруг чего бродить спокойным (точка впереди по ходу у вожака, сам вожак у остальных). */
 	static const FName WanderCenter;
 	/** Bool: цель слишком близко, монстр (плевун) отступает, чтобы держать дистанцию. */
 	static const FName KeepAway;
@@ -507,7 +509,7 @@ protected:
 	virtual void NoteCorpse(ANoFearCharacter* Corpse);
 	virtual void ShareAlarm();
 
-	/** Можно ли идти проверять эту точку (шум, поиск). Монстр не выходит за свою территорию. */
+	/** Можно ли идти проверять эту точку (шум, поиск). */
 	virtual bool CanInvestigateLocation(const FVector& Location) const { return true; }
 	void DrawDebug() const;
 
