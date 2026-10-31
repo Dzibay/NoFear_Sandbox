@@ -7,6 +7,7 @@
 #include "Weapons/NoFearGrenade.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
 
 namespace
 {
@@ -351,9 +352,12 @@ void UNoFearBotSubsystem::ReportBulletPath(const UObject* WorldContextObject, AA
 		return;
 	}
 	const FVector ShooterLocation = Shooter ? Shooter->GetActorLocation() : Start;
+	const APawn* ShooterPawn = Cast<APawn>(Shooter);
+	const bool bPlayerShot = ShooterPawn && ShooterPawn->IsPlayerControlled();
+	TArray<APawn*> PlayerTargets;
 	for (ANoFearAIController* Bot : Subsystem->GetBots())
 	{
-		const APawn* Listener = Bot->GetPawn();
+		APawn* Listener = Bot->GetPawn();
 		if (!Listener || Listener == Shooter || UNoFearHealthComponent::IsActorDead(Listener))
 		{
 			continue;
@@ -362,6 +366,52 @@ void UNoFearBotSubsystem::ReportBulletPath(const UObject* WorldContextObject, AA
 		if (FVector::DistSquared(Closest, Listener->GetActorLocation()) <= FMath::Square(NearMissRadius))
 		{
 			Bot->HandleDanger(ENoFearDangerType::NearMiss, Shooter, ShooterLocation);
+			if (bPlayerShot && UNoFearTeamLibrary::AreHostile(Shooter, Listener))
+			{
+				PlayerTargets.Add(Listener);
+			}
+		}
+	}
+
+	// Союзники помогают игроку в своём районе: игрок стреляет по врагу или враг стреляет по игроку.
+	for (APawn* Target : PlayerTargets)
+	{
+		Subsystem->RallyFriendsOf(Shooter, Target);
+	}
+	const UWorld* World = Subsystem->GetWorld();
+	if (Shooter && !bPlayerShot && World)
+	{
+		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+		{
+			const APlayerController* PlayerController = It->Get();
+			APawn* Player = PlayerController ? PlayerController->GetPawn() : nullptr;
+			if (Player && !UNoFearHealthComponent::IsActorDead(Player) && UNoFearTeamLibrary::AreHostile(Player, Shooter)
+				&& FVector::DistSquared(FMath::ClosestPointOnSegment(Player->GetActorLocation(), Start, End), Player->GetActorLocation()) <= FMath::Square(NearMissRadius))
+			{
+				Subsystem->RallyFriendsOf(Player, Shooter);
+			}
+		}
+	}
+}
+
+void UNoFearBotSubsystem::RallyFriendsOf(AActor* Friend, AActor* Threat)
+{
+	if (!Friend || !Threat || UNoFearHealthComponent::IsActorDead(Threat))
+	{
+		return;
+	}
+	for (ANoFearAIController* Bot : GetBots())
+	{
+		const APawn* Witness = Bot->GetPawn();
+		const float Radius = Bot->GetAlertShareRadius();
+		if (!Witness || Witness == Friend || Witness == Threat || Radius <= 0.f
+			|| FVector::DistSquared(Witness->GetActorLocation(), Friend->GetActorLocation()) > FMath::Square(Radius))
+		{
+			continue;
+		}
+		if (UNoFearTeamLibrary::AreFriendly(Witness, Friend) && UNoFearTeamLibrary::AreHostile(Witness, Threat))
+		{
+			Bot->ReceiveAlarm(Threat, Threat->GetActorLocation());
 		}
 	}
 }

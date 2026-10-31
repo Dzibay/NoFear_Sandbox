@@ -2,6 +2,7 @@
 
 #include "AI/NoFearBotSubsystem.h"
 #include "AI/NoFearCombatComponent.h"
+#include "AI/NoFearSquadSubsystem.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "Core/NoFearHealthComponent.h"
@@ -29,6 +30,31 @@ ANoFearShooterAIController::ANoFearShooterAIController(const FObjectInitializer&
 
 	static ConstructorHelpers::FObjectFinderOptional<UBehaviorTree> Tree(TEXT("/Game/AI/BT_NoFear_Soldier.BT_NoFear_Soldier"));
 	BehaviorTree = Tree.Get();
+
+	static ConstructorHelpers::FObjectFinderOptional<UNoFearWeaponData> Shotgun(TEXT("/Game/Weapons/Data/DA_Shotgun.DA_Shotgun"));
+	if (Shotgun.Get())
+	{
+		RoleWeapons.Add(ENoFearSquadRole::Assault, Shotgun.Get());
+	}
+}
+
+ENoFearSquadRole ANoFearShooterAIController::GetSquadRole() const
+{
+	const UNoFearSquadSubsystem* Squads = UNoFearSquadSubsystem::Get(this);
+	return Squads ? Squads->GetSquadRole(GetPawn()) : ENoFearSquadRole::None;
+}
+
+float ANoFearShooterAIController::ScoreTarget(const AActor* Candidate, const FNoFearKnownActor& Knowledge) const
+{
+	float Score = Super::ScoreTarget(Candidate, Knowledge);
+	if (SquadTargetSharePenalty > 0.f)
+	{
+		if (const UNoFearSquadSubsystem* Squads = UNoFearSquadSubsystem::Get(this))
+		{
+			Score -= SquadTargetSharePenalty * Squads->CountSquadmatesTargeting(GetPawn(), Candidate);
+		}
+	}
+	return Score;
 }
 
 UNoFearWeaponComponent* ANoFearShooterAIController::GetWeaponComponent() const
@@ -467,7 +493,31 @@ void ANoFearShooterAIController::MaintainWeapon()
 		return;
 	}
 
-	if (Weapons->GetTargetWeaponIndex() == INDEX_NONE)
+	// Роль даёт оружие; роль сменилась на ту, что без своего оружия, — обратно к стартовому.
+	const ENoFearSquadRole SquadRole = GetSquadRole();
+	UNoFearWeaponData* RoleWeapon = SquadRole != ENoFearSquadRole::None ? RoleWeapons.FindRef(SquadRole).Get() : nullptr;
+	int32 WantedIndex = INDEX_NONE;
+	if (RoleWeapon)
+	{
+		const TArray<ANoFearWeapon*> Owned = Weapons->GetWeapons();
+		WantedIndex = Owned.IndexOfByPredicate([RoleWeapon](const ANoFearWeapon* Weapon) { return Weapon && Weapon->GetWeaponData() == RoleWeapon; });
+		if (WantedIndex == INDEX_NONE && Weapons->AddWeapon(RoleWeapon))
+		{
+			WantedIndex = Weapons->GetWeapons().Num() - 1;
+		}
+		AppliedRoleWeapon = RoleWeapon;
+	}
+	else if (AppliedRoleWeapon.IsValid())
+	{
+		WantedIndex = 0;
+		AppliedRoleWeapon.Reset();
+	}
+
+	if (WantedIndex != INDEX_NONE && Weapons->GetTargetWeaponIndex() != WantedIndex)
+	{
+		Weapons->EquipWeapon(WantedIndex);
+	}
+	else if (Weapons->GetTargetWeaponIndex() == INDEX_NONE)
 	{
 		Weapons->EquipWeapon(0);
 	}

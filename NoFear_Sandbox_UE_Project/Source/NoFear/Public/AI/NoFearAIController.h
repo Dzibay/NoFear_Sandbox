@@ -127,6 +127,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
 	AActor* GetCurrentTarget() const { return CurrentTarget.Get(); }
 
+	/** Всё, что бот знает о врагах (отряд собирает отсюда, кого видят его бойцы). */
+	const TMap<TWeakObjectPtr<AActor>, FNoFearKnownActor>& GetKnownActors() const { return KnownActors; }
+
 	/** Цель сейчас в поле зрения. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
 	virtual bool IsTargetVisible() const;

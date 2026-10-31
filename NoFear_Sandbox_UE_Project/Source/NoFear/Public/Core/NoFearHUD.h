@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Core/NoFearHealthComponent.h"
+#include "Core/NoFearTeam.h"
 #include "GameFramework/HUD.h"
 #include "NoFearHUD.generated.h"
 
@@ -25,6 +26,9 @@ class UFont;
  * - Подсказка взаимодействия под прицелом: «[E] Завербовать» и имя того, с кем.
  * - Панель над ботами: полоска здоровья с «хвостом» и значок тревоги — «?» с кольцом-шкалой обнаружения, «!» в бою.
  *   Показывается по правилам (раненым, в бою, под прицелом, рядом), только при прямой видимости; см. NoFear.HUD.BotIndicators.
+ * - Кольца отрядов под ногами: узор и цвет — роль, тонкий внешний ободок — сторона (красный враг, зелёный союзник).
+ *   Союзник в отряде — всегда, враг — только на виду, монстры — двойное красное у вожака стаи, напарник — без кольца.
+ *   При сборе отряда и смене командира — линии к командиру, при смене роли — вспышка; значок роли рядом с «◆ N».
  *
  * Подключается в ANoFearGameMode, настраивать в редакторе ничего не нужно. Состояние обновляется в Tick, а не при
  * отрисовке, поэтому его можно читать из Blueprint и тестов (Get...).
@@ -306,6 +310,55 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots")
 	bool bShowEnemyLoadout = false;
 
+	// --- Отряды ---
+
+	/** Кольца отрядов и вожаков стай под ногами (вместе с панелями: NoFear.HUD.BotIndicators). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad")
+	bool bShowSquadRings = true;
+
+	/** Радиус кольца, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad", meta = (ClampMin = "10"))
+	float SquadRingRadius = 60.f;
+
+	/** Дальше этого кольца не рисуются, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad", meta = (ClampMin = "0"))
+	float SquadRingMaxDistance = 4000.f;
+
+	/** Сколько видны линии к командиру при сборе отряда, вступлении бойца и смене командира, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad", meta = (ClampMin = "0"))
+	float SquadLineTime = 1.5f;
+
+	/** За сколько кольцо перекрашивается при смене роли (со вспышкой), с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad", meta = (ClampMin = "0.01"))
+	float SquadRoleChangeTime = 0.3f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad")
+	FLinearColor SquadCommanderColor = FLinearColor(1.f, 0.78f, 0.15f, 1.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad")
+	FLinearColor SquadAssaultColor = FLinearColor(1.f, 0.48f, 0.08f, 1.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad")
+	FLinearColor SquadSupportColor = FLinearColor(0.45f, 0.82f, 1.f, 1.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad")
+	FLinearColor SquadRiflemanColor = FLinearColor(0.95f, 0.95f, 0.95f, 1.f);
+
+	/** Ободок кольца у союзника (у врага — BotEnemyColor). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad")
+	FLinearColor SquadAllyBorderColor = FLinearColor(0.3f, 0.95f, 0.35f, 1.f);
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
+	FLinearColor GetSquadRoleColor(ENoFearSquadRole SquadRole) const;
+
+	/** Сколько колец отрядов и вожаков нарисовано в последнем кадре (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
+	int32 GetDrawnSquadRingCount() const { return DrawnSquadRings; }
+
+	/** Сколько линий к командиру нарисовано в последнем кадре (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
+	int32 GetDrawnSquadLineCount() const { return DrawnSquadLines; }
+
 	/** Цвет крика над ботом («Граната!»). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots")
 	FLinearColor ShoutColor = FLinearColor(1.f, 0.95f, 0.6f, 1.f);
@@ -382,6 +435,14 @@ private:
 	void DrawCompanionMarkers();
 	void DrawRecruitableMarkers();
 	void DrawBotIndicators();
+	/** Кольца отрядов и вожаков под ногами, линии к командиру. */
+	void DrawSquadRings();
+	/** Кольцо в плоскости XY из 24 отрезков; bDashed — через один. */
+	void DrawGroundRing(const FVector& Center, float Radius, const FLinearColor& Color, float Thickness, bool bDashed = false);
+	/** Отрезок в мире, спроецированный на экран (части за камерой не рисуются). */
+	void DrawWorldLine(const FVector& From, const FVector& To, const FLinearColor& Color, float Thickness);
+	/** Значок роли: корона, шеврон вверх, две черты, точка. Size — половина ширины. */
+	void DrawRoleIcon(const FVector2D& Center, float Size, ENoFearSquadRole SquadRole, const FLinearColor& Color);
 	void DrawInteractionPrompt();
 
 	/** Состояние панели одного бота: плавная полоска здоровья, «хвост», проверка видимости, плавное появление. */
@@ -395,6 +456,10 @@ private:
 		bool bLineOfSight = false;
 		float Alpha = 0.f;
 		double LastUpdate = -1.0;
+		/** Кольцо отряда: своя проверка видимости (врагов показываем только на виду) и плавное появление. */
+		double NextRingVisibilityCheck = 0.0;
+		bool bRingLineOfSight = false;
+		float RingAlpha = 0.f;
 	};
 
 	/** Кольцо из отрезков, заполненное на Fraction по часовой стрелке от верхней точки. */
@@ -431,6 +496,9 @@ private:
 	TArray<FDamageIndicator> DamageIndicators;
 
 	TMap<TWeakObjectPtr<const AActor>, FBotPanelState> BotPanels;
+
+	int32 DrawnSquadRings = 0;
+	int32 DrawnSquadLines = 0;
 
 	float HitMarkerAge = 1.0e9f;
 	bool bHitHeadshot = false;

@@ -13,7 +13,7 @@
 namespace
 {
 	/** Расстояние в плоскости от точки до отрезка. */
-	float DistToSegment2D(const FVector& Point, const FVector& A, const FVector& B)
+	float CoverDistToSegment2D(const FVector& Point, const FVector& A, const FVector& B)
 	{
 		const FVector P(Point.X, Point.Y, 0.f);
 		return FVector::Dist(P, FMath::ClosestPointOnSegment(P, FVector(A.X, A.Y, 0.f), FVector(B.X, B.Y, 0.f)));
@@ -290,7 +290,7 @@ bool UNoFearCoverLibrary::FindCover(const FNoFearCoverSearch& Search, FNoFearCov
 		bool bPathSafe = true;
 		for (int32 Seg = 0; Seg + 1 < Path->PathPoints.Num() && bPathSafe; ++Seg)
 		{
-			bPathSafe = DistToSegment2D(Threat, Path->PathPoints[Seg], Path->PathPoints[Seg + 1]) >= Clearance;
+			bPathSafe = CoverDistToSegment2D(Threat, Path->PathPoints[Seg], Path->PathPoints[Seg + 1]) >= Clearance;
 		}
 		if (bPathSafe)
 		{

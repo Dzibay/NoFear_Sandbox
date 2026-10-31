@@ -27,6 +27,25 @@ enum class ENoFearTeam : uint8
 	Neutral = 255 UMETA(DisplayName = "Neutral (No Team)")
 };
 
+/**
+ * Роль стрелка в отряде (ANoFearCharacter::SquadRole). Роль даёт оружие (ANoFearShooterAIController::RoleWeapons)
+ * и знак над головой. Командира, если его нет, назначает отряд (UNoFearSquadSubsystem).
+ */
+UENUM(BlueprintType)
+enum class ENoFearSquadRole : uint8
+{
+	/** Не задана: в отряде — стрелок. */
+	None,
+	/** Командир: винтовка, выбирает тактику. Золотое двойное кольцо, корона. */
+	Commander,
+	/** Штурмовик: дробовик, перебежки и фланг. Оранжевое сплошное кольцо, шеврон. */
+	Assault,
+	/** Поддержка: винтовка, огонь на подавление. Голубое пунктирное кольцо, две черты. */
+	Support,
+	/** Стрелок: винтовка. Белое тонкое кольцо, точка. */
+	Rifleman
+};
+
 /** Отношение пары команд. Действует в обе стороны: A к B и B к A. */
 USTRUCT(BlueprintType)
 struct NOFEAR_API FNoFearTeamRelation

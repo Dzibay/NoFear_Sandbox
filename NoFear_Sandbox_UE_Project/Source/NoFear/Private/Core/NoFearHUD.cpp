@@ -3,6 +3,9 @@
 #include "AI/NoFearAIController.h"
 #include "AI/NoFearBotSubsystem.h"
 #include "AI/NoFearCompanionAIController.h"
+#include "AI/NoFearMonsterAIController.h"
+#include "AI/NoFearShooterAIController.h"
+#include "AI/NoFearSquadSubsystem.h"
 #include "AI/NoFearRecruitableComponent.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Components/CapsuleComponent.h"
@@ -1225,8 +1228,20 @@ void ANoFearHUD::DrawBotIndicators()
 	if (Mode <= 0 || !PlayerController || !PlayerPawn || !World || !Subsystem || !Canvas)
 	{
 		BotPanels.Reset();
+		DrawnSquadRings = DrawnSquadLines = 0;
 		return;
 	}
+
+	// Кольца под ногами — под панелями.
+	if (bShowSquadRings)
+	{
+		DrawSquadRings();
+	}
+	else
+	{
+		DrawnSquadRings = DrawnSquadLines = 0;
+	}
+	const UNoFearSquadSubsystem* Squads = UNoFearSquadSubsystem::Get(this);
 
 	FVector CameraLocation;
 	FRotator CameraRotation;
@@ -1263,6 +1278,8 @@ void ANoFearHUD::DrawBotIndicators()
 		bool bCompanion = false;
 		bool bHostile = false;
 		ENoFearTeam Team = ENoFearTeam::Neutral;
+		/** Значок роли рядом с «◆ N». None — не в отряде. */
+		ENoFearSquadRole Role = ENoFearSquadRole::None;
 	};
 	TArray<FPanelDraw> Panels;
 	TSet<const AActor*> Seen;
@@ -1401,6 +1418,11 @@ void ANoFearHUD::DrawBotIndicators()
 		Panel.bCompanion = bCompanion;
 		Panel.bHostile = bHostile;
 		Panel.Team = Team;
+		FNoFearSquadMemberView SquadView;
+		if (!bCompanion && Squads && Squads->GetMemberView(Pawn, SquadView) && SquadView.SquadSize >= 2)
+		{
+			Panel.Role = SquadView.Role;
+		}
 	}
 
 	for (auto It = BotPanels.CreateIterator(); It; ++It)
@@ -1441,22 +1463,37 @@ void ANoFearHUD::DrawBotIndicators()
 		// Над ромбом напарника (и его подписью с расстоянием).
 		float TopY = Panel.Screen.Y - (Panel.bCompanion ? 46.f * S : 4.f * S);
 
-		// Нижняя строка — запас гранат «◆ N», над ней полоска здоровья.
-		if (Panel.Grenades > 0)
+		// Нижняя строка — значок роли и запас гранат «◆ N», над ней полоска здоровья.
+		const bool bRoleIcon = Panel.Role != ENoFearSquadRole::None;
+		if (Panel.Grenades > 0 || bRoleIcon)
 		{
 			FLinearColor Color = GrenadeColor;
 			Color.A *= Opacity;
-			const FString Count = FString::FromInt(Panel.Grenades);
+			const FString Count = Panel.Grenades > 0 ? FString::FromInt(Panel.Grenades) : FString();
 			const float TextScale = 0.85f * PanelScale;
 			float TextWidth = 0.f;
 			float TextHeight = 0.f;
-			GetTextSize(Count, TextWidth, TextHeight, GetFont(), TextScale);
+			GetTextSize(Panel.Grenades > 0 ? Count : FString(TEXT("0")), TextWidth, TextHeight, GetFont(), TextScale);
 			const float DiamondRadius = 4.f * PanelScale;
-			const float RowWidth = DiamondRadius * 2.f + 4.f * PanelScale + TextWidth;
+			const float IconSize = 5.5f * PanelScale;
+			const float IconWidth = bRoleIcon ? IconSize * 2.f : 0.f;
+			const float GrenadeWidth = Panel.Grenades > 0 ? DiamondRadius * 2.f + 4.f * PanelScale + TextWidth : 0.f;
+			const float Gap = bRoleIcon && Panel.Grenades > 0 ? 7.f * PanelScale : 0.f;
+			const float RowWidth = IconWidth + Gap + GrenadeWidth;
 			const float RowLeft = CenterX - RowWidth * 0.5f;
 			const float RowY = TopY - TextHeight;
-			DrawDiamond(FVector2D(RowLeft + DiamondRadius, RowY + TextHeight * 0.5f), DiamondRadius, Color);
-			DrawLabel(Count, RowLeft + RowWidth, RowY, Color, TextScale, ELabelAlign::Right);
+			if (bRoleIcon)
+			{
+				FLinearColor IconColor = GetSquadRoleColor(Panel.Role);
+				IconColor.A *= Opacity;
+				DrawRoleIcon(FVector2D(RowLeft + IconSize, RowY + TextHeight * 0.5f), IconSize, Panel.Role, IconColor);
+			}
+			if (Panel.Grenades > 0)
+			{
+				const float GrenadeLeft = RowLeft + IconWidth + Gap;
+				DrawDiamond(FVector2D(GrenadeLeft + DiamondRadius, RowY + TextHeight * 0.5f), DiamondRadius, Color);
+				DrawLabel(Count, RowLeft + RowWidth, RowY, Color, TextScale, ELabelAlign::Right);
+			}
 			TopY = RowY - 3.f * PanelScale;
 		}
 
@@ -1581,5 +1618,319 @@ void ANoFearHUD::DrawInteractionPrompt()
 	{
 		const FLinearColor NameColor = bRecruitable ? CompanionColor : FLinearColor(0.85f, 0.85f, 0.85f, 0.9f);
 		DrawLabel(Character->GetCharacterDisplayName().ToString(), Canvas->SizeX * 0.5f, PromptTop + BoxHeight + 8.f * S, NameColor, 0.9f * S, ELabelAlign::Center);
+	}
+}
+
+FLinearColor ANoFearHUD::GetSquadRoleColor(ENoFearSquadRole SquadRole) const
+{
+	switch (SquadRole)
+	{
+	case ENoFearSquadRole::Commander:
+		return SquadCommanderColor;
+	case ENoFearSquadRole::Assault:
+		return SquadAssaultColor;
+	case ENoFearSquadRole::Support:
+		return SquadSupportColor;
+	default:
+		return SquadRiflemanColor;
+	}
+}
+
+void ANoFearHUD::DrawWorldLine(const FVector& From, const FVector& To, const FLinearColor& Color, float Thickness)
+{
+	const APlayerController* PC = GetOwningPlayerController();
+	if (!PC || !Canvas)
+	{
+		return;
+	}
+	FVector CameraLocation;
+	FRotator CameraRotation;
+	PC->GetPlayerViewPoint(CameraLocation, CameraRotation);
+
+	// Отрезок, уходящий за камеру, обрезаем по плоскости чуть впереди неё.
+	constexpr float NearPlane = 10.f;
+	FVector A = From;
+	FVector B = To;
+	const float DepthA = CameraRotation.UnrotateVector(A - CameraLocation).X;
+	const float DepthB = CameraRotation.UnrotateVector(B - CameraLocation).X;
+	if (DepthA <= NearPlane && DepthB <= NearPlane)
+	{
+		return;
+	}
+	if (DepthA <= NearPlane)
+	{
+		A = FMath::Lerp(A, B, (NearPlane - DepthA) / (DepthB - DepthA));
+	}
+	else if (DepthB <= NearPlane)
+	{
+		B = FMath::Lerp(B, A, (NearPlane - DepthB) / (DepthA - DepthB));
+	}
+	const FVector ScreenA = Canvas->Project(A, false);
+	const FVector ScreenB = Canvas->Project(B, false);
+	DrawLine(ScreenA.X, ScreenA.Y, ScreenB.X, ScreenB.Y, Color, Thickness);
+}
+
+void ANoFearHUD::DrawGroundRing(const FVector& Center, float Radius, const FLinearColor& Color, float Thickness, bool bDashed)
+{
+	constexpr int32 Segments = 24;
+	FVector Previous = Center + FVector(Radius, 0.f, 0.f);
+	for (int32 Index = 1; Index <= Segments; ++Index)
+	{
+		const float Angle = UE_TWO_PI * Index / Segments;
+		const FVector Next = Center + FVector(Radius * FMath::Cos(Angle), Radius * FMath::Sin(Angle), 0.f);
+		if (!bDashed || Index % 2 == 1)
+		{
+			DrawWorldLine(Previous, Next, Color, Thickness);
+		}
+		Previous = Next;
+	}
+}
+
+void ANoFearHUD::DrawRoleIcon(const FVector2D& Center, float Size, ENoFearSquadRole SquadRole, const FLinearColor& Color)
+{
+	const float Thickness = FMath::Max(1.5f, Size * 0.32f);
+	const FLinearColor Shadow(0.f, 0.f, 0.f, 0.6f * Color.A);
+
+	TArray<TArray<FVector2D>> Lines;
+	switch (SquadRole)
+	{
+	case ENoFearSquadRole::Commander:
+		// Корона: основание и три зубца.
+		Lines.Add({ { -Size, Size * 0.55f }, { Size, Size * 0.55f }, { Size, -Size * 0.55f }, { Size * 0.5f, Size * 0.05f },
+			{ 0.f, -Size * 0.75f }, { -Size * 0.5f, Size * 0.05f }, { -Size, -Size * 0.55f }, { -Size, Size * 0.55f } });
+		break;
+	case ENoFearSquadRole::Assault:
+		// Шеврон вверх.
+		Lines.Add({ { -Size, Size * 0.45f }, { 0.f, -Size * 0.45f }, { Size, Size * 0.45f } });
+		break;
+	case ENoFearSquadRole::Support:
+		// Две черты.
+		Lines.Add({ { -Size, -Size * 0.35f }, { Size, -Size * 0.35f } });
+		Lines.Add({ { -Size, Size * 0.35f }, { Size, Size * 0.35f } });
+		break;
+	default:
+		// Точка.
+		DrawDiamond(Center, Size * 0.4f, Color);
+		return;
+	}
+
+	// Сначала тень под всеми линиями, потом сами линии.
+	for (const bool bShadow : { true, false })
+	{
+		for (const TArray<FVector2D>& Points : Lines)
+		{
+			for (int32 Index = 1; Index < Points.Num(); ++Index)
+			{
+				const FVector2D A = Center + Points[Index - 1];
+				const FVector2D B = Center + Points[Index];
+				DrawLine(A.X, A.Y, B.X, B.Y, bShadow ? Shadow : Color, bShadow ? Thickness + 2.f : Thickness);
+			}
+		}
+	}
+}
+
+void ANoFearHUD::DrawSquadRings()
+{
+	DrawnSquadRings = DrawnSquadLines = 0;
+	const int32 Mode = CVarBotIndicators.GetValueOnGameThread();
+	const ANoFearPlayerController* PlayerController = Cast<ANoFearPlayerController>(GetOwningPlayerController());
+	const APawn* PlayerPawn = GetOwningPawn();
+	UWorld* World = GetWorld();
+	const UNoFearBotSubsystem* Bots = UNoFearBotSubsystem::Get(this);
+	const UNoFearSquadSubsystem* Squads = UNoFearSquadSubsystem::Get(this);
+	if (Mode <= 0 || !PlayerController || !PlayerPawn || !World || !Bots || !Canvas)
+	{
+		return;
+	}
+
+	FVector CameraLocation;
+	FRotator CameraRotation;
+	PlayerController->GetPlayerViewPoint(CameraLocation, CameraRotation);
+	const double Now = World->GetTimeSeconds();
+	const float DeltaTime = FMath::Min(World->GetDeltaSeconds(), 0.25f);
+	const float S = GetUIScale();
+	const float MaxDistance = FMath::Max(SquadRingMaxDistance, 1.f);
+
+	struct FRingDraw
+	{
+		const APawn* Pawn = nullptr;
+		FVector Center = FVector::ZeroVector;
+		FNoFearSquadMemberView View;
+		/** Вожак стаи монстров, а не боец отряда. */
+		bool bPackLeader = false;
+		bool bHostile = false;
+		bool bDim = false;
+		float Opacity = 0.f;
+	};
+	TArray<FRingDraw> Rings;
+
+	for (const ANoFearAIController* Bot : Bots->GetBots())
+	{
+		const APawn* Pawn = Bot->GetPawn();
+		if (!Pawn || Pawn == PlayerPawn || UNoFearHealthComponent::IsActorDead(Pawn) || PlayerController->IsCompanion(Pawn))
+		{
+			continue;
+		}
+		const float Distance = FVector::Dist(PlayerPawn->GetActorLocation(), Pawn->GetActorLocation());
+		if (Distance > MaxDistance)
+		{
+			continue;
+		}
+
+		FRingDraw Ring;
+		const bool bSquad = Squads && Squads->GetMemberView(Pawn, Ring.View) && Ring.View.SquadSize >= 2;
+		if (!bSquad)
+		{
+			const ANoFearMonsterAIController* Monster = Cast<ANoFearMonsterAIController>(Bot);
+			Ring.bPackLeader = Monster && Monster->IsPackLeader() && Monster->GetPackSize() >= 2;
+			if (!Ring.bPackLeader)
+			{
+				continue;
+			}
+		}
+		Ring.Pawn = Pawn;
+		Ring.bHostile = UNoFearTeamLibrary::AreHostile(PlayerPawn, Pawn);
+
+		// Враги и вожаки — только на виду у игрока (режим 2 — всегда).
+		FBotPanelState& State = BotPanels.FindOrAdd(Pawn);
+		bool bShow = true;
+		if (Ring.bHostile && Mode < 2)
+		{
+			if (Now >= State.NextRingVisibilityCheck)
+			{
+				State.NextRingVisibilityCheck = Now + BotVisibilityInterval + FMath::FRand() * 0.05;
+				FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearSquadRingSight), false, PlayerPawn);
+				Params.AddIgnoredActor(Pawn);
+				TArray<AActor*> Attached;
+				Pawn->GetAttachedActors(Attached);
+				Params.AddIgnoredActors(Attached);
+				State.bRingLineOfSight = !World->LineTraceTestByChannel(CameraLocation, Pawn->GetActorLocation(), ECC_Visibility, Params);
+			}
+			bShow = State.bRingLineOfSight;
+		}
+		State.RingAlpha = FMath::FInterpConstantTo(State.RingAlpha, bShow ? 1.f : 0.f, DeltaTime, 5.f);
+
+		const float DistanceFade = 1.f - FMath::Clamp((Distance - MaxDistance * 0.8f) / (MaxDistance * 0.2f), 0.f, 1.f);
+		Ring.Opacity = State.RingAlpha * DistanceFade;
+		if (bSquad)
+		{
+			// Плавно проявляется, когда боец встаёт в строй.
+			Ring.Opacity *= FMath::Clamp(static_cast<float>(Now - Ring.View.JoinTime) / 0.4f, 0.f, 1.f);
+			const ANoFearShooterAIController* Shooter = Cast<ANoFearShooterAIController>(Bot);
+			Ring.bDim = Shooter && Shooter->IsRetreating();
+		}
+		if (Ring.Opacity <= 0.01f)
+		{
+			continue;
+		}
+		Ring.Center = Pawn->GetActorLocation() - FVector(0.f, 0.f, Pawn->GetSimpleCollisionHalfHeight() - 4.f);
+		Rings.Add(Ring);
+	}
+
+	const float Radius = SquadRingRadius;
+	const float Outline = 2.f * S;
+
+	// Линии к командиру: при сборе, вступлении бойца и смене командира. Под кольцами.
+	for (const FRingDraw& Ring : Rings)
+	{
+		if (Ring.bPackLeader || !Ring.View.Commander || Ring.View.Commander == Ring.Pawn)
+		{
+			continue;
+		}
+		const double LineAge = FMath::Min(Now - Ring.View.JoinTime, Now - Ring.View.CommanderChangeTime);
+		const FRingDraw* CommanderRing = Rings.FindByPredicate([&Ring](const FRingDraw& Other) { return Other.Pawn == Ring.View.Commander; });
+		if (LineAge >= SquadLineTime || !CommanderRing)
+		{
+			continue;
+		}
+		const FVector Direction = (CommanderRing->Center - Ring.Center).GetSafeNormal2D();
+		const FVector From = Ring.Center + Direction * Radius;
+		const FVector To = CommanderRing->Center - Direction * Radius;
+		if (FVector::DotProduct(To - From, Direction) <= 0.f)
+		{
+			continue;
+		}
+		FLinearColor Color = SquadCommanderColor;
+		Color.A = FMath::Min(Ring.Opacity, CommanderRing->Opacity) * (1.f - static_cast<float>(LineAge / SquadLineTime));
+		DrawWorldLine(From, To, FLinearColor(0.f, 0.f, 0.f, 0.5f * Color.A), 2.f * S + Outline);
+		DrawWorldLine(From, To, Color, 2.f * S);
+		++DrawnSquadLines;
+	}
+
+	for (const FRingDraw& Ring : Rings)
+	{
+		float Opacity = Ring.Opacity;
+		if (Ring.bPackLeader)
+		{
+			FLinearColor Color = BotEnemyColor;
+			Color.A *= Opacity;
+			const FLinearColor Shadow(0.f, 0.f, 0.f, 0.45f * Opacity);
+			for (const float R : { Radius + 6.f, Radius - 6.f })
+			{
+				DrawGroundRing(Ring.Center, R, Shadow, 2.5f * S + Outline);
+				DrawGroundRing(Ring.Center, R, Color, 2.5f * S);
+			}
+			++DrawnSquadRings;
+			continue;
+		}
+
+		const FNoFearSquadMemberView& View = Ring.View;
+		if (View.bExecutingOrder)
+		{
+			// Выполняет приказ — кольцо пульсирует.
+			Opacity *= 0.6f + 0.4f * (0.5f + 0.5f * FMath::Sin(static_cast<float>(Now) * 7.f));
+		}
+		if (Ring.bDim)
+		{
+			// Раненый отходит — вполсилы.
+			Opacity *= 0.5f;
+		}
+
+		// Смена роли: перекраска со вспышкой; новый командир вспыхивает.
+		FLinearColor Color = GetSquadRoleColor(View.Role);
+		float Flash = 0.f;
+		const float RoleT = static_cast<float>(Now - View.RoleChangeTime) / SquadRoleChangeTime;
+		if (RoleT < 1.f)
+		{
+			Color = FMath::Lerp(GetSquadRoleColor(View.PreviousRole), Color, FMath::Clamp(RoleT, 0.f, 1.f));
+			Flash = 1.f - FMath::Clamp(RoleT, 0.f, 1.f);
+		}
+		if (Ring.Pawn == View.Commander)
+		{
+			Flash = FMath::Max(Flash, 1.f - FMath::Clamp(static_cast<float>(Now - View.CommanderChangeTime) / 0.6f, 0.f, 1.f));
+		}
+		Color = FMath::Lerp(Color, FLinearColor::White, Flash * 0.6f);
+		Color.A = Opacity;
+		const float Boost = 1.f + Flash;
+		const FLinearColor Shadow(0.f, 0.f, 0.f, 0.45f * Opacity);
+
+		// Сторона — тонкий внешний ободок.
+		FLinearColor Border = Ring.bHostile ? BotEnemyColor : SquadAllyBorderColor;
+		Border.A *= Opacity * 0.9f;
+		DrawGroundRing(Ring.Center, Radius + 9.f, Border, 1.5f * S);
+
+		switch (View.Role)
+		{
+		case ENoFearSquadRole::Commander:
+			for (const float R : { Radius, Radius - 11.f })
+			{
+				DrawGroundRing(Ring.Center, R, Shadow, 2.5f * S * Boost + Outline);
+				DrawGroundRing(Ring.Center, R, Color, 2.5f * S * Boost);
+			}
+			break;
+		case ENoFearSquadRole::Assault:
+			DrawGroundRing(Ring.Center, Radius, Shadow, 3.5f * S * Boost + Outline);
+			DrawGroundRing(Ring.Center, Radius, Color, 3.5f * S * Boost);
+			break;
+		case ENoFearSquadRole::Support:
+			DrawGroundRing(Ring.Center, Radius, Shadow, 3.f * S * Boost + Outline, true);
+			DrawGroundRing(Ring.Center, Radius, Color, 3.f * S * Boost, true);
+			break;
+		default:
+			DrawGroundRing(Ring.Center, Radius, Shadow, 1.5f * S * Boost + Outline);
+			DrawGroundRing(Ring.Center, Radius, Color, 1.5f * S * Boost);
+			break;
+		}
+		++DrawnSquadRings;
 	}
 }

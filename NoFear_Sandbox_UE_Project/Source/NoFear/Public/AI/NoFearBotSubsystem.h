@@ -84,6 +84,12 @@ public:
 	/** Общая тревога: свои Origin в радиусе его AlertShareRadius узнают об угрозе. */
 	void BroadcastAlarm(const ANoFearAIController* Origin, AActor* Threat, const FVector& ThreatLocation);
 
+	/**
+	 * Свои Friend в радиусе их AlertShareRadius узнают Threat и идут на помощь (в пределах своего поводка).
+	 * Так союзники помогают игроку: пуля игрока прошла у врага или пуля врага — у игрока (ReportBulletPath).
+	 */
+	void RallyFriendsOf(AActor* Friend, AActor* Threat);
+
 	/** Victim получил урон от Attacker: свои пострадавшего узнают нападавшего, свои нападавшего — пострадавшего. */
 	void NotifyAttack(AActor* Victim, AActor* Attacker);
 

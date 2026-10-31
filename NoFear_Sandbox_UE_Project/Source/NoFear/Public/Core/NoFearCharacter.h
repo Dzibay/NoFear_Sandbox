@@ -40,6 +40,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Team")
 	FName PackName;
 
+	/**
+	 * Отряд стрелка. Стрелки одной команды с одинаковым именем — один отряд (до 6 бойцов), где бы ни стояли:
+	 * общее знание о врагах, распределение целей, командир. Пусто — воюет сам по себе.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad", meta = (ExposeOnSpawn = true))
+	FName Squad;
+
+	/** Роль в отряде. Пусто — стрелок; командира, если его не задали, отряд назначит сам. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad", meta = (ExposeOnSpawn = true))
+	ENoFearSquadRole SquadRole = ENoFearSquadRole::None;
+
 	/** Имя для интерфейса (панель напарника, подсказка «[E] ...»). Пусто — имя актора. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Appearance")
 	FText CharacterName;

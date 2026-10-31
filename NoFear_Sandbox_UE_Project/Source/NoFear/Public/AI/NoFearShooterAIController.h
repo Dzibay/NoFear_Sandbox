@@ -3,10 +3,12 @@
 #include "CoreMinimal.h"
 #include "AI/NoFearAIController.h"
 #include "AI/NoFearCoverLibrary.h"
+#include "Core/NoFearTeam.h"
 #include "NoFearShooterAIController.generated.h"
 
 class UNoFearCombatComponent;
 class UNoFearWeaponComponent;
+class UNoFearWeaponData;
 
 /**
  * Стрелок: враги (команда Enemy) и союзники (Ally). Держит точку («дом»), заметив врага — целится и
@@ -46,6 +48,23 @@ public:
 	/** Если у тела нет UNoFearCombatComponent, добавить его с настройками по умолчанию. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Weapon")
 	bool bAddCombatComponentIfMissing = true;
+
+	// --- Отряд ---
+
+	/**
+	 * Оружие по роли в отряде (ANoFearCharacter::SquadRole): боец берёт его в руки вместо первого из StartingWeapons.
+	 * Роли без записи воюют стартовым оружием. По умолчанию штурмовик — с дробовиком.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Squad")
+	TMap<ENoFearSquadRole, TObjectPtr<UNoFearWeaponData>> RoleWeapons;
+
+	/** Цель, которую уже бьют другие бойцы отряда, менее желанна на столько за каждого (цели делятся). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Squad", meta = (ClampMin = "0"))
+	float SquadTargetSharePenalty = 0.5f;
+
+	/** Роль в отряде. None — не в отряде (UNoFearSquadSubsystem). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	ENoFearSquadRole GetSquadRole() const;
 
 	// --- Гранаты ---
 
@@ -237,6 +256,7 @@ protected:
 	virtual void UpdateBot() override;
 	virtual void HandleTargetChanged(AActor* NewTarget, AActor* OldTarget) override;
 	virtual void WriteBlackboard() override;
+	virtual float ScoreTarget(const AActor* Candidate, const FNoFearKnownActor& Knowledge) const override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	/** Раз в обновление: проверить укрытие, найти новое, начать отход. */
@@ -265,6 +285,9 @@ protected:
 	double CoveringFireUntil = -1.0;
 	int32 CoverLostChecks = 0;
 	bool bRetreating = false;
+
+	/** Оружие роли, которое боец держит сейчас (роль сменилась — вернуть стартовое). */
+	TWeakObjectPtr<UNoFearWeaponData> AppliedRoleWeapon;
 
 	double NextGrenadeTime = 0.0;
 	FString GrenadeDebugReason;
