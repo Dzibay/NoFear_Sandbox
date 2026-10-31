@@ -10,7 +10,7 @@ ANoFearGameMode::ANoFearGameMode()
 	PlayerControllerClass = ANoFearPlayerController::StaticClass();
 	HUDClass = ANoFearHUD::StaticClass();
 
-	static ConstructorHelpers::FClassFinder<APawn> PlayerPawnClass(TEXT("/Game/Blueprints/CBP_SandboxCharacter"));
+	static ConstructorHelpers::FClassFinder<APawn> PlayerPawnClass(TEXT("/Game/Blueprints/CBP_Player"));
 	if (PlayerPawnClass.Succeeded())
 	{
 		DefaultPawnClass = PlayerPawnClass.Class;
