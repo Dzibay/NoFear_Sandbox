@@ -281,6 +281,7 @@ void ANoFearHUD::DrawHUD()
 	{
 		DrawVignette();
 	}
+	DrawDownedScreen();
 	if (bShowDamageIndicators && !bDead)
 	{
 		DrawDamageIndicators();
@@ -350,15 +351,25 @@ void ANoFearHUD::DrawHUD()
 		{
 			DrawWeaponSlots();
 		}
+		DrawReviveProgress();
 	}
 
 	if (bShowHealth)
 	{
 		DrawHealth();
 	}
+	if (bShowRadio)
+	{
+		DrawRadio();
+	}
 	if (bShowDeathScreen && bDead)
 	{
 		DrawDeathScreen();
+	}
+	if (!bDead)
+	{
+		// Колесо — поверх всего.
+		DrawOrderWheel();
 	}
 }
 
@@ -1087,87 +1098,6 @@ bool ANoFearHUD::DrawWorldMarker(const FVector& WorldLocation, const FLinearColo
 	return false;
 }
 
-void ANoFearHUD::DrawCompanionPanel()
-{
-	const ANoFearPlayerController* PlayerController = Cast<ANoFearPlayerController>(GetOwningPlayerController());
-	if (!PlayerController)
-	{
-		return;
-	}
-	const TArray<APawn*> Companions = PlayerController->GetCompanions();
-	if (Companions.IsEmpty())
-	{
-		return;
-	}
-
-	const float S = GetUIScale();
-	const float X = Margin * S;
-	const float ContentX = X + 20.f * S;
-	float Y = Margin * S;
-	const APawn* PlayerPawn = GetOwningPawn();
-	const FLinearColor Dim(0.8f, 0.8f, 0.8f, 0.85f);
-
-	DrawLabel(CompanionTitleText.ToString(), X, Y, Dim, 0.85f * S, ELabelAlign::Left);
-	Y += 22.f * S;
-
-	for (const APawn* Companion : Companions)
-	{
-		const ANoFearCharacter* Character = Cast<ANoFearCharacter>(Companion);
-		const ANoFearCompanionAIController* Controller = Cast<ANoFearCompanionAIController>(Companion->GetController());
-		const FString Name = Character ? Character->GetCharacterDisplayName().ToString() : Companion->GetName();
-
-		// Строка 1: значок, имя, расстояние.
-		const float NameScale = 1.15f * S;
-		float NameWidth = 0.f;
-		float NameHeight = 0.f;
-		GetTextSize(Name, NameWidth, NameHeight, GetFont(), NameScale);
-		DrawDiamond(FVector2D(X + 7.f * S, Y + NameHeight * 0.5f), 6.f * S, CompanionColor);
-		DrawLabel(Name, ContentX, Y, CompanionColor, NameScale, ELabelAlign::Left);
-		if (PlayerPawn)
-		{
-			const FString Distance = FormatDistance(FVector::Dist(PlayerPawn->GetActorLocation(), Companion->GetActorLocation()));
-			float DistanceWidth = 0.f;
-			float DistanceHeight = 0.f;
-			GetTextSize(Distance, DistanceWidth, DistanceHeight, GetFont(), 0.85f * S);
-			DrawLabel(Distance, ContentX + NameWidth + 12.f * S, Y + NameHeight - DistanceHeight - 1.f * S, Dim, 0.85f * S, ELabelAlign::Left);
-		}
-		Y += NameHeight + 4.f * S;
-
-		// Строка 2: здоровье и что делает.
-		const UNoFearHealthComponent* Health = UNoFearHealthComponent::FindHealth(Companion);
-		const float Fraction = Health ? Health->GetHealthFraction() : 1.f;
-		const float BarWidth = 200.f * S;
-		const float BarHeight = 8.f * S;
-		DrawBar(ContentX, Y, BarWidth, BarHeight, Fraction, FMath::Lerp(LowHealthColor, CompanionColor, FMath::Clamp(Fraction / 0.6f, 0.f, 1.f)));
-
-		const FText& Status = Controller && Controller->GetCurrentTarget() ? CompanionFightingText
-			: (Controller && Controller->IsFollowing() ? CompanionFollowingText : CompanionWaitingText);
-		float StatusWidth = 0.f;
-		float StatusHeight = 0.f;
-		GetTextSize(Status.ToString(), StatusWidth, StatusHeight, GetFont(), 0.85f * S);
-		DrawLabel(Status.ToString(), ContentX + BarWidth + 12.f * S, Y + BarHeight * 0.5f - StatusHeight * 0.5f, FLinearColor(1.f, 1.f, 1.f, 0.9f), 0.85f * S, ELabelAlign::Left);
-		Y += BarHeight + 18.f * S;
-	}
-}
-
-void ANoFearHUD::DrawCompanionMarkers()
-{
-	const ANoFearPlayerController* PlayerController = Cast<ANoFearPlayerController>(GetOwningPlayerController());
-	if (!PlayerController)
-	{
-		return;
-	}
-
-	const APawn* PlayerPawn = GetOwningPawn();
-	const float S = GetUIScale();
-	for (const APawn* Companion : PlayerController->GetCompanions())
-	{
-		const float Distance = PlayerPawn ? FVector::Dist(PlayerPawn->GetActorLocation(), Companion->GetActorLocation()) : 0.f;
-		const FString Caption = Distance > CompanionCaptionDistance ? FormatDistance(Distance) : FString();
-		DrawWorldMarker(GetOverheadLocation(Companion), CompanionColor, 7.f * S, /*bEdgeArrow=*/true, Caption);
-	}
-}
-
 void ANoFearHUD::DrawRecruitableMarkers()
 {
 	const ANoFearPlayerController* PlayerController = Cast<ANoFearPlayerController>(GetOwningPlayerController());
@@ -1228,9 +1158,10 @@ void ANoFearHUD::DrawBotIndicators()
 	if (Mode <= 0 || !PlayerController || !PlayerPawn || !World || !Subsystem || !Canvas)
 	{
 		BotPanels.Reset();
-		DrawnSquadRings = DrawnSquadLines = 0;
+		DrawnSquadRings = DrawnSquadLines = DrawnOrderLines = DrawnOrderWords = DrawnTactics = 0;
 		return;
 	}
+	DrawnOrderWords = DrawnTactics = 0;
 
 	// Кольца под ногами — под панелями.
 	if (bShowSquadRings)
@@ -1239,7 +1170,7 @@ void ANoFearHUD::DrawBotIndicators()
 	}
 	else
 	{
-		DrawnSquadRings = DrawnSquadLines = 0;
+		DrawnSquadRings = DrawnSquadLines = DrawnOrderLines = 0;
 	}
 	const UNoFearSquadSubsystem* Squads = UNoFearSquadSubsystem::Get(this);
 
@@ -1280,6 +1211,11 @@ void ANoFearHUD::DrawBotIndicators()
 		ENoFearTeam Team = ENoFearTeam::Neutral;
 		/** Значок роли рядом с «◆ N». None — не в отряде. */
 		ENoFearSquadRole Role = ENoFearSquadRole::None;
+		FNoFearSquadMemberView SquadView;
+		/** Слово приказа рядом со значком роли. */
+		bool bOrder = false;
+		/** Над командиром — тактика отряда и шкала морали. */
+		bool bTactic = false;
 	};
 	TArray<FPanelDraw> Panels;
 	TSet<const AActor*> Seen;
@@ -1363,7 +1299,13 @@ void ANoFearHUD::DrawBotIndicators()
 		const bool bWantLoadout = GrenadeCount > 0 && bLoadoutTeam;
 		const FString Shout = Bot->GetShoutText().ToString();
 
-		bool bWant = (bWantHealth || bWantAlert || bWantLoadout || !Shout.IsEmpty()) && Distance <= MaxDistance;
+		// Отряд: приказ бойца и тактика у командира — тоже повод показать панель, чтобы было видно, что делает отряд.
+		FNoFearSquadMemberView SquadView;
+		const bool bSquad = !bCompanion && Squads && Squads->GetMemberView(Pawn, SquadView) && SquadView.SquadSize >= 2;
+		const bool bWantOrder = bSquad && bShowSquadOrders && (SquadView.Order != ENoFearSquadOrder::None || SquadView.bGrenadeOrder);
+		const bool bWantTactic = bSquad && bShowSquadOrders && Pawn == SquadView.Commander && SquadView.Tactic != ENoFearSquadTactic::None;
+
+		bool bWant = (bWantHealth || bWantAlert || bWantLoadout || bWantOrder || bWantTactic || !Shout.IsEmpty()) && Distance <= MaxDistance;
 
 		// На экране ли голова бота.
 		FVector2D Screen = FVector2D::ZeroVector;
@@ -1418,10 +1360,12 @@ void ANoFearHUD::DrawBotIndicators()
 		Panel.bCompanion = bCompanion;
 		Panel.bHostile = bHostile;
 		Panel.Team = Team;
-		FNoFearSquadMemberView SquadView;
-		if (!bCompanion && Squads && Squads->GetMemberView(Pawn, SquadView) && SquadView.SquadSize >= 2)
+		if (bSquad)
 		{
 			Panel.Role = SquadView.Role;
+			Panel.SquadView = SquadView;
+			Panel.bOrder = bWantOrder;
+			Panel.bTactic = bWantTactic;
 		}
 	}
 
@@ -1463,8 +1407,16 @@ void ANoFearHUD::DrawBotIndicators()
 		// Над ромбом напарника (и его подписью с расстоянием).
 		float TopY = Panel.Screen.Y - (Panel.bCompanion ? 46.f * S : 4.f * S);
 
-		// Нижняя строка — значок роли и запас гранат «◆ N», над ней полоска здоровья.
+		// Нижняя строка — значок роли, слово приказа и запас гранат «◆ N», над ней полоска здоровья.
 		const bool bRoleIcon = Panel.Role != ENoFearSquadRole::None;
+		const FNoFearSquadMemberView& SquadView = Panel.SquadView;
+		FString OrderWord;
+		if (Panel.bOrder)
+		{
+			OrderWord = SquadView.bGrenadeOrder
+				? NSLOCTEXT("NoFearHUD", "OrderGrenade", "граната").ToString()
+				: UNoFearSquadSubsystem::GetOrderText(SquadView.Order).ToString();
+		}
 		if (Panel.Grenades > 0 || bRoleIcon)
 		{
 			FLinearColor Color = GrenadeColor;
@@ -1478,20 +1430,48 @@ void ANoFearHUD::DrawBotIndicators()
 			const float IconSize = 5.5f * PanelScale;
 			const float IconWidth = bRoleIcon ? IconSize * 2.f : 0.f;
 			const float GrenadeWidth = Panel.Grenades > 0 ? DiamondRadius * 2.f + 4.f * PanelScale + TextWidth : 0.f;
-			const float Gap = bRoleIcon && Panel.Grenades > 0 ? 7.f * PanelScale : 0.f;
-			const float RowWidth = IconWidth + Gap + GrenadeWidth;
+
+			// Новый приказ — слово вспыхивает белым и чуть крупнее.
+			const float OrderFlash = 1.f - FMath::Clamp(static_cast<float>(Now - SquadView.OrderTime) / SquadOrderFlashTime, 0.f, 1.f);
+			const float WordScale = 0.8f * PanelScale * (1.f + 0.2f * OrderFlash);
+			float WordWidth = 0.f;
+			float WordHeight = 0.f;
+			if (!OrderWord.IsEmpty())
+			{
+				GetTextSize(OrderWord, WordWidth, WordHeight, GetFont(), WordScale);
+			}
+
+			const float GapWidth = 6.f * PanelScale;
+			float RowWidth = 0.f;
+			for (const float Part : { IconWidth, WordWidth, GrenadeWidth })
+			{
+				if (Part > 0.f)
+				{
+					RowWidth += (RowWidth > 0.f ? GapWidth : 0.f) + Part;
+				}
+			}
 			const float RowLeft = CenterX - RowWidth * 0.5f;
 			const float RowY = TopY - TextHeight;
+			float Cursor = RowLeft;
 			if (bRoleIcon)
 			{
 				FLinearColor IconColor = GetSquadRoleColor(Panel.Role);
 				IconColor.A *= Opacity;
-				DrawRoleIcon(FVector2D(RowLeft + IconSize, RowY + TextHeight * 0.5f), IconSize, Panel.Role, IconColor);
+				DrawRoleIcon(FVector2D(Cursor + IconSize, RowY + TextHeight * 0.5f), IconSize, Panel.Role, IconColor);
+				Cursor += IconWidth + GapWidth;
+			}
+			if (WordWidth > 0.f)
+			{
+				FLinearColor WordColor = SquadView.bGrenadeOrder ? GrenadeColor : GetSquadRoleColor(Panel.Role);
+				WordColor = FMath::Lerp(WordColor, FLinearColor::White, OrderFlash * 0.7f);
+				WordColor.A = Opacity;
+				DrawLabel(OrderWord, Cursor, RowY + (TextHeight - WordHeight) * 0.5f, WordColor, WordScale, ELabelAlign::Left);
+				Cursor += WordWidth + GapWidth;
+				++DrawnOrderWords;
 			}
 			if (Panel.Grenades > 0)
 			{
-				const float GrenadeLeft = RowLeft + IconWidth + Gap;
-				DrawDiamond(FVector2D(GrenadeLeft + DiamondRadius, RowY + TextHeight * 0.5f), DiamondRadius, Color);
+				DrawDiamond(FVector2D(Cursor + DiamondRadius, RowY + TextHeight * 0.5f), DiamondRadius, Color);
 				DrawLabel(Count, RowLeft + RowWidth, RowY, Color, TextScale, ELabelAlign::Right);
 			}
 			TopY = RowY - 3.f * PanelScale;
@@ -1553,6 +1533,44 @@ void ANoFearHUD::DrawBotIndicators()
 			GetTextSize(Symbol, TextWidth, TextHeight, GetFont(), TextScale);
 			DrawLabel(Symbol, Center.X, Center.Y - TextHeight * 0.5f, Color, TextScale, ELabelAlign::Center);
 			TopY = Center.Y - Radius - Thickness - 4.f * PanelScale;
+		}
+
+		// Над командиром — тактика отряда (вспыхивает при смене) и шкала морали под ней.
+		if (Panel.bTactic)
+		{
+			const float BarWidth = FMath::RoundToFloat(54.f * PanelScale);
+			const float BarHeight = FMath::Max(2.f, FMath::RoundToFloat(4.f * PanelScale));
+			const float BarX = FMath::RoundToFloat(CenterX - BarWidth * 0.5f);
+			const float BarY = FMath::RoundToFloat(TopY - BarHeight);
+			const float Morale = FMath::Clamp(SquadView.Morale, 0.f, 1.f);
+			FLinearColor MoraleColor = FMath::Lerp(SquadMoraleLowColor, SquadMoraleHighColor, Morale);
+			if (Morale < 0.25f)
+			{
+				// Отряд на грани бегства — шкала мигает.
+				MoraleColor.A *= 0.6f + 0.4f * FMath::Sin(static_cast<float>(Now) * 8.f);
+			}
+			DrawBar(BarX, BarY, BarWidth, BarHeight, Morale, MoraleColor, -1.f, Opacity);
+
+			FString Tactic = UNoFearSquadSubsystem::GetTacticText(SquadView.Tactic).ToString();
+			if (SquadView.bHoldingLine)
+			{
+				Tactic += NSLOCTEXT("NoFearHUD", "TacticHoldingLine", " · рубеж").ToString();
+			}
+			if (!SquadView.AssistingSquad.IsNone())
+			{
+				Tactic += NSLOCTEXT("NoFearHUD", "TacticAssisting", " · к соседям").ToString();
+			}
+			const float TacticFlash = 1.f - FMath::Clamp(static_cast<float>(Now - SquadView.TacticChangeTime) / SquadOrderFlashTime, 0.f, 1.f);
+			FLinearColor Color = FMath::Lerp(SquadCommanderColor, FLinearColor::White, TacticFlash * 0.7f);
+			Color.A = Opacity;
+			const float TextScale = 0.95f * PanelScale * (1.f + 0.2f * TacticFlash);
+			float TextWidth = 0.f;
+			float TextHeight = 0.f;
+			GetTextSize(Tactic, TextWidth, TextHeight, GetFont(), TextScale);
+			const float TextY = BarY - 3.f * PanelScale - TextHeight;
+			DrawLabel(Tactic, CenterX, TextY, Color, TextScale, ELabelAlign::Center);
+			TopY = TextY - 3.f * PanelScale;
+			++DrawnTactics;
 		}
 
 		// Крик («Граната!») — над всем.
@@ -1670,6 +1688,21 @@ void ANoFearHUD::DrawWorldLine(const FVector& From, const FVector& To, const FLi
 	DrawLine(ScreenA.X, ScreenA.Y, ScreenB.X, ScreenB.Y, Color, Thickness);
 }
 
+void ANoFearHUD::DrawWorldDashedLine(const FVector& From, const FVector& To, const FLinearColor& Color, float Thickness, float Dash)
+{
+	const float Length = FVector::Dist(From, To);
+	if (Length <= KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+	Dash = FMath::Max(Dash, 5.f);
+	const FVector Direction = (To - From) / Length;
+	for (float Start = 0.f; Start < Length; Start += Dash * 2.f)
+	{
+		DrawWorldLine(From + Direction * Start, From + Direction * FMath::Min(Start + Dash, Length), Color, Thickness);
+	}
+}
+
 void ANoFearHUD::DrawGroundRing(const FVector& Center, float Radius, const FLinearColor& Color, float Thickness, bool bDashed)
 {
 	constexpr int32 Segments = 24;
@@ -1731,7 +1764,7 @@ void ANoFearHUD::DrawRoleIcon(const FVector2D& Center, float Size, ENoFearSquadR
 
 void ANoFearHUD::DrawSquadRings()
 {
-	DrawnSquadRings = DrawnSquadLines = 0;
+	DrawnSquadRings = DrawnSquadLines = DrawnOrderLines = 0;
 	const int32 Mode = CVarBotIndicators.GetValueOnGameThread();
 	const ANoFearPlayerController* PlayerController = Cast<ANoFearPlayerController>(GetOwningPlayerController());
 	const APawn* PlayerPawn = GetOwningPawn();
@@ -1817,7 +1850,8 @@ void ANoFearHUD::DrawSquadRings()
 			// Плавно проявляется, когда боец встаёт в строй.
 			Ring.Opacity *= FMath::Clamp(static_cast<float>(Now - Ring.View.JoinTime) / 0.4f, 0.f, 1.f);
 			const ANoFearShooterAIController* Shooter = Cast<ANoFearShooterAIController>(Bot);
-			Ring.bDim = Shooter && Shooter->IsRetreating();
+			const UNoFearHealthComponent* Health = UNoFearHealthComponent::FindHealth(Pawn);
+			Ring.bDim = (Shooter && Shooter->IsRetreating()) || (Health && Health->GetHealthFraction() < LowHealthFraction);
 		}
 		if (Ring.Opacity <= 0.01f)
 		{
@@ -1855,6 +1889,96 @@ void ANoFearHUD::DrawSquadRings()
 		DrawWorldLine(From, To, FLinearColor(0.f, 0.f, 0.f, 0.5f * Color.A), 2.f * S + Outline);
 		DrawWorldLine(From, To, Color, 2.f * S);
 		++DrawnSquadLines;
+	}
+
+	// Линии приказов на земле, SquadOrderLineTime после приказа: сплошная — куда идти (рубеж, укрытие на фланге,
+	// место сбора, свой, к кому послан), пунктир — по кому подавлять или куда бросить гранату. Тоже под кольцами.
+	if (bShowSquadOrders && SquadOrderLineTime > 0.f)
+	{
+		// Точка приказа и враг — на пол под ними: линия лежит на земле, как и кольца.
+		auto ToGround = [World](const FVector& Point, float FallbackZ)
+		{
+			FHitResult Hit;
+			const FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearOrderLineGround), false);
+			if (World->LineTraceSingleByObjectType(Hit, Point + FVector(0.f, 0.f, 60.f), Point - FVector(0.f, 0.f, 400.f), FCollisionObjectQueryParams(ECC_WorldStatic), Params))
+			{
+				return Hit.ImpactPoint + FVector(0.f, 0.f, 4.f);
+			}
+			return FVector(Point.X, Point.Y, FallbackZ);
+		};
+
+		for (const FRingDraw& Ring : Rings)
+		{
+			const FNoFearSquadMemberView& View = Ring.View;
+			if (Ring.bPackLeader || (View.Order == ENoFearSquadOrder::None && !View.bGrenadeOrder))
+			{
+				continue;
+			}
+			const float Age = static_cast<float>(Now - View.OrderTime);
+			if (Age < 0.f || Age >= SquadOrderLineTime)
+			{
+				continue;
+			}
+			// Быстро проявляется, вторую половину времени гаснет.
+			const float Fade = FMath::Clamp(Age / 0.15f, 0.f, 1.f)
+				* (1.f - FMath::Clamp((Age - SquadOrderLineTime * 0.5f) / (SquadOrderLineTime * 0.5f), 0.f, 1.f));
+			const float Alpha = Ring.Opacity * Fade;
+			if (Alpha <= 0.01f)
+			{
+				continue;
+			}
+
+			// Куда идти.
+			bool bGoal = false;
+			FVector Goal = FVector::ZeroVector;
+			if (View.bHasOrderLocation)
+			{
+				Goal = ToGround(View.OrderLocation, Ring.Center.Z);
+				bGoal = true;
+			}
+			else if (View.OrderTarget && View.OrderTarget != Ring.Pawn)
+			{
+				Goal = View.OrderTarget->GetActorLocation() - FVector(0.f, 0.f, View.OrderTarget->GetSimpleCollisionHalfHeight() - 4.f);
+				bGoal = true;
+			}
+			if (bGoal && FVector::Dist2D(Ring.Center, Goal) > Radius * 2.f)
+			{
+				const FVector Direction = (Goal - Ring.Center).GetSafeNormal2D();
+				const FVector From = Ring.Center + Direction * Radius;
+				const FVector To = Goal - Direction * 20.f;
+				FLinearColor Color = GetSquadRoleColor(View.Role);
+				Color.A = Alpha;
+				const FLinearColor Shadow(0.f, 0.f, 0.f, 0.45f * Alpha);
+				DrawWorldLine(From, To, Shadow, 2.f * S + Outline);
+				DrawWorldLine(From, To, Color, 2.f * S);
+				// Наконечник у точки приказа и кружок на ней.
+				const FVector Side = FVector(-Direction.Y, Direction.X, 0.f);
+				for (const float Sign : { 1.f, -1.f })
+				{
+					const FVector Tip = To - Direction * 22.f + Side * (Sign * 12.f);
+					DrawWorldLine(To, Tip, Shadow, 2.f * S + Outline);
+					DrawWorldLine(To, Tip, Color, 2.f * S);
+				}
+				DrawGroundRing(Goal, 20.f, Color, 1.5f * S, true);
+				++DrawnOrderLines;
+			}
+
+			// По кому стрелять или куда бросить гранату.
+			const bool bFireOrder = View.Order == ENoFearSquadOrder::Suppress || View.Order == ENoFearSquadOrder::CoverFallback
+				|| View.Order == ENoFearSquadOrder::CoveringFire;
+			if ((bFireOrder || View.bGrenadeOrder) && View.bHasOrderEnemyLocation)
+			{
+				const FVector Enemy = ToGround(View.OrderEnemyLocation, Ring.Center.Z);
+				if (FVector::Dist2D(Ring.Center, Enemy) > Radius * 2.f)
+				{
+					const FVector Direction = (Enemy - Ring.Center).GetSafeNormal2D();
+					FLinearColor Color = View.bGrenadeOrder ? GrenadeColor : SquadFireLineColor;
+					Color.A = Alpha * 0.85f;
+					DrawWorldDashedLine(Ring.Center + Direction * Radius, Enemy, Color, 1.5f * S, 30.f);
+					++DrawnOrderLines;
+				}
+			}
+		}
 	}
 
 	for (const FRingDraw& Ring : Rings)
@@ -1898,6 +2022,11 @@ void ANoFearHUD::DrawSquadRings()
 		if (Ring.Pawn == View.Commander)
 		{
 			Flash = FMath::Max(Flash, 1.f - FMath::Clamp(static_cast<float>(Now - View.CommanderChangeTime) / 0.6f, 0.f, 1.f));
+		}
+		if (bShowSquadOrders && (View.Order != ENoFearSquadOrder::None || View.bGrenadeOrder))
+		{
+			// Новый приказ — кольцо вспыхивает.
+			Flash = FMath::Max(Flash, 0.7f * (1.f - FMath::Clamp(static_cast<float>(Now - View.OrderTime) / SquadOrderFlashTime, 0.f, 1.f)));
 		}
 		Color = FMath::Lerp(Color, FLinearColor::White, Flash * 0.6f);
 		Color.A = Opacity;

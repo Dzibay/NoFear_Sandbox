@@ -24,6 +24,9 @@ class UFont;
  * - Напарники: панель вверху слева, зелёная метка над головой, стрелка у края экрана, если напарника не видно.
  *   Бледные метки над ещё не завербованными напарниками поблизости.
  * - Подсказка взаимодействия под прицелом: «[E] Завербовать» и имя того, с кем.
+ * - Напарник (NoFearHUDCompanion.cpp): чем занят, запас магазинов и бинтов, отметки врагов, которых видит он,
+ *   точка приказа, рация слева, колесо приказов на Tab. Упавший напарник — красная метка со стрелкой и таймером,
+ *   кольцо подъёма у прицела. Упавший игрок — тёмные края, таймер и кто идёт на помощь.
  * - Панель над ботами: полоска здоровья с «хвостом» и значок тревоги — «?» с кольцом-шкалой обнаружения, «!» в бою.
  *   Показывается по правилам (раненым, в бою, под прицелом, рядом), только при прямой видимости; см. NoFear.HUD.BotIndicators.
  * - Кольца отрядов под ногами: узор и цвет — роль, тонкий внешний ободок — сторона (красный враг, зелёный союзник).
@@ -257,6 +260,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Companions")
 	FLinearColor CompanionColor = FLinearColor(0.3f, 0.95f, 0.4f, 1.f);
 
+	/** Упавший раненым: метка, стрелка, таймер. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Companions")
+	FLinearColor DownedColor = FLinearColor(1.f, 0.22f, 0.12f, 1.f);
+
+	/** Враги, которых отметил напарник. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Companions")
+	FLinearColor CompanionMarkColor = FLinearColor(1.f, 0.6f, 0.1f, 1.f);
+
+	/** Реплики напарника слева. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Companions")
+	bool bShowRadio = true;
+
 	// --- Панель над ботами ---
 
 	/**
@@ -348,6 +363,32 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad")
 	FLinearColor SquadAllyBorderColor = FLinearColor(0.3f, 0.95f, 0.35f, 1.f);
 
+	/**
+	 * Приказы отряда: слово приказа в панели рядом со знаком роли, тактика и шкала морали над командиром,
+	 * линии приказов на земле, вспышка кольца при новом приказе.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad")
+	bool bShowSquadOrders = true;
+
+	/** Сколько видна линия на земле к точке нового приказа (рубеж, укрытие на фланге, свой, к кому идти), с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad", meta = (ClampMin = "0"))
+	float SquadOrderLineTime = 3.f;
+
+	/** Вспышка кольца и слова приказа при новом приказе, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad", meta = (ClampMin = "0.01"))
+	float SquadOrderFlashTime = 0.6f;
+
+	/** Линия огня на подавление и броска гранаты по приказу — к врагу. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad")
+	FLinearColor SquadFireLineColor = FLinearColor(1.f, 0.3f, 0.2f, 1.f);
+
+	/** Шкала морали над командиром: от низкой к высокой. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad")
+	FLinearColor SquadMoraleLowColor = FLinearColor(1.f, 0.25f, 0.15f, 1.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Squad")
+	FLinearColor SquadMoraleHighColor = FLinearColor(0.35f, 0.95f, 0.4f, 1.f);
+
 	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
 	FLinearColor GetSquadRoleColor(ENoFearSquadRole SquadRole) const;
 
@@ -358,6 +399,18 @@ public:
 	/** Сколько линий к командиру нарисовано в последнем кадре (для тестов). */
 	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
 	int32 GetDrawnSquadLineCount() const { return DrawnSquadLines; }
+
+	/** Сколько линий приказов на земле нарисовано в последнем кадре (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
+	int32 GetDrawnSquadOrderLineCount() const { return DrawnOrderLines; }
+
+	/** Сколько слов приказа в панелях нарисовано в последнем кадре (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
+	int32 GetDrawnSquadOrderWordCount() const { return DrawnOrderWords; }
+
+	/** Сколько табло «тактика + мораль» над командирами нарисовано в последнем кадре (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
+	int32 GetDrawnSquadTacticCount() const { return DrawnTactics; }
 
 	/** Цвет крика над ботом («Граната!»). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots")
@@ -441,6 +494,8 @@ private:
 	void DrawGroundRing(const FVector& Center, float Radius, const FLinearColor& Color, float Thickness, bool bDashed = false);
 	/** Отрезок в мире, спроецированный на экран (части за камерой не рисуются). */
 	void DrawWorldLine(const FVector& From, const FVector& To, const FLinearColor& Color, float Thickness);
+	/** Пунктир в мире: штрихи по Dash см через такой же промежуток. */
+	void DrawWorldDashedLine(const FVector& From, const FVector& To, const FLinearColor& Color, float Thickness, float Dash);
 	/** Значок роли: корона, шеврон вверх, две черты, точка. Size — половина ширины. */
 	void DrawRoleIcon(const FVector2D& Center, float Size, ENoFearSquadRole SquadRole, const FLinearColor& Color);
 	void DrawInteractionPrompt();
@@ -483,6 +538,18 @@ private:
 	float GetUIScale() const;
 	float GetLowHealthAlpha() const;
 
+	// Напарник, колесо приказов, ранение — NoFearHUDCompanion.cpp.
+	/** Тёмные края, таймер и кто идёт на помощь, пока игрок лежит раненым. */
+	void DrawDownedScreen();
+	/** Враги, отмеченные напарником, и точка его приказа. */
+	void DrawCompanionMarks();
+	void DrawRadio();
+	/** Кольцо у прицела, пока игрок поднимает упавшего. */
+	void DrawReviveProgress();
+	void DrawOrderWheel();
+	/** Закрашенный сектор кольца Inner..Outer от угла From до To в градусах (0 — вверх, по часовой). */
+	void DrawWedge(const FVector2D& Center, float Inner, float Outer, float From, float To, const FLinearColor& Color);
+
 	TWeakObjectPtr<ANoFearPlayerController> BoundController;
 	TWeakObjectPtr<UNoFearHealthComponent> BoundHealth;
 
@@ -499,6 +566,9 @@ private:
 
 	int32 DrawnSquadRings = 0;
 	int32 DrawnSquadLines = 0;
+	int32 DrawnOrderLines = 0;
+	int32 DrawnOrderWords = 0;
+	int32 DrawnTactics = 0;
 
 	float HitMarkerAge = 1.0e9f;
 	bool bHitHeadshot = false;

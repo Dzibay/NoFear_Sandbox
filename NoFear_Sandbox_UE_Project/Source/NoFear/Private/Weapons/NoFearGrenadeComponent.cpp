@@ -89,7 +89,8 @@ float UNoFearGrenadeComponent::GetRadius() const
 
 bool UNoFearGrenadeComponent::CanThrow() const
 {
-	if (bOwnerDead || bAiming || bThrowing || GrenadeCount <= 0 || !GrenadeData || !GrenadeClass || UNoFearHealthComponent::IsActorDead(GetOwner()))
+	// Раненый лёжа гранату не бросает.
+	if (bOwnerDead || bAiming || bThrowing || GrenadeCount <= 0 || !GrenadeData || !GrenadeClass || UNoFearHealthComponent::IsActorIncapacitated(GetOwner()))
 	{
 		return false;
 	}

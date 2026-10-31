@@ -8,6 +8,7 @@
  * Вербовка напарника клавишей E. Ставится на тело с ANoFearCompanionAIController (CBP_Bot_Companion).
  * Чужой напарник — «Завербовать» (ANoFearPlayerController::RecruitCompanion), свой — «Жди здесь» / «За мной».
  * Враждебного, мёртвого или бота без контроллера напарника завербовать нельзя.
+ * Упавшего (UNoFearHealthComponent::IsDowned) поднимают, удерживая E (ANoFearPlayerController::StartRevive).
  */
 UCLASS(ClassGroup = (NoFear), meta = (BlueprintSpawnableComponent))
 class NOFEAR_API UNoFearRecruitableComponent : public UNoFearInteractableComponent
@@ -27,6 +28,10 @@ public:
 	/** Подсказка своему напарнику, который ждёт. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction")
 	FText FollowText;
+
+	/** Подсказка над упавшим союзником. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction")
+	FText ReviveText;
 
 	virtual bool CanInteract_Implementation(APawn* User) const override;
 	virtual FText GetInteractionPrompt_Implementation(APawn* User) const override;

@@ -149,11 +149,29 @@ float UNoFearCombatComponent::GetTimeSinceTargetSeen() const
 	return static_cast<float>(GetNow() - LastSeenTime);
 }
 
+void UNoFearCombatComponent::SetBlindAimPoint(FVector AimPoint)
+{
+	if (!bHasLineOfSight)
+	{
+		LastKnownAimPoint = AimPoint;
+	}
+}
+
 bool UNoFearCombatComponent::IsReadyToFire() const
 {
 	// Пошатнувшийся не стреляет (UNoFearPoseComponent::Stagger).
 	return CurrentTarget.IsValid() && bHasLineOfSight && GetNow() >= ReadyToFireTime && !BlockingFriend.IsValid()
 		&& !UNoFearPoseComponent::IsActorStaggered(GetOwner());
+}
+
+bool UNoFearCombatComponent::CanBlindFire() const
+{
+	const AActor* Target = CurrentTarget.Get();
+	if (!Target || bHasLineOfSight || UNoFearPoseComponent::IsActorStaggered(GetOwner()))
+	{
+		return false;
+	}
+	return !FindFriendInLine(GetOwner(), Target, GetEyesLocation(), LastKnownAimPoint, FMath::Max(FriendlyFireClearance, 40.f));
 }
 
 AActor* UNoFearCombatComponent::FindFriendInLine(const AActor* Shooter, const AActor* Target, const FVector& Start, const FVector& End, float Clearance)

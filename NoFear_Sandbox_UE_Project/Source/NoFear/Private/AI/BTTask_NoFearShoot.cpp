@@ -2,6 +2,7 @@
 
 #include "AIController.h"
 #include "AI/NoFearCombatComponent.h"
+#include "AI/NoFearShooterAIController.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "Core/NoFearHealthComponent.h"
@@ -128,7 +129,9 @@ void UBTTask_NoFearShoot::TickTask(UBehaviorTreeComponent& OwnerComp, uint8* Nod
 	// Нет линии огня или не прошла реакция — не жмём спуск, но очередь по времени идёт.
 	const AAIController* Controller = OwnerComp.GetAIOwner();
 	const UNoFearCombatComponent* Combat = Controller && Controller->GetPawn() ? Controller->GetPawn()->FindComponentByClass<UNoFearCombatComponent>() : nullptr;
-	if (Combat && !Combat->IsReadyToFire())
+	const ANoFearShooterAIController* Shooter = Cast<ANoFearShooterAIController>(Controller);
+	const bool bBlind = bBlindFireWhenSuppressing && Combat && Shooter && Shooter->IsSuppressing() && Combat->CanBlindFire();
+	if (Combat && !Combat->IsReadyToFire() && !bBlind)
 	{
 		ReleaseTrigger(OwnerComp, Memory);
 		return;
@@ -166,5 +169,6 @@ void UBTTask_NoFearShoot::OnTaskFinished(UBehaviorTreeComponent& OwnerComp, uint
 FString UBTTask_NoFearShoot::GetStaticDescription() const
 {
 	const FString Bursts = BurstsMax > 0 ? FString::Printf(TEXT("%d-%d bursts"), FMath::Min(BurstsMin, BurstsMax), BurstsMax) : TEXT("until aborted");
-	return FString::Printf(TEXT("Shoot at %s: %s, %.2f-%.2f s"), *GetSelectedBlackboardKey().ToString(), *Bursts, BurstDurationMin, BurstDurationMax);
+	return FString::Printf(TEXT("Shoot at %s: %s, %.2f-%.2f s%s"), *GetSelectedBlackboardKey().ToString(), *Bursts, BurstDurationMin, BurstDurationMax,
+		bBlindFireWhenSuppressing ? TEXT(", blind when suppressing") : TEXT(""));
 }

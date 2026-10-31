@@ -107,6 +107,14 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Health")
 	bool IsDead() const { return HealthComponent && HealthComponent->IsDead(); }
 
+	/** Лежит раненым (UNoFearHealthComponent::IsDowned): пригнут, ползёт, не прыгает. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Health")
+	bool IsDowned() const { return HealthComponent && HealthComponent->IsDowned(); }
+
+	/** Во сколько раз медленнее ползёт раненый (множитель ввода движения). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Health", meta = (ClampMin = "0", ClampMax = "1"))
+	float DownedMoveScale = 0.3f;
+
 	/**
 	 * Канал, которым стреляет оружие (UNoFearWeaponData::TraceChannel). Профили Pawn и CharacterMesh его игнорируют,
 	 * поэтому на BeginPlay меш персонажа переключается на Block по этому каналу: пули попадают по костям.
@@ -176,6 +184,12 @@ public:
 
 	virtual void Landed(const FHitResult& Hit) override;
 
+	/** Раненый ползёт: ввод ослаблен в DownedMoveScale раз. */
+	virtual void AddMovementInput(FVector WorldDirection, float ScaleValue = 1.f, bool bForce = false) override;
+
+	/** Раненый не встаёт, пока его не поднимут. */
+	virtual void UnCrouch(bool bClientSimulation = false) override;
+
 protected:
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void PostInitializeComponents() override;
@@ -184,6 +198,7 @@ protected:
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void NotifyControllerChanged() override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
+	virtual bool CanJumpInternal_Implementation() const override;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "NoFear|Weapon")
 	TObjectPtr<UNoFearWeaponComponent> WeaponComponent;
@@ -202,6 +217,12 @@ private:
 
 	UFUNCTION()
 	void HandleDeath(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info);
+
+	UFUNCTION()
+	void HandleDowned(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info);
+
+	UFUNCTION()
+	void HandleRevived(UNoFearHealthComponent* Component, AActor* Reviver);
 
 	void StartRagdoll(const FNoFearDamageInfo& Info);
 	void DisableLegacyCamera();

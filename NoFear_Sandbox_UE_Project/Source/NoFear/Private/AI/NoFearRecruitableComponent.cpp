@@ -12,6 +12,7 @@ UNoFearRecruitableComponent::UNoFearRecruitableComponent()
 	RecruitText = NSLOCTEXT("NoFearInteraction", "Recruit", "Завербовать");
 	WaitText = NSLOCTEXT("NoFearInteraction", "CompanionWait", "Жди здесь");
 	FollowText = NSLOCTEXT("NoFearInteraction", "CompanionFollow", "За мной");
+	ReviveText = NSLOCTEXT("NoFearInteraction", "Revive", "Поднять (держать E)");
 	PromptText = RecruitText;
 }
 
@@ -32,6 +33,10 @@ bool UNoFearRecruitableComponent::CanInteract_Implementation(APawn* User) const
 FText UNoFearRecruitableComponent::GetInteractionPrompt_Implementation(APawn* User) const
 {
 	APawn* OwnerPawn = Cast<APawn>(GetOwner());
+	if (UNoFearHealthComponent::IsActorDowned(OwnerPawn))
+	{
+		return ReviveText;
+	}
 	const ANoFearPlayerController* PlayerController = User ? Cast<ANoFearPlayerController>(User->GetController()) : nullptr;
 	if (PlayerController && PlayerController->IsCompanion(OwnerPawn))
 	{
@@ -50,7 +55,11 @@ void UNoFearRecruitableComponent::HandleInteract_Implementation(APawn* User)
 		return;
 	}
 
-	if (PlayerController->IsCompanion(OwnerPawn))
+	if (UNoFearHealthComponent::IsActorDowned(OwnerPawn))
+	{
+		PlayerController->StartRevive(OwnerPawn);
+	}
+	else if (PlayerController->IsCompanion(OwnerPawn))
 	{
 		PlayerController->ToggleCompanionFollowing(OwnerPawn);
 	}

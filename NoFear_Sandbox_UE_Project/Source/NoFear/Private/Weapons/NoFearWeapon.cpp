@@ -5,6 +5,7 @@
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Camera/PlayerCameraManager.h"
+#include "Core/NoFearHealthComponent.h"
 #include "Components/DecalComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Curves/CurveFloat.h"
@@ -734,6 +735,12 @@ float ANoFearWeapon::GetCurrentSpread() const
 		{
 			Spread += Data->AirSpread;
 		}
+
+		// Раненый лёжа стреляет с дрожащих рук.
+		if (UNoFearHealthComponent::IsActorDowned(Character))
+		{
+			Spread = Spread * 2.f + 2.5f;
+		}
 	}
 	return Spread;
 }
@@ -842,6 +849,11 @@ void ANoFearWeapon::SetAiming(bool bNewAiming)
 bool ANoFearWeapon::Reload()
 {
 	if (!Data || State != ENoFearWeaponState::Idle || MagazineAmmo >= Data->MagazineSize || ReserveAmmo <= 0)
+	{
+		return false;
+	}
+	// Раненый достреливает то, что в магазине.
+	if (UNoFearHealthComponent::IsActorDowned(Character))
 	{
 		return false;
 	}

@@ -3,6 +3,7 @@
 #include "AI/NoFearFleeLibrary.h"
 #include "Animation/NoFearPoseComponent.h"
 #include "BehaviorTree/BehaviorTree.h"
+#include "BehaviorTree/BehaviorTreeComponent.h"
 #include "BrainComponent.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "Core/NoFearCharacter.h"
@@ -90,6 +91,10 @@ const FName FNoFearBotKeys::InCover(TEXT("InCover"));
 const FName FNoFearBotKeys::CoverIsLow(TEXT("CoverIsLow"));
 const FName FNoFearBotKeys::IsRetreating(TEXT("IsRetreating"));
 const FName FNoFearBotKeys::InWeaponRange(TEXT("InWeaponRange"));
+const FName FNoFearBotKeys::HealTarget(TEXT("HealTarget"));
+const FName FNoFearBotKeys::RallyLocation(TEXT("RallyLocation"));
+const FName FNoFearBotKeys::IsSuppressing(TEXT("IsSuppressing"));
+const FName FNoFearBotKeys::SquadOrder(TEXT("SquadOrder"));
 
 ANoFearAIController::ANoFearAIController(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -169,6 +174,13 @@ float ANoFearAIController::GetTopAwareness() const
 		}
 	}
 	return Top;
+}
+
+FString ANoFearAIController::GetActiveTaskName() const
+{
+	const UBehaviorTreeComponent* TreeComp = Cast<UBehaviorTreeComponent>(BrainComponent);
+	const UBTNode* Node = TreeComp ? TreeComp->GetActiveNode() : nullptr;
+	return Node ? Node->GetNodeName() : FString();
 }
 
 void ANoFearAIController::SetHomeLocation(FVector NewHome)
@@ -553,6 +565,16 @@ bool ANoFearAIController::IsValidTarget(const AActor* Candidate) const
 	if (!UNoFearTeamLibrary::AreHostile(MyPawn, Candidate))
 	{
 		return false;
+	}
+	// Упавшего раненым не добивают, пока он сам не стреляет по этому боту.
+	if (UNoFearHealthComponent::IsActorDowned(Candidate))
+	{
+		constexpr double DownedProvokeTime = 3.0;
+		const FNoFearKnownActor* Knowledge = KnownActors.Find(const_cast<AActor*>(Candidate));
+		if (!Knowledge || GetNow() - Knowledge->LastAttackedTime > DownedProvokeTime)
+		{
+			return false;
+		}
 	}
 	return FVector::DistSquared(MyPawn->GetActorLocation(), Candidate->GetActorLocation()) <= FMath::Square(MaxTargetDistance);
 }
@@ -1117,7 +1139,7 @@ void ANoFearAIController::HandleHitReaction(UNoFearPoseComponent* Component, boo
 void ANoFearAIController::BeginStagger()
 {
 	APawn* MyPawn = GetPawn();
-	if (!MyPawn || UNoFearHealthComponent::IsActorDead(MyPawn))
+	if (!MyPawn || UNoFearHealthComponent::IsActorIncapacitated(MyPawn))
 	{
 		return;
 	}
@@ -1162,7 +1184,7 @@ void ANoFearAIController::ReleaseStagger()
 
 	// Мёртвого дерево не продолжает: StopLogic уже вызван при смерти. Бегство от гранаты держит паузу дальше.
 	UBrainComponent* Brain = GetBrainComponent();
-	if (Brain && Brain->IsPaused() && !bLogicPausedByGrenade && !UNoFearHealthComponent::IsActorDead(GetPawn()))
+	if (Brain && Brain->IsPaused() && !bLogicPausedByGrenade && !UNoFearHealthComponent::IsActorIncapacitated(GetPawn()))
 	{
 		Brain->ResumeLogic(TEXT("Stagger over"));
 	}
@@ -1266,7 +1288,8 @@ bool ANoFearAIController::FindGrenadeEvadeLocation(FVector& OutLocation) const
 void ANoFearAIController::BeginGrenadeEvade(ANoFearGrenade* Grenade)
 {
 	APawn* MyPawn = GetPawn();
-	if (!Grenade || Grenade->HasExploded() || !MyPawn || UNoFearHealthComponent::IsActorDead(MyPawn))
+	// Раненый лёжа не убегает: ползком всё равно не успеть.
+	if (!Grenade || Grenade->HasExploded() || !MyPawn || UNoFearHealthComponent::IsActorIncapacitated(MyPawn))
 	{
 		return;
 	}
@@ -1372,7 +1395,7 @@ void ANoFearAIController::EndGrenadeEvade()
 	const bool bWasPaused = bLogicPausedByGrenade;
 	bLogicPausedByGrenade = false;
 	UBrainComponent* Brain = GetBrainComponent();
-	if (bWasPaused && Brain && Brain->IsPaused() && !bLogicPausedByStagger && !UNoFearHealthComponent::IsActorDead(GetPawn()))
+	if (bWasPaused && Brain && Brain->IsPaused() && !bLogicPausedByStagger && !UNoFearHealthComponent::IsActorIncapacitated(GetPawn()))
 	{
 		StopMovement();
 		Brain->ResumeLogic(TEXT("Grenade over"));

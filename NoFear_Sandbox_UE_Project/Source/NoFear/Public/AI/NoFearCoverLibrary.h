@@ -31,6 +31,8 @@ struct FNoFearCoverSearch
 	const AActor* ThreatActor = nullptr;
 	/** Где искать: кольца вокруг пешки до этого радиуса. */
 	float SearchRadius = 1500.f;
+	/** Точек на кольце не больше этого (шаг по кольцу — 180 см): дальние кольца реже. Редкие поиски (фланг) берут больше. */
+	int32 MaxRingSamples = 20;
 	/** Ближе к угрозе — не укрытие. */
 	float MinThreatDistance = 500.f;
 	/** Дальше от угрозы — не годится. 0 — без ограничения. */
@@ -47,6 +49,37 @@ struct FNoFearCoverSearch
 	float MaxObstacleDistance = 150.f;
 	/** Чужая бронь или другой бот ближе этого — точка занята. */
 	float ReserveRadius = 150.f;
+
+	// --- Приказы отряда ---
+
+	/** Искать вокруг SearchOrigin, а не вокруг пешки (подкрепление — укрытие рядом с прижатым своим). */
+	bool bUseSearchOrigin = false;
+	FVector SearchOrigin = FVector::ZeroVector;
+	/** Тянуться к GoalLocation: минус GoalWeight за каждые 1000 см от неё (отход — к рубежу). 0 — без цели. */
+	FVector GoalLocation = FVector::ZeroVector;
+	float GoalWeight = 0.f;
+	/**
+	 * Отход к цели: точка ближе к GoalLocation, чем пешка, хотя бы на GoalGain (вместо «дальше от угрозы на RetreatGain»)
+	 * и к угрозе не ближе, чем сама пешка или цель (без 200 см). 0 — отход по угрозе.
+	 */
+	float GoalGain = 0.f;
+	/**
+	 * Фланг: угол у угрозы между направлениями на FlankFrom (где отряд) и на точку — не меньше этого, градусы.
+	 * Точки с большим углом лучше. 0 — без фланга.
+	 */
+	float MinFlankAngle = 0.f;
+	FVector FlankFrom = FVector::ZeroVector;
+	/**
+	 * Путь к точке скрытный (замеры каждые 200 см, первые 300 см не в счёт): угроза видит не больше HiddenPathMaxVisible
+	 * от всех замеров (но один промельк допустим всегда) и ни одного открытого участка длиннее HiddenPathMaxRun замеров подряд.
+	 */
+	bool bHiddenPath = false;
+	float HiddenPathMaxVisible = 0.3f;
+	int32 HiddenPathMaxRun = 3;
+	/** Путь не длиннее этого × расстояние по прямой + 300 см. */
+	float MaxPathLengthFactor = 1.7f;
+	/** Сколько лучших точек проверять путём. */
+	int32 MaxPathChecks = 6;
 };
 
 /** Найденное укрытие. */
@@ -92,6 +125,9 @@ public:
 	/** Лучшее укрытие по правилам Search. false — укрытий нет. */
 	static bool FindCover(const FNoFearCoverSearch& Search, FNoFearCoverPoint& OutCover);
 
+	/** Отладка: сколько точек отсеял каждый фильтр при последнем FindCover (почему укрытие не нашлось). */
+	static const FString& GetLastSearchStats() { return LastSearchStats; }
+
 	/** Откуда стрелять из высокого укрытия: ближайший шаг вбок (60–160 см), откуда стоя видно угрозу. */
 	static bool FindPeekLocation(const UWorld* World, const FVector& CoverLocation, const FVector& ThreatEyes,
 		const FCollisionQueryParams& Params, FVector& OutPeek);
@@ -99,4 +135,7 @@ public:
 	/** Укрытие в точке от угрозы (для тестов и Blueprint). Location — точка на полу или навмеше. */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|AI", meta = (WorldContext = "WorldContextObject"))
 	static ENoFearCoverType TestCoverAt(const UObject* WorldContextObject, FVector Location, FVector ThreatLocation);
+
+private:
+	static FString LastSearchStats;
 };

@@ -1,5 +1,6 @@
 #include "NoFearBotAssetsLibrary.h"
 
+#include "AI/BTTask_NoFearBandage.h"
 #include "AI/BTTask_NoFearCoverFight.h"
 #include "AI/BTTask_NoFearFindLocation.h"
 #include "AI/BTTask_NoFearLookAround.h"
@@ -145,6 +146,10 @@ namespace
 			{ FNoFearBotKeys::CoverIsLow, UBlackboardKeyType_Bool::StaticClass(), TEXT("Укрытие низкое: сидеть за ним, стрелять стоя") },
 			{ FNoFearBotKeys::IsRetreating, UBlackboardKeyType_Bool::StaticClass(), TEXT("Раненый стрелок отходит в дальнее укрытие") },
 			{ FNoFearBotKeys::InWeaponRange, UBlackboardKeyType_Bool::StaticClass(), TEXT("Цель в удобной дистанции оружия") },
+			{ FNoFearBotKeys::HealTarget, UBlackboardKeyType_Object::StaticClass(), TEXT("Кого перевязать (приказ отряда)") },
+			{ FNoFearBotKeys::RallyLocation, UBlackboardKeyType_Vector::StaticClass(), TEXT("Куда идти по приказу отряда без укрытия: сбор, к соседям, рубеж отхода, к прижатому своему") },
+			{ FNoFearBotKeys::IsSuppressing, UBlackboardKeyType_Bool::StaticClass(), TEXT("Подавлять огнём вслепую: приказ отряда, цель не видна, укрытия нет") },
+			{ FNoFearBotKeys::SquadOrder, UBlackboardKeyType_Int::StaticClass(), TEXT("Приказ отряда (ENoFearSquadOrder)") },
 		};
 
 		bool bChanged = bCreated;
@@ -375,8 +380,12 @@ namespace
 	};
 
 	/**
-	 * Стрелок (враги, союзники, напарник):
-	 *   есть цель и укрытие → дойти до укрытия и драться из него (спрятаться, выглянуть, очередь, назад);
+	 * Стрелок (враги, союзники, напарник). Приказы отряда (UNoFearSquadSubsystem) контроллер переводит в ключи:
+	 *   приказ перевязать своего → подбежать, присесть и перевязать;
+	 *   приказ идти без укрытия (сбор, к соседям, рубеж отхода, к прижатому своему) → туда;
+	 *   есть цель и укрытие → дойти до укрытия и драться из него (спрятаться, выглянуть, очередь, назад;
+	 *     по приказу на подавление — и по невидимой цели);
+	 *   приказ подавлять без укрытия, цель не видна → очереди туда, где её видели свои;
 	 *   есть цель без укрытия → стрелять, если цель в дистанции оружия, и сменить точку; иначе подойти;
 	 *   напарник идёт за лидером → держаться рядом;
 	 *   есть что проверить → сходить, осмотреться, забыть;
@@ -386,12 +395,28 @@ namespace
 	{
 		UBehaviorTreeGraphNode* Root = Builder.Selector(nullptr, TEXT("Стрелок"));
 
+		UBehaviorTreeGraphNode* Bandage = Builder.Sequence(Root, TEXT("Перевязка"));
+		Builder.IfSet(Bandage, FNoFearBotKeys::HealTarget, TEXT("Both"), TEXT("Перевязать своего?"));
+		// Подходит сама задача: сбитый бег (оглушение, граната) она переотдаёт, а MoveTo провалил бы ветку.
+		Builder.Task(Bandage, UBTTask_NoFearBandage::StaticClass(), { { TEXT("BlackboardKey"), KeyValue(FNoFearBotKeys::HealTarget) } });
+
+		UBehaviorTreeGraphNode* Rally = Builder.Sequence(Root, TEXT("По приказу"));
+		Builder.IfSet(Rally, FNoFearBotKeys::RallyLocation, TEXT("Both"), TEXT("Приказ идти?"));
+		Builder.MoveTo(Rally, FNoFearBotKeys::RallyLocation, 80.f, TEXT("К месту приказа"));
+		Builder.Wait(Rally, 0.5f);
+
 		UBehaviorTreeGraphNode* Combat = Builder.Selector(Root, TEXT("Бой"));
 		Builder.IfSet(Combat, FNoFearBotKeys::AttackTarget, TEXT("Both"), TEXT("Есть цель?"));
 		UBehaviorTreeGraphNode* InCover = Builder.Sequence(Combat, TEXT("Укрытие"));
 		Builder.IfSet(InCover, FNoFearBotKeys::CoverLocation, TEXT("Both"), TEXT("Есть укрытие?"));
 		Builder.MoveTo(InCover, FNoFearBotKeys::CoverLocation, 30.f, TEXT("В укрытие"));
 		Builder.Task(InCover, UBTTask_NoFearCoverFight::StaticClass());
+		UBehaviorTreeGraphNode* Suppress = Builder.Task(Combat, UBTTask_NoFearShoot::StaticClass(), {
+			{ TEXT("BurstsMin"), TEXT("2") },
+			{ TEXT("BurstsMax"), TEXT("3") },
+			{ TEXT("bBlindFireWhenSuppressing"), TEXT("True") },
+		}, TEXT("Подавить"));
+		Builder.IfSet(Suppress, FNoFearBotKeys::IsSuppressing, TEXT("Both"), TEXT("Подавлять вслепую?"));
 		UBehaviorTreeGraphNode* Open = Builder.Sequence(Combat, TEXT("В открытую"));
 		// Только LowerPriority: CanFire мигает на ходу, а начатый шаг вбок надо дошагать.
 		Builder.IfSet(Open, FNoFearBotKeys::CanFire, TEXT("LowerPriority"), TEXT("Можно стрелять?"));

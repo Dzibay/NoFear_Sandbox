@@ -241,11 +241,17 @@ void ANoFearGrenade::NotifyDanger()
 
 	const FVector Location = GetActorLocation();
 	const float ViewCos = FMath::Cos(FMath::DegreesToRadians(DangerViewAngle));
+	const APawn* Thrower = GetInstigator();
 	for (ANoFearAIController* Bot : Subsystem->GetBots())
 	{
 		APawn* BotPawn = Bot->GetPawn();
 		if (!BotPawn || UNoFearHealthComponent::IsActorDead(BotPawn))
 		{
+			continue;
+		}
+		if (!Data->bFriendlyFire && Thrower && BotPawn != Thrower && UNoFearTeamLibrary::AreFriendly(Thrower, BotPawn))
+		{
+			// Своя граната своих не ранит (Explode): бежать от неё незачем, и мораль отряда от неё не падает.
 			continue;
 		}
 		const float Distance = FVector::Dist(BotPawn->GetActorLocation(), Location);
@@ -408,6 +414,11 @@ void ANoFearGrenade::ApplyBlast(const FVector& Center)
 		UNoFearCombatComponent* Combat = Actor->FindComponentByClass<UNoFearCombatComponent>();
 		if (!Combat || UNoFearHealthComponent::IsActorDead(Actor))
 		{
+			continue;
+		}
+		if (Thrower && (Actor == Thrower || (!Data->bFriendlyFire && UNoFearTeamLibrary::AreFriendly(Thrower, Actor))))
+		{
+			// Как и пули своих (NoFearCombatSubsystem): своя граната не прижимает ни бросившего, ни своих, если их не ранит.
 			continue;
 		}
 		const float Distance = FVector::Dist(Actor->GetActorLocation(), Center);

@@ -7,7 +7,8 @@
 /**
  * Стрельба очередями по цели из ключа (по умолчанию AttackTarget) оружием тела (UNoFearWeaponComponent).
  * Автомат держит спуск очередь, одиночный и Burst жмут спуск с паузами. Пустой магазин — перезарядка.
- * Пока UNoFearCombatComponent не готов стрелять (нет линии огня, реакция), спуск отпущен.
+ * Пока UNoFearCombatComponent не готов стрелять (нет линии огня, реакция), спуск отпущен
+ * (кроме подавления по приказу отряда, см. bBlindFireWhenSuppressing).
  * Завершается успехом после нескольких очередей или если цель пропала/погибла — дерево перепроверит ситуацию.
  */
 UCLASS(meta = (DisplayName = "NoFear Shoot"))
@@ -43,6 +44,13 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "Shoot", meta = (ClampMin = "0"))
 	int32 BurstsMax = 4;
+
+	/**
+	 * Подавление: пока стрелок выполняет приказ отряда на огонь (ANoFearShooterAIController::IsSuppressing),
+	 * стрелять и по невидимой цели — туда, где её видели свои (UNoFearCombatComponent::CanBlindFire).
+	 */
+	UPROPERTY(EditAnywhere, Category = "Shoot")
+	bool bBlindFireWhenSuppressing = false;
 
 	virtual EBTNodeResult::Type ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) override;
 	virtual EBTNodeResult::Type AbortTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) override;

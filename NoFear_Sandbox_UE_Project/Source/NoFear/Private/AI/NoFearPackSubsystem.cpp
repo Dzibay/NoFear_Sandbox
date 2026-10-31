@@ -435,7 +435,8 @@ void UNoFearPackSubsystem::PickTarget(FPack& Pack, double Now)
 	if (const ANoFearMonsterAIController* Leader = Pack.Leader.Get())
 	{
 		AActor* LeaderTarget = Leader->GetCurrentTarget();
-		NewTarget = LeaderTarget && !UNoFearHealthComponent::IsActorDead(LeaderTarget) ? LeaderTarget : nullptr;
+		// Упавшего раненым стая не выбирает: добивать его пойдёт разве что тот, в кого он стреляет.
+		NewTarget = LeaderTarget && !UNoFearHealthComponent::IsActorIncapacitated(LeaderTarget) ? LeaderTarget : nullptr;
 	}
 	if (!NewTarget)
 	{
@@ -444,7 +445,7 @@ void UNoFearPackSubsystem::PickTarget(FPack& Pack, double Now)
 		for (const FMember& Member : Pack.Members)
 		{
 			AActor* MemberTarget = Member.Bot.IsValid() ? Member.Bot->GetCurrentTarget() : nullptr;
-			if (!MemberTarget || UNoFearHealthComponent::IsActorDead(MemberTarget))
+			if (!MemberTarget || UNoFearHealthComponent::IsActorIncapacitated(MemberTarget))
 			{
 				continue;
 			}

@@ -187,6 +187,13 @@ void UBTTask_NoFearCoverFight::TickTask(UBehaviorTreeComponent& OwnerComp, uint8
 	ANoFearWeapon* Weapon = Weapons->GetCurrentWeapon();
 	const UNoFearWeaponData* Data = Weapon ? Weapon->GetWeaponData() : nullptr;
 	const bool bWeaponIdle = Data && Weapon->GetWeaponState() == ENoFearWeaponState::Idle;
+	// Санитар рядом: спрятаться и не высовываться, пока перевязывают.
+	const bool bAwaitingMedic = Shooter->IsAwaitingMedic();
+	if (bAwaitingMedic && (Memory.Phase == EPhase::Peek || Memory.Phase == EPhase::Fire))
+	{
+		EnterPhase(OwnerComp, Memory, EPhase::Return);
+		return;
+	}
 
 	switch (Memory.Phase)
 	{
@@ -197,7 +204,7 @@ void UBTTask_NoFearCoverFight::TickTask(UBehaviorTreeComponent& OwnerComp, uint8
 		{
 			Weapons->Reload();
 		}
-		if (!bWeaponIdle || IsStillMoving(Shooter, Memory.bMoving))
+		if (!bWeaponIdle || bAwaitingMedic || IsStillMoving(Shooter, Memory.bMoving))
 		{
 			Memory.PhaseEndTime = FMath::Max(Memory.PhaseEndTime, Now + 0.1);
 			return;
@@ -218,7 +225,8 @@ void UBTTask_NoFearCoverFight::TickTask(UBehaviorTreeComponent& OwnerComp, uint8
 	case EPhase::Return:
 		if (Now >= Memory.PhaseEndTime || (!Shooter->IsCoverLow() && !IsStillMoving(Shooter, Memory.bMoving)))
 		{
-			if (--Memory.CyclesLeft <= 0)
+			// Ожидание санитара — не цикл боя: иначе задача кончится и укрытие перепроверят посреди перевязки.
+			if (!bAwaitingMedic && --Memory.CyclesLeft <= 0)
 			{
 				Shooter->RequestCoverRefresh();
 				FinishLatentTask(OwnerComp, EBTNodeResult::Succeeded);
@@ -246,7 +254,9 @@ void UBTTask_NoFearCoverFight::TickTask(UBehaviorTreeComponent& OwnerComp, uint8
 		EnterPhase(OwnerComp, Memory, EPhase::Return);
 		return;
 	}
-	if (Combat && !Combat->IsReadyToFire())
+	// Подавление по приказу отряда: цель не видна — огонь туда, где её видели свои.
+	const bool bBlind = Combat && Shooter->IsSuppressing() && Combat->CanBlindFire();
+	if (Combat && !Combat->IsReadyToFire() && !bBlind)
 	{
 		ReleaseTrigger(OwnerComp, Memory);
 		if (Memory.NotReadySince < 0.0)

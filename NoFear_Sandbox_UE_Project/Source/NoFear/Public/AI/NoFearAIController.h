@@ -68,6 +68,14 @@ struct NOFEAR_API FNoFearBotKeys
 	static const FName IsRetreating;
 	/** Bool: цель в удобной дистанции оружия. */
 	static const FName InWeaponRange;
+	/** Object: кого перевязать (приказ отряда «перевязка»). */
+	static const FName HealTarget;
+	/** Vector: куда идти по приказу отряда без укрытия (место в сборе, к соседям, рубеж отхода). */
+	static const FName RallyLocation;
+	/** Bool: подавлять огнём вслепую (приказ отряда, цель не видна, укрытия нет). */
+	static const FName IsSuppressing;
+	/** Int: приказ отряда (ENoFearSquadOrder). */
+	static const FName SquadOrder;
 };
 
 /** Уровень тревоги бота. Пишется в блэкборд (AlertState) и показывается значком над головой. */
@@ -219,6 +227,10 @@ public:
 	/** Сколько точек поиска осталось проверить. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
 	int32 GetSearchPointCount() const { return SearchPoints.Num(); }
+
+	/** Отладка: имя задачи дерева поведения, которая сейчас выполняется. Пусто — дерево не запущено. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI|Debug")
+	FString GetActiveTaskName() const;
 
 	/** Радиус, в котором бот зовёт на помощь своих. 0 — не зовёт. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|AI")

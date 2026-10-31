@@ -127,6 +127,8 @@ void ANoFearCharacter::PostInitializeComponents()
 	if (HealthComponent)
 	{
 		HealthComponent->OnDeath.AddUniqueDynamic(this, &ANoFearCharacter::HandleDeath);
+		HealthComponent->OnDowned.AddUniqueDynamic(this, &ANoFearCharacter::HandleDowned);
+		HealthComponent->OnRevived.AddUniqueDynamic(this, &ANoFearCharacter::HandleRevived);
 	}
 }
 
@@ -195,6 +197,30 @@ void ANoFearCharacter::Tick(float DeltaSeconds)
 	{
 		UpdateMovementNoise(DeltaSeconds);
 	}
+	// Раненый остаётся пригнутым, даже если что-то (Blueprint, ИИ) поднимает его.
+	if (IsDowned() && !bIsCrouched)
+	{
+		Crouch();
+	}
+}
+
+void ANoFearCharacter::AddMovementInput(FVector WorldDirection, float ScaleValue, bool bForce)
+{
+	Super::AddMovementInput(WorldDirection, IsDowned() ? ScaleValue * DownedMoveScale : ScaleValue, bForce);
+}
+
+void ANoFearCharacter::UnCrouch(bool bClientSimulation)
+{
+	if (IsDowned())
+	{
+		return;
+	}
+	Super::UnCrouch(bClientSimulation);
+}
+
+bool ANoFearCharacter::CanJumpInternal_Implementation() const
+{
+	return !IsDowned() && Super::CanJumpInternal_Implementation();
 }
 
 void ANoFearCharacter::UpdateMovementNoise(float DeltaSeconds)
@@ -313,6 +339,31 @@ void ANoFearCharacter::HandleDeath(UNoFearHealthComponent* Component, const FNoF
 	{
 		SetLifeSpan(CorpseLifeSpan);
 	}
+}
+
+void ANoFearCharacter::HandleDowned(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info)
+{
+	// Граната в руке остаётся в руке; перезарядку раненый не начинает (ANoFearWeapon::Reload).
+	if (GrenadeComponent)
+	{
+		GrenadeComponent->CancelAim();
+	}
+	if (AAIController* AI = Cast<AAIController>(GetController()))
+	{
+		AI->StopMovement();
+		if (WeaponComponent)
+		{
+			WeaponComponent->StopFire();
+			WeaponComponent->SetAiming(false);
+		}
+	}
+	StopJumping();
+	Crouch();
+}
+
+void ANoFearCharacter::HandleRevived(UNoFearHealthComponent* Component, AActor* Reviver)
+{
+	UnCrouch();
 }
 
 void ANoFearCharacter::StartRagdoll(const FNoFearDamageInfo& Info)

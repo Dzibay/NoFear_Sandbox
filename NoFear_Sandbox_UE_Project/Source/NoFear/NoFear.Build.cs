@@ -14,6 +14,7 @@ public class NoFear : ModuleRules
 			"GameplayTasks",
 			"NavigationSystem",
 			"EnhancedInput",
+			"InputCore",
 			"Niagara",
 			"PhysicsCore",
 			"RenderCore",

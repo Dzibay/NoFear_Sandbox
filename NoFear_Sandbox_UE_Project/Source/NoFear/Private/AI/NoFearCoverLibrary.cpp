@@ -28,6 +28,60 @@ namespace
 		}
 		return Length;
 	}
+
+	/** Угол у угрозы между направлениями на A и на B в плоскости, градусы. */
+	float AngleAtThreat(const FVector& Threat, const FVector& A, const FVector& B)
+	{
+		const FVector ToA = (A - Threat).GetSafeNormal2D();
+		const FVector ToB = (B - Threat).GetSafeNormal2D();
+		return FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(static_cast<float>(FVector::DotProduct(ToA, ToB)), -1.f, 1.f)));
+	}
+
+	/**
+	 * Замеры пути (каждые Step см, кроме первых Skip см), видные с глаз угрозы на уровне груди: всего замеров,
+	 * сколько видно и самый длинный открытый участок подряд.
+	 */
+	int32 CountVisiblePathSamples(const UWorld* World, const TArray<FVector>& Points, const FVector& ThreatEyes,
+		const FCollisionQueryParams& Params, float Step, float Skip, int32* OutSamples = nullptr, int32* OutLongestRun = nullptr)
+	{
+		int32 Visible = 0;
+		int32 Samples = 0;
+		int32 Run = 0;
+		int32 LongestRun = 0;
+		float Travelled = 0.f;
+		float NextSample = Skip;
+		for (int32 Index = 0; Index + 1 < Points.Num(); ++Index)
+		{
+			const FVector A = Points[Index];
+			const FVector B = Points[Index + 1];
+			const float Length = FVector::Dist(A, B);
+			while (NextSample <= Travelled + Length)
+			{
+				const FVector Sample = FMath::Lerp(A, B, Length > 0.f ? (NextSample - Travelled) / Length : 0.f);
+				++Samples;
+				if (!World->LineTraceTestByChannel(Sample + FVector(0.f, 0.f, 110.f), ThreatEyes, ECC_Visibility, Params))
+				{
+					++Visible;
+					LongestRun = FMath::Max(LongestRun, ++Run);
+				}
+				else
+				{
+					Run = 0;
+				}
+				NextSample += Step;
+			}
+			Travelled += Length;
+		}
+		if (OutSamples)
+		{
+			*OutSamples = Samples;
+		}
+		if (OutLongestRun)
+		{
+			*OutLongestRun = LongestRun;
+		}
+		return Visible;
+	}
 }
 
 ENoFearCoverType UNoFearCoverLibrary::EvaluateCover(const UWorld* World, const FVector& GroundPoint, const FVector& ThreatEyes,
@@ -108,20 +162,33 @@ bool UNoFearCoverLibrary::FindPeekLocation(const UWorld* World, const FVector& C
 	return false;
 }
 
+FString UNoFearCoverLibrary::LastSearchStats;
+
 bool UNoFearCoverLibrary::FindCover(const FNoFearCoverSearch& Search, FNoFearCoverPoint& OutCover)
 {
 	APawn* Pawn = Search.Pawn;
 	UWorld* World = Pawn ? Pawn->GetWorld() : nullptr;
 	UNavigationSystemV1* NavSys = World ? FNavigationSystem::GetCurrent<UNavigationSystemV1>(const_cast<UWorld*>(World)) : nullptr;
+	LastSearchStats = TEXT("no nav");
 	if (!NavSys)
 	{
 		return false;
 	}
+	// Отладка (GetLastSearchStats): сколько точек отсеял каждый фильтр.
+	struct FStats
+	{
+		int32 Points = 0, Range = 0, Leash = 0, Retreat = 0, Angle = 0, Taken = 0, NoCover = 0, Far = 0, NoPeek = 0;
+		int32 NoPath = 0, Long = 0, Close = 0, Seen = 0;
+	} Stats;
 
 	const FVector Origin = Pawn->GetActorLocation();
+	// Кольца — вокруг заданной точки (подкрепление) или вокруг себя; расстояние пути и отхода — всё равно от пешки.
+	const FVector RingCenter = Search.bUseSearchOrigin ? Search.SearchOrigin : Origin;
 	const FVector Threat = Search.ThreatLocation;
 	const FVector ThreatEyes = Threat + FVector(0.f, 0.f, ThreatEyeHeight);
 	const float CurrentThreatDistance = FVector::Dist2D(Origin, Threat);
+	const float CurrentGoalDistance = FVector::Dist2D(Origin, Search.GoalLocation);
+	const float GoalThreatDistance = FVector::Dist2D(Search.GoalLocation, Threat);
 	const FCollisionQueryParams Params = MakeCoverTraceParams(World);
 
 	const UNoFearBotSubsystem* Bots = World->GetSubsystem<UNoFearBotSubsystem>();
@@ -147,18 +214,38 @@ bool UNoFearCoverLibrary::FindCover(const FNoFearCoverSearch& Search, FNoFearCov
 		if (ThreatDistance < Search.MinThreatDistance
 			|| (Search.MaxThreatDistance > 0.f && ThreatDistance > Search.MaxThreatDistance))
 		{
+			++Stats.Range;
 			return;
 		}
 		if (Search.LeashRadius > 0.f && FVector::Dist2D(Point, Search.LeashAnchor) > Search.LeashRadius)
 		{
+			++Stats.Leash;
 			return;
 		}
-		if (Search.bRetreat && ThreatDistance < CurrentThreatDistance + Search.RetreatGain)
+		if (Search.bRetreat && Search.GoalGain > 0.f)
 		{
+			// К рубежу: каждый перекат ближе к нему и не навстречу врагу (иначе отошедший вбок уходил бы от рубежа всё дальше).
+			if (FVector::Dist2D(Point, Search.GoalLocation) > CurrentGoalDistance - Search.GoalGain
+				|| ThreatDistance < FMath::Min(CurrentThreatDistance, GoalThreatDistance) - 200.f)
+			{
+				++Stats.Retreat;
+				return;
+			}
+		}
+		else if (Search.bRetreat && ThreatDistance < CurrentThreatDistance + Search.RetreatGain)
+		{
+			++Stats.Retreat;
+			return;
+		}
+		const float FlankAngle = Search.MinFlankAngle > 0.f ? AngleAtThreat(Threat, Search.FlankFrom, Point) : 0.f;
+		if (FlankAngle < Search.MinFlankAngle)
+		{
+			++Stats.Angle;
 			return;
 		}
 		if (Bots && Bots->IsCoverReserved(Point, Search.ReserveRadius, Pawn))
 		{
+			++Stats.Taken;
 			return;
 		}
 		bool bCrowded = false;
@@ -172,6 +259,7 @@ bool UNoFearCoverLibrary::FindCover(const FNoFearCoverSearch& Search, FNoFearCov
 		}
 		if (bCrowded)
 		{
+			++Stats.Taken;
 			return;
 		}
 
@@ -180,10 +268,12 @@ bool UNoFearCoverLibrary::FindCover(const FNoFearCoverSearch& Search, FNoFearCov
 		const ENoFearCoverType Type = EvaluateCover(World, Point, ThreatEyes, Params, ECC_Visibility, &ObstacleDistance);
 		if (Type == ENoFearCoverType::None)
 		{
+			++Stats.NoCover;
 			return;
 		}
 		if (Search.MaxObstacleDistance > 0.f && ObstacleDistance > Search.MaxObstacleDistance)
 		{
+			++Stats.Far;
 			// Угроза закрыта, но препятствие далеко: подойти к нему вплотную и проверить ещё раз.
 			const FVector RayStart = Point + FVector(0.f, 0.f, LowCoverHeight);
 			const FVector Ray = ThreatEyes - RayStart;
@@ -211,13 +301,22 @@ bool UNoFearCoverLibrary::FindCover(const FNoFearCoverSearch& Search, FNoFearCov
 		{
 			Cover.bCanPeek = FindPeekLocation(World, Point, ThreatEyes, Params, Cover.PeekLocation);
 		}
+		if (Search.MinFlankAngle > 0.f && !Cover.bCanPeek)
+		{
+			// С фланга нужно стрелять, а не пережидать.
+			++Stats.NoPeek;
+			return;
+		}
 
 		// 4. Оценка.
 		float Score;
 		if (Search.bRetreat)
 		{
 			Score = Type == ENoFearCoverType::High ? 1.f : 0.8f;
-			Score += 0.6f * FMath::Min((ThreatDistance - CurrentThreatDistance) / 1000.f, 1.5f);
+			// Чем больше выигрыш (к рубежу или прочь от врага), тем лучше.
+			const float Gain = Search.GoalGain > 0.f ? CurrentGoalDistance - FVector::Dist2D(Point, Search.GoalLocation)
+				: ThreatDistance - CurrentThreatDistance;
+			Score += 0.6f * FMath::Min(Gain / 1000.f, 1.5f);
 		}
 		else
 		{
@@ -231,7 +330,21 @@ bool UNoFearCoverLibrary::FindCover(const FNoFearCoverSearch& Search, FNoFearCov
 				Score -= 0.6f * (ThreatDistance - Search.PreferredRange.Y) / Search.PreferredRange.Y;
 			}
 		}
-		Score -= 0.5f * FVector::Dist2D(Origin, Point) / FMath::Max(Search.SearchRadius, 1.f);
+		Score -= 0.5f * FVector::Dist2D(RingCenter, Point) / FMath::Max(Search.SearchRadius, 1.f);
+		if (Search.bUseSearchOrigin)
+		{
+			// Из равных у цели — та, что ближе к себе (не обегать прижатого своего).
+			Score -= 0.2f * FVector::Dist2D(Origin, Point) / 2000.f;
+		}
+		if (Search.GoalWeight > 0.f)
+		{
+			Score -= Search.GoalWeight * FVector::Dist2D(Point, Search.GoalLocation) / 1000.f;
+		}
+		if (Search.MinFlankAngle > 0.f)
+		{
+			// Чем круче фланг, тем лучше: перекрёстный огонь.
+			Score += 0.4f * FMath::Min((FlankAngle - Search.MinFlankAngle) / 60.f, 1.f);
+		}
 		Score += FMath::FRand() * 0.05f;
 		Cover.Score = Score;
 		Candidates.Add(Cover);
@@ -244,15 +357,16 @@ bool UNoFearCoverLibrary::FindCover(const FNoFearCoverSearch& Search, FNoFearCov
 	for (int32 Ring = 0; Ring <= RingCount; ++Ring)
 	{
 		const float Radius = Ring * RingStep;
-		const int32 Samples = Ring == 0 ? 1 : FMath::Clamp(FMath::RoundToInt(2.f * PI * Radius / 180.f), 6, 20);
+		const int32 Samples = Ring == 0 ? 1 : FMath::Clamp(FMath::RoundToInt(2.f * PI * Radius / 180.f), 6, FMath::Max(Search.MaxRingSamples, 6));
 		for (int32 Index = 0; Index < Samples; ++Index)
 		{
 			const float Angle = FMath::DegreesToRadians(AngleOffset + Ring * 17.f + 360.f * Index / Samples);
-			const FVector Raw = Origin + FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.f) * Radius;
+			const FVector Raw = RingCenter + FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.f) * Radius;
 
 			FNavLocation NavLocation;
 			if (NavSys->ProjectPointToNavigation(Raw, NavLocation, FVector(60.f, 60.f, 300.f)))
 			{
+				++Stats.Points;
 				TryPoint(NavLocation.Location, true);
 			}
 		}
@@ -262,7 +376,7 @@ bool UNoFearCoverLibrary::FindCover(const FNoFearCoverSearch& Search, FNoFearCov
 
 	// 5. Путь к лучшим: есть, не слишком кружной и не мимо угрозы.
 	const float Clearance = FMath::Min(Search.MinThreatDistance * 0.6f, 0.8f * CurrentThreatDistance);
-	const int32 MaxPathChecks = FMath::Min(Candidates.Num(), 6);
+	const int32 MaxPathChecks = FMath::Min(Candidates.Num(), FMath::Max(Search.MaxPathChecks, 1));
 	// Путь — от точки навмеша под ногами, а не от центра капсулы: иначе запрос иногда не находит старт.
 	FVector PathStart = Origin;
 	FNavLocation OriginNav;
@@ -270,21 +384,30 @@ bool UNoFearCoverLibrary::FindCover(const FNoFearCoverSearch& Search, FNoFearCov
 	{
 		PathStart = OriginNav.Location;
 	}
+	const auto WriteStats = [&Stats, &Candidates]()
+	{
+		LastSearchStats = FString::Printf(TEXT("pts=%d range=%d leash=%d retreat=%d angle=%d taken=%d nocover=%d far=%d nopeek=%d cand=%d | nopath=%d long=%d close=%d seen=%d"),
+			Stats.Points, Stats.Range, Stats.Leash, Stats.Retreat, Stats.Angle, Stats.Taken, Stats.NoCover, Stats.Far, Stats.NoPeek,
+			Candidates.Num(), Stats.NoPath, Stats.Long, Stats.Close, Stats.Seen);
+	};
 	for (int32 Index = 0; Index < MaxPathChecks; ++Index)
 	{
 		const FNoFearCoverPoint& Cover = Candidates[Index];
 		if (FVector::Dist2D(Origin, Cover.Location) < 60.f)
 		{
 			OutCover = Cover;
+			WriteStats();
 			return true;
 		}
 		UNavigationPath* Path = UNavigationSystemV1::FindPathToLocationSynchronously(World, PathStart, Cover.Location, Pawn);
 		if (!Path || !Path->IsValid() || Path->IsPartial() || Path->PathPoints.Num() < 2)
 		{
+			++Stats.NoPath;
 			continue;
 		}
-		if (PathLength(Path->PathPoints) > 1.7f * FVector::Dist(Origin, Cover.Location) + 300.f)
+		if (PathLength(Path->PathPoints) > Search.MaxPathLengthFactor * FVector::Dist(Origin, Cover.Location) + 300.f)
 		{
+			++Stats.Long;
 			continue;
 		}
 		bool bPathSafe = true;
@@ -292,12 +415,29 @@ bool UNoFearCoverLibrary::FindCover(const FNoFearCoverSearch& Search, FNoFearCov
 		{
 			bPathSafe = CoverDistToSegment2D(Threat, Path->PathPoints[Seg], Path->PathPoints[Seg + 1]) >= Clearance;
 		}
-		if (bPathSafe)
+		if (!bPathSafe)
 		{
-			OutCover = Cover;
-			return true;
+			++Stats.Close;
+			continue;
 		}
+		if (Search.bHiddenPath)
+		{
+			// Скрытный обход: угроза видит идущего лишь урывками (один промельк допустим всегда), без долгой открытой полосы.
+			int32 Samples = 0;
+			int32 LongestRun = 0;
+			const int32 Visible = CountVisiblePathSamples(World, Path->PathPoints, ThreatEyes, Params, 200.f, 300.f, &Samples, &LongestRun);
+			if (Visible > FMath::Max(1, FMath::FloorToInt(Samples * Search.HiddenPathMaxVisible))
+				|| LongestRun > FMath::Max(1, Search.HiddenPathMaxRun))
+			{
+				++Stats.Seen;
+				continue;
+			}
+		}
+		OutCover = Cover;
+		WriteStats();
+		return true;
 	}
+	WriteStats();
 	return false;
 }
 

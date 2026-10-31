@@ -343,7 +343,7 @@ bool ANoFearMonsterAIController::IsValidTarget(const AActor* Candidate) const
 		return true;
 	}
 	const APawn* MyPawn = GetPawn();
-	if (IsAggro() || !Candidate || !MyPawn || Candidate == MyPawn || UNoFearHealthComponent::IsActorDead(Candidate)
+	if (IsAggro() || !Candidate || !MyPawn || Candidate == MyPawn || UNoFearHealthComponent::IsActorIncapacitated(Candidate)
 		|| !UNoFearTeamLibrary::AreHostile(MyPawn, Candidate))
 	{
 		return false;

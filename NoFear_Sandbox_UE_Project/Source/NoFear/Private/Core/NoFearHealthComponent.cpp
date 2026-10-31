@@ -32,6 +32,7 @@ void UNoFearHealthComponent::BeginPlay()
 
 	Health = MaxHealth;
 	bDead = false;
+	bDowned = false;
 }
 
 double UNoFearHealthComponent::GetNow() const
@@ -58,6 +59,18 @@ bool UNoFearHealthComponent::IsActorDead(const AActor* Actor)
 {
 	const UNoFearHealthComponent* HealthComponent = FindHealth(Actor);
 	return HealthComponent && HealthComponent->IsDead();
+}
+
+bool UNoFearHealthComponent::IsActorDowned(const AActor* Actor)
+{
+	const UNoFearHealthComponent* HealthComponent = FindHealth(Actor);
+	return HealthComponent && HealthComponent->IsDowned();
+}
+
+bool UNoFearHealthComponent::IsActorIncapacitated(const AActor* Actor)
+{
+	const UNoFearHealthComponent* HealthComponent = FindHealth(Actor);
+	return HealthComponent && (HealthComponent->IsDead() || HealthComponent->IsDowned());
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +132,18 @@ float UNoFearHealthComponent::ProcessDamage(float Damage, const FDamageEvent& Da
 		}
 	}
 
+	// Упавшего добивают: здоровья уже нет, урон сокращает время до смерти.
+	if (bDowned)
+	{
+		const bool bExplosion = DamageEvent.IsOfType(FRadialDamageEvent::ClassID);
+		DownedUntil -= Damage * Multiplier * (bExplosion ? DownedExplosionTimePerDamage : DownedTimePerDamage);
+		LastDamageTime = GetNow();
+		Info.Amount = 0.f;
+		Info.bDowned = true;
+		OnDamaged.Broadcast(this, Info);
+		return 0.f;
+	}
+
 	const float Applied = FMath::Min(Damage * Multiplier, Health);
 	if (Applied <= 0.f)
 	{
@@ -132,6 +157,11 @@ float UNoFearHealthComponent::ProcessDamage(float Damage, const FDamageEvent& Da
 	if (Info.bFatal)
 	{
 		Health = 0.f;
+		if (bCanBeDowned)
+		{
+			Info.bFatal = false;
+			Info.bDowned = true;
+		}
 	}
 
 	OnHealthChanged.Broadcast(this, Health, -Applied);
@@ -146,6 +176,10 @@ float UNoFearHealthComponent::ProcessDamage(float Damage, const FDamageEvent& Da
 	if (Info.bFatal)
 	{
 		Die(Info);
+	}
+	else if (Info.bDowned)
+	{
+		GoDown(Info);
 	}
 	else
 	{
@@ -203,7 +237,8 @@ bool UNoFearHealthComponent::IsFriendlyFire(const AController* EventInstigator, 
 
 float UNoFearHealthComponent::Heal(float Amount)
 {
-	if (bDead || Amount <= 0.f)
+	// Упавшего бинтом не поднять — только Revive.
+	if (bDead || bDowned || Amount <= 0.f)
 	{
 		return 0.f;
 	}
@@ -219,7 +254,7 @@ float UNoFearHealthComponent::Heal(float Amount)
 
 void UNoFearHealthComponent::SetHealth(float NewHealth)
 {
-	if (bDead)
+	if (bDead || bDowned)
 	{
 		return;
 	}
@@ -269,6 +304,7 @@ void UNoFearHealthComponent::Kill(AController* Killer, AActor* Causer)
 void UNoFearHealthComponent::Die(const FNoFearDamageInfo& Info)
 {
 	bDead = true;
+	bDowned = false;
 	SetComponentTickEnabled(false);
 
 	// Сначала реакция владельца (рэгдолл, снятие управления), потом остальной мир.
@@ -280,9 +316,65 @@ void UNoFearHealthComponent::Die(const FNoFearDamageInfo& Info)
 	}
 }
 
+void UNoFearHealthComponent::GoDown(const FNoFearDamageInfo& Info)
+{
+	bDowned = true;
+	DownedUntil = GetNow() + DownedDuration;
+	ReviveProgress = 0.f;
+	LastReviveProgressTime = -1.0e9;
+	DownedInfo = Info;
+	SetComponentTickEnabled(true);
+
+	OnDowned.Broadcast(this, Info);
+}
+
+float UNoFearHealthComponent::GetDownedTimeRemaining() const
+{
+	return IsDowned() ? FMath::Max(0.f, static_cast<float>(DownedUntil - GetNow())) : 0.f;
+}
+
+float UNoFearHealthComponent::GetDownedFraction() const
+{
+	return IsDowned() && DownedDuration > 0.f ? FMath::Clamp(GetDownedTimeRemaining() / DownedDuration, 0.f, 1.f) : 0.f;
+}
+
+bool UNoFearHealthComponent::Revive(AActor* Reviver)
+{
+	if (!IsDowned())
+	{
+		return false;
+	}
+
+	bDowned = false;
+	ReviveProgress = 0.f;
+	LastReviveProgressTime = -1.0e9;
+	Health = FMath::Max(1.f, MaxHealth * ReviveHealthFraction);
+	// Восстановление начнётся не сразу: поднятый ещё хромает.
+	LastDamageTime = GetNow();
+	OnHealthChanged.Broadcast(this, Health, Health);
+	OnRevived.Broadcast(this, Reviver);
+	UpdateRegenTick();
+	return true;
+}
+
+void UNoFearHealthComponent::NotifyReviveProgress(float Progress)
+{
+	if (IsDowned())
+	{
+		LastReviveProgressTime = GetNow();
+		ReviveProgress = FMath::Clamp(Progress, 0.f, 1.f);
+	}
+}
+
+bool UNoFearHealthComponent::IsBeingRevived() const
+{
+	constexpr double ReviveWindow = 0.5;
+	return IsDowned() && GetNow() - LastReviveProgressTime <= ReviveWindow;
+}
+
 bool UNoFearHealthComponent::CanRegenerate() const
 {
-	if (RegenRate <= 0.f || bDead || Health >= MaxHealth)
+	if (RegenRate <= 0.f || bDead || bDowned || Health >= MaxHealth)
 	{
 		return false;
 	}
@@ -296,12 +388,30 @@ bool UNoFearHealthComponent::CanRegenerate() const
 
 void UNoFearHealthComponent::UpdateRegenTick()
 {
-	SetComponentTickEnabled(RegenRate > 0.f && !bDead && Health < MaxHealth);
+	SetComponentTickEnabled(!bDead && (bDowned || (RegenRate > 0.f && Health < MaxHealth)));
 }
 
 void UNoFearHealthComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+	if (bDowned && !bDead)
+	{
+		// Пока поднимают, кровь не уходит: таймер стоит.
+		if (IsBeingRevived())
+		{
+			DownedUntil += DeltaTime;
+		}
+		if (GetNow() >= DownedUntil)
+		{
+			FNoFearDamageInfo Info = DownedInfo;
+			Info.bDowned = false;
+			Info.bFatal = true;
+			Info.Amount = 0.f;
+			Die(Info);
+		}
+		return;
+	}
 
 	if (bDead || RegenRate <= 0.f || Health >= MaxHealth)
 	{

@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "AI/NoFearAIController.h"
 #include "AI/NoFearCoverLibrary.h"
+#include "AI/NoFearSquadSubsystem.h"
 #include "Core/NoFearTeam.h"
 #include "NoFearShooterAIController.generated.h"
 
@@ -20,6 +21,11 @@ class UNoFearWeaponData;
  * В бою ищет укрытие от цели (UNoFearCoverLibrary, бронь в UNoFearBotSubsystem) и пишет его в CoverLocation;
  * бой из укрытия — задача NoFear Cover Fight. Без укрытия держит дистанцию оружия и не стоит на месте
  * (NoFear Find Combat Position). Раненый отходит в дальнее укрытие и просит прикрыть.
+ *
+ * В отряде исполняет приказы командира (UNoFearSquadSubsystem): новый приказ — новое укрытие по его правилам
+ * (перебежка — ближе к врагу, отход — к рубежу, подмога — рядом со своим, обход — то, что нашёл командир);
+ * подавление — огонь вслепую по сведениям отряда; перевязка — задача NoFear Bandage; сбор — RallyLocation.
+ * Поводок в отряде — отрядный (GetSquadLeash), гранаты в отряде — по приказу командира.
  */
 UCLASS(Blueprintable)
 class NOFEAR_API ANoFearShooterAIController : public ANoFearAIController
@@ -58,13 +64,84 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Squad")
 	TMap<ENoFearSquadRole, TObjectPtr<UNoFearWeaponData>> RoleWeapons;
 
-	/** Цель, которую уже бьют другие бойцы отряда, менее желанна на столько за каждого (цели делятся). */
+	/**
+	 * Цель, которую уже бьют другие бойцы отряда, менее желанна: оценка делится на 1 + это × число таких бойцов (цели делятся).
+	 * Только перераспределяет: цель, которую бьют все, остаётся целью, если других нет.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Squad", meta = (ClampMin = "0"))
 	float SquadTargetSharePenalty = 0.5f;
 
 	/** Роль в отряде. None — не в отряде (UNoFearSquadSubsystem). */
 	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
 	ENoFearSquadRole GetSquadRole() const;
+
+	/** Приказ отряда, который боец исполняет. None — воюет сам. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	ENoFearSquadOrder GetSquadOrder() const { return SquadOrder.Order; }
+
+	/**
+	 * Подавляет огнём по приказу (подавление, прикрытие отхода или своего): стреляет по цели и не видя её —
+	 * туда, где она по последним сведениям (своим или отряда).
+	 */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	bool IsSuppressing() const;
+
+	/** Кого перевязать по приказу отряда. nullptr — некого. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	APawn* GetHealTarget() const;
+
+	/**
+	 * Санитар идёт к этому бойцу и уже ближе MedicWaitRadius: боец замирает — в укрытии не высовывается
+	 * (NoFear Cover Fight), без укрытия стоит на месте (RallyLocation), пока его перевязывают.
+	 */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	bool IsAwaitingMedic() const;
+
+	/** Отладка: итог последнего поиска укрытия на фланге (сколько точек отсеял каждый фильтр). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI|Debug")
+	FString GetFlankSearchStats() const { return FlankSearchStats; }
+
+	/** Номер приказа отряда, который боец уже принял (отряд сверяет со своим: дошёл ли приказ). */
+	int32 GetHandledOrderSerial() const { return HandledOrderSerial; }
+
+	/** Принятый приказ выполнить нельзя: укрытия по нему нет, ранен или уже отходит. Отряд считает такого «дошедшим». */
+	bool IsOrderStuck() const { return bOrderStuck; }
+
+	/**
+	 * Найти и занять укрытие на фланге: угол у угрозы между направлениями на FlankFrom (где отряд) и на укрытие
+	 * не меньше MinAngle, путь туда скрытный. Командир зовёт перед приказом «обход». false — нет (старое укрытие остаётся).
+	 */
+	bool SearchFlankCover(AActor* Threat, const FVector& ThreatLocation, const FVector& FlankFrom, float MinAngle, FVector& OutCover);
+
+	/** Бросить гранату по приказу командира в Enemy, который по сведениям отряда у KnownLocation. false — не вышло. */
+	bool OrderGrenade(AActor* Enemy, const FVector& KnownLocation);
+
+	/** В собранном отряде поводок — отрядный (дом отряда, рубеж, соседи), иначе свой. */
+	virtual FVector GetLeashAnchor() const override;
+	virtual float GetLeashRadius() const override;
+
+	/** Отступ при перебежке: укрытие хотя бы на столько ближе к врагу, чем боец сейчас, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Squad", meta = (ClampMin = "0"))
+	float BoundGain = 300.f;
+
+	/**
+	 * Контакт или огонь с места (подавить, прикрыть), а враг дальше, чем бьёт оружие: укрытие не больше чем на столько
+	 * ближе к врагу, см. Нет такого — стоять, к врагу отряд пойдёт перебежками.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Squad", meta = (ClampMin = "0"))
+	float ContactCoverAdvance = 600.f;
+
+	/** Натиск: укрытие хотя бы на столько ближе к врагу, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Squad", meta = (ClampMin = "0"))
+	float RushGain = 500.f;
+
+	/** Подмога ищет укрытие не дальше этого от прижатого своего, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Squad", meta = (ClampMin = "100"))
+	float ReinforceSearchRadius = 700.f;
+
+	/** Санитар ближе этого — раненый замирает и ждёт перевязки (IsAwaitingMedic), см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Squad", meta = (ClampMin = "0"))
+	float MedicWaitRadius = 600.f;
 
 	// --- Гранаты ---
 
@@ -121,6 +198,13 @@ public:
 	/** Где искать укрытие вокруг себя, см. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Cover", meta = (ClampMin = "150"))
 	float CoverSearchRadius = 1500.f;
+
+	/**
+	 * Укрытие на фланге (приказ отряда «обход») — не дальше этого от угрозы, см, даже если оружие бьёт ближе:
+	 * фланг ради перекрёстного огня, дробовик подойдёт ближе уже из укрытия.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Cover", meta = (ClampMin = "0"))
+	float FlankMaxThreatDistance = 2500.f;
 
 	/** Укрытие не ближе этого к угрозе, см. Угроза подошла ближе 0.8 от этого — менять укрытие. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Cover", meta = (ClampMin = "0"))
@@ -259,10 +343,33 @@ protected:
 	virtual float ScoreTarget(const AActor* Candidate, const FNoFearKnownActor& Knowledge) const override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
+	/** Раз в обновление: прочитать приказ отряда; новый — принять. */
+	void UpdateSquadOrder();
+	/** Принять новый приказ: найти укрытие по его правилам. false — выполнить нельзя. */
+	bool ExecuteSquadOrder();
+	/** Приказ с движением принят, укрытие по нему есть, а боец ещё не дошёл: укрытие не менять. */
+	bool IsMovingToOrderCover() const;
+	/** От кого прятаться по приказу: своя цель, иначе враг из приказа по сведениям отряда. */
+	bool GetOrderThreat(AActor*& OutThreat, FVector& OutLocation) const;
+	/**
+	 * Куда вести бойца по приказу, когда укрытия по нему нет: место в сборе, к соседям, рубеж отхода,
+	 * к прижатому своему. false — приказ никуда не ведёт.
+	 */
+	bool GetOrderMoveGoal(FVector& OutGoal) const;
+
 	/** Раз в обновление: проверить укрытие, найти новое, начать отход. */
 	void UpdateCover();
 	/** Найти и занять укрытие. bRetreat — отход раненого. */
 	bool SearchCover(bool bRetreat);
+	/** Параметры поиска укрытия от Threat по настройкам бойца (приказы потом меняют их). */
+	virtual void MakeCoverSearch(bool bRetreat, AActor* Threat, const FVector& ThreatLocation, FNoFearCoverSearch& OutSearch) const;
+	/** Найти укрытие по Search и занять его (старое — отпустить). false — не нашлось, старое остаётся. */
+	bool ApplyCoverSearch(const FNoFearCoverSearch& Search);
+	/**
+	 * Контакт или огонь с места, а враг дальше, чем бьёт оружие (Current — до него сейчас): занять укрытие рядом —
+	 * не дальше от врага и не больше чем на ContactCoverAdvance ближе. false — враг в дистанции или рядом укрытий нет.
+	 */
+	bool ApplyContactCoverSearch(const FNoFearCoverSearch& Search, float Current);
 	/** Позвать своих прикрыть. */
 	void RequestCoveringFire(AActor* Threat);
 
@@ -271,8 +378,20 @@ protected:
 
 	/** Раз в обновление: пора ли бросить гранату, и если да — бросить. */
 	void TryThrowGrenade();
-	/** Куда лечь гранате у цели: земля под последним известным местом. */
-	bool GetGrenadeSpot(const AActor* Target, FVector& OutSpot) const;
+	/** Куда лечь гранате у цели: земля под Known. */
+	bool GetGrenadeSpot(const AActor* Target, const FVector& Known, FVector& OutSpot) const;
+	/** Бросить в Spot, если рядом нет своих и мирных. false — не бросил (причина в GrenadeDebugReason). */
+	bool ThrowGrenadeAtSpot(const FVector& Spot);
+
+	/** Приказ отряда (обновляется каждое обновление бота). */
+	UPROPERTY(Transient)
+	FNoFearSquadOrderInfo SquadOrder;
+	int32 HandledOrderSerial = -1;
+	bool bOrderStuck = false;
+	/** Где стоять, ожидая санитара без укрытия (запомнено, когда санитар подошёл). */
+	bool bHoldingForMedic = false;
+	FVector MedicWaitLocation = FVector::ZeroVector;
+	FString FlankSearchStats;
 
 	FNoFearCoverPoint Cover;
 	/** На кого записана бронь укрытия (пешка может уже пропасть при снятии). */

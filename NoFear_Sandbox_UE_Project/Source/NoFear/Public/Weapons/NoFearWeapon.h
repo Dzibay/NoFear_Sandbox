@@ -93,6 +93,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
 	bool IsAiming() const { return bAiming; }
 
+	/** Когда был последний выстрел (время мира, с). Отряд по нему видит, кто из бойцов ведёт огонь. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
+	double GetLastFireTime() const { return LastFireTime; }
+
 	/** Сколько перезарядки прошло: 0..1 в состоянии Reloading, иначе 0 (для полоски в UI). */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
 	float GetReloadProgress() const;

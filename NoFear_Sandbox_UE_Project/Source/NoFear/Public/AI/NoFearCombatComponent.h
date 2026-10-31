@@ -48,9 +48,23 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Combat")
 	FVector GetLastKnownTargetLocation() const { return LastKnownTargetLocation; }
 
+	/**
+	 * Куда стрелять вслепую, пока цель не видна (подавление по наводке отряда: где её видели свои).
+	 * Пока цель видна, не действует — бот целится сам.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Combat")
+	void SetBlindAimPoint(FVector AimPoint);
+
 	/** Цель видна, время реакции после её обнаружения прошло и на линии огня нет своих. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Combat")
 	bool IsReadyToFire() const;
+
+	/**
+	 * Можно ли стрелять вслепую (подавление): цель есть, её не видно, боец не пошатнулся
+	 * и до точки слепого огня (SetBlindAimPoint) на линии нет своих.
+	 */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Combat")
+	bool CanBlindFire() const;
 
 	/** На линии огня до цели стоит свой или нейтральный (стрелять нельзя). */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Combat")

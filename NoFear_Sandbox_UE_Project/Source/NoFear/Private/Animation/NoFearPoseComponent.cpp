@@ -577,7 +577,8 @@ void UNoFearPoseComponent::ApplyHitReaction(const FNoFearDamageInfo& Info)
 	const UNoFearHealthComponent* Health = BoundHealth.Get();
 	const float MaxHealth = Health ? Health->GetMaxHealth() : 0.f;
 	const bool bHeavy = StaggerDamageFraction > 0.f && MaxHealth > 0.f && Info.Amount >= StaggerDamageFraction * MaxHealth;
-	const bool bWantsStagger = !Info.bFatal && (bHeavy || (bStaggerOnHeadshot && Info.bHeadshot));
+	// Удар, что свалил раненым, не шатает: он уже лежит.
+	const bool bWantsStagger = !Info.bFatal && !Info.bDowned && (bHeavy || (bStaggerOnHeadshot && Info.bHeadshot));
 
 	bool bStaggered = false;
 	if (bWantsStagger && Now >= NextStaggerTime)

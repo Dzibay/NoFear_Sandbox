@@ -1,13 +1,36 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "AI/NoFearCompanionAIController.h"
 #include "Core/NoFearHealthComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GenericTeamAgentInterface.h"
 #include "NoFearPlayerController.generated.h"
 
 class UInputAction;
+class UInputMappingContext;
 class UNoFearInteractableComponent;
+
+/** Строка рации: что сказал напарник (HUD, левый нижний угол). */
+struct FNoFearRadioLine
+{
+	TWeakObjectPtr<APawn> Speaker;
+	FText SpeakerName;
+	FText Text;
+	double Time = 0.0;
+	/** Шёпотом: напарник крадётся. */
+	bool bWhisper = false;
+};
+
+/** Сектор колеса приказов. */
+struct FNoFearOrderWheelEntry
+{
+	ENoFearCompanionOrder Order = ENoFearCompanionOrder::None;
+	FText Label;
+	/** Подпись мельче: запас, цель, почему нельзя. */
+	FText Detail;
+	bool bEnabled = true;
+};
 
 /** Игрок попал по кому-то: для маркера попадания на прицеле. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FNoFearHitConfirmedSignature, AActor*, Victim, float, Damage, bool, bHeadshot, bool, bKilled);
@@ -21,6 +44,13 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FNoFearCompanionsChangedSignature);
  * создаётся новая пешка на PlayerStart, а если его на уровне нет — там, где игрок появился в первый раз.
  * Держит список напарников (не больше MaxCompanions) и взаимодействие клавишей E (IA_Interact):
  * каждый кадр выбирает ближайший к центру экрана UNoFearInteractableComponent в пределах его дистанции.
+ *
+ * Напарник:
+ * - колесо приказов: держать Tab — время замедляется, мышью выбрать сектор, отпустить — приказ;
+ *   точечные приказы берут точку и врага под прицелом;
+ * - пока есть стоящий на ногах напарник, игрок не умирает, а падает раненым (UNoFearHealthComponent::bCanBeDowned);
+ * - упавшего напарника поднимают, удерживая E ReviveHoldTime секунд; урон по игроку сбрасывает подъём;
+ * - реплики напарника приходят сюда же строками рации (AddRadioLine).
  */
 UCLASS()
 class NOFEAR_API ANoFearPlayerController : public APlayerController, public IGenericTeamAgentInterface
@@ -116,6 +146,101 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Companions")
 	bool IsCompanion(const APawn* CompanionPawn) const;
 
+	/** Первый живой напарник (их один) или nullptr. */
+	ANoFearCompanionAIController* GetMainCompanion() const;
+
+	/** Напарник сказал реплику: строка рации на HUD. */
+	void AddRadioLine(APawn* Speaker, const FText& Text, bool bWhisper);
+
+	/** Последние строки рации, от старых к новым. */
+	const TArray<FNoFearRadioLine>& GetRadioLines() const { return RadioLines; }
+
+	/** Сколько секунд строка рации видна на HUD. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Companions", meta = (ClampMin = "1"))
+	float RadioLineTime = 6.f;
+
+	// --- Колесо приказов ---
+
+	/** Колесо приказов (держать). Не задано — создаётся на Tab. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Companions|Orders")
+	TObjectPtr<UInputAction> OrderWheelAction;
+
+	/** Замедление времени, пока колесо открыто. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Companions|Orders", meta = (ClampMin = "0.05", ClampMax = "1"))
+	float OrderWheelTimeDilation = 0.3f;
+
+	/** Насколько надо сдвинуть мышь от центра, чтобы выбрать сектор (сырые единицы мыши). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Companions|Orders", meta = (ClampMin = "1"))
+	float OrderWheelDeadZone = 12.f;
+
+	/** Дальше этого точку и врага под прицелом для приказа не ищем, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Companions|Orders", meta = (ClampMin = "100"))
+	float OrderTraceDistance = 8000.f;
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Companions|Orders")
+	bool IsOrderWheelOpen() const { return bOrderWheelOpen; }
+
+	/** Сектора колеса по часовой стрелке, начиная сверху. */
+	const TArray<FNoFearOrderWheelEntry>& GetOrderWheelEntries() const { return OrderWheelEntries; }
+
+	/** Выбранный сектор или INDEX_NONE. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Companions|Orders")
+	int32 GetOrderWheelSelection() const { return OrderWheelSelection; }
+
+	/** Куда смотрит курсор колеса (единичный вектор, Y вверх; ноль — в центре). */
+	FVector2D GetOrderWheelCursor() const;
+
+	/** Точка под прицелом для «Иди туда» и «Граната туда». */
+	bool GetOrderAimPoint(FVector& OutPoint) const;
+
+	/** Враг под прицелом для «Атакуй цель». */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Companions|Orders")
+	AActor* GetOrderAimEnemy() const { return OrderAimEnemy.Get(); }
+
+	/** Отдать приказ напарнику: точка и враг — под прицелом. false — нет напарника или он отказался. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Companions|Orders")
+	bool IssueCompanionOrder(ENoFearCompanionOrder Order);
+
+	// --- Ранение ---
+
+	/** Сколько держать E, чтобы поднять упавшего напарника, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Companions|Revive", meta = (ClampMin = "0.1"))
+	float ReviveHoldTime = 3.f;
+
+	/**
+	 * Начать поднимать упавшего. Начатое клавишей E идёт, пока E держат; вызванное иначе (Blueprint, тест) —
+	 * пока не вызван StopRevive. Игрок при этом стоит на месте.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Companions|Revive")
+	bool StartRevive(APawn* DownedPawn);
+
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Companions|Revive")
+	void StopRevive();
+
+	/** Кого сейчас поднимает игрок. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Companions|Revive")
+	APawn* GetReviveTarget() const { return ReviveTarget.Get(); }
+
+	/** Сколько поднятия набрано, 0..1. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Companions|Revive")
+	float GetReviveProgress() const { return ReviveTarget.IsValid() ? FMath::Clamp(ReviveElapsed / FMath::Max(ReviveHoldTime, 0.1f), 0.f, 1.f) : 0.f; }
+
+	/** Консоль: уронить напарника раненым. */
+	UFUNCTION(Exec)
+	void NoFearDownCompanion();
+
+	/** Консоль: упасть раненым самому (только при живом напарнике, иначе смерть). */
+	UFUNCTION(Exec)
+	void NoFearDownSelf();
+
+	/** Консоль: приказ напарнику. Follow, Hold, Move, Come, Attack, Grenade, Fire, Supply. */
+	UFUNCTION(Exec)
+	void NoFearOrder(const FString& Order);
+
+	/** Консоль: открыть колесо приказов (Sector — выбранный сектор, -1 — никакой) или закрыть без приказа (Open 0). */
+	UFUNCTION(Exec)
+	void NoFearOrderWheel(int32 Open = 1, int32 Sector = -1);
+
 	// --- Взаимодействие ---
 
 	/** Действие «взаимодействовать». По умолчанию IA_Interact из GASP (E / верхняя кнопка геймпада в IMC_Sandbox). */
@@ -140,11 +265,26 @@ public:
 
 protected:
 	virtual void OnPossess(APawn* InPawn) override;
+	virtual void OnUnPossess() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void SetupInputComponent() override;
 	virtual void PlayerTick(float DeltaTime) override;
 
 	void OnInteractInput();
 	void UpdateFocusedInteractable();
+
+	void OnOrderWheelPressed();
+	void OnOrderWheelReleased();
+	void OpenOrderWheel();
+	/** bIssue — отдать выбранный приказ. */
+	void CloseOrderWheel(bool bIssue);
+	void UpdateOrderWheel();
+	void UpdateOrderAim();
+	void BuildOrderWheelEntries();
+
+	void UpdateRevive(float DeltaTime);
+	/** Падать раненым можно, пока рядом есть напарник на ногах. */
+	void UpdateCanBeDowned();
 
 	/** Убрать погибших и чужих; true — список изменился. */
 	bool PruneCompanions();
@@ -155,6 +295,34 @@ protected:
 private:
 	TArray<TWeakObjectPtr<APawn>> Companions;
 	TWeakObjectPtr<UNoFearInteractableComponent> FocusedInteractable;
+
+	TArray<FNoFearRadioLine> RadioLines;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputMappingContext> CompanionInputContext;
+
+	// Колесо приказов.
+	bool bOrderWheelOpen = false;
+	TArray<FNoFearOrderWheelEntry> OrderWheelEntries;
+	int32 OrderWheelSelection = INDEX_NONE;
+	FVector2D OrderWheelCursor = FVector2D::ZeroVector;
+	float TimeDilationBeforeWheel = 1.f;
+	bool bOrderAimValid = false;
+	FVector OrderAimPoint = FVector::ZeroVector;
+	TWeakObjectPtr<AActor> OrderAimEnemy;
+
+	/** В кого игрок последним попал: запасная цель для «Атакуй». */
+	TWeakObjectPtr<AActor> LastHitEnemy;
+	double LastHitEnemyTime = -1.0e9;
+
+	// Подъём упавшего.
+	TWeakObjectPtr<APawn> ReviveTarget;
+	float ReviveElapsed = 0.f;
+	bool bReviveHeldByInput = false;
+	bool bReviveBlocksMove = false;
+	TArray<FKey> ReviveKeys;
+	/** Идёт обработка нажатия E: подъём, начатый сейчас, держится клавишей. */
+	bool bHandlingInteractInput = false;
 
 	FTimerHandle RespawnTimer;
 	bool bWaitingForRespawn = false;
