@@ -70,6 +70,10 @@ const FName FNoFearBotKeys::InvestigateLocation(TEXT("InvestigateLocation"));
 const FName FNoFearBotKeys::Leader(TEXT("Leader"));
 const FName FNoFearBotKeys::IsFollowing(TEXT("IsFollowing"));
 const FName FNoFearBotKeys::AlertState(TEXT("AlertState"));
+const FName FNoFearBotKeys::FleeLocation(TEXT("FleeLocation"));
+const FName FNoFearBotKeys::IsPanicking(TEXT("IsPanicking"));
+const FName FNoFearBotKeys::IsCowering(TEXT("IsCowering"));
+const FName FNoFearBotKeys::IsWary(TEXT("IsWary"));
 
 ANoFearAIController::ANoFearAIController(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -872,7 +876,7 @@ void ANoFearAIController::ScanCorpses()
 {
 	const APawn* MyPawn = GetPawn();
 	const double Now = GetNow();
-	if (!bReactToCorpses || !bCanAttack || !MyPawn || CurrentTarget.IsValid() || Now < NextCorpseScanTime)
+	if (!bReactToCorpses || !MyPawn || CurrentTarget.IsValid() || Now < NextCorpseScanTime)
 	{
 		return;
 	}
@@ -913,6 +917,7 @@ void ANoFearAIController::ScanCorpses()
 		{
 			continue;
 		}
+		NoticedCorpses.Add(Corpse);
 		NoteCorpse(Corpse);
 		return;
 	}
@@ -920,7 +925,6 @@ void ANoFearAIController::ScanCorpses()
 
 void ANoFearAIController::NoteCorpse(ANoFearCharacter* Corpse)
 {
-	NoticedCorpses.Add(Corpse);
 	NoteSuspicion(Corpse->GetActorLocation(), false);
 	// Подойти к телу и осмотреться: убийца где-то рядом.
 	BeginSearch(Corpse->GetActorLocation(), FVector::ZeroVector, SearchPointCount);
@@ -1036,7 +1040,16 @@ void ANoFearAIController::UpdateMovementStance()
 	const UNoFearPoseComponent* Pose = BoundPose.Get();
 	const bool bSlowed = Pose && Pose->IsSlowed();
 
-	SetMovementFlags(bCombatStance || bAlertStance, bCombatStance || bArmed, ShouldWalk() || bSlowed);
+	SetMovementFlags(bCombatStance || bAlertStance || bLookAroundStance, bCombatStance || bArmed, ShouldWalk() || bSlowed);
+}
+
+void ANoFearAIController::SetLookAroundStance(bool bEnable)
+{
+	if (bLookAroundStance != bEnable)
+	{
+		bLookAroundStance = bEnable;
+		UpdateMovementStance();
+	}
 }
 
 void ANoFearAIController::SetCrouching(bool bCrouch)
@@ -1126,7 +1139,7 @@ void ANoFearAIController::ReleaseStagger()
 	UpdateMovementStance();
 }
 
-void ANoFearAIController::SetMovementFlags(bool bStrafe, bool bAim, bool bWalk)
+void ANoFearAIController::SetMovementFlags(bool bStrafe, bool bAim, bool bWalk, bool bSprint)
 {
 	APawn* MyPawn = GetPawn();
 	const FStructProperty* StateProperty = MyPawn ? FindFProperty<FStructProperty>(MyPawn->GetClass(), InputStateProperty) : nullptr;
@@ -1154,6 +1167,10 @@ void ANoFearAIController::SetMovementFlags(bool bStrafe, bool bAim, bool bWalk)
 		else if (FieldName.StartsWith(TEXT("WantsToWalk")))
 		{
 			It->SetPropertyValue_InContainer(State, bWalk);
+		}
+		else if (FieldName.StartsWith(TEXT("WantsToSprint")))
+		{
+			It->SetPropertyValue_InContainer(State, bSprint);
 		}
 	}
 }

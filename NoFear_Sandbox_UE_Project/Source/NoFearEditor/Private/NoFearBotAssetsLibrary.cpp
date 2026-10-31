@@ -1,6 +1,7 @@
 #include "NoFearBotAssetsLibrary.h"
 
 #include "AI/BTTask_NoFearFindLocation.h"
+#include "AI/BTTask_NoFearLookAround.h"
 #include "AI/BTTask_NoFearMeleeAttack.h"
 #include "AI/BTTask_NoFearShoot.h"
 #include "AI/NoFearAIController.h"
@@ -125,6 +126,10 @@ namespace
 			{ FNoFearBotKeys::Leader, UBlackboardKeyType_Object::StaticClass(), TEXT("За кем идёт напарник") },
 			{ FNoFearBotKeys::IsFollowing, UBlackboardKeyType_Bool::StaticClass(), TEXT("Напарник идёт за лидером") },
 			{ FNoFearBotKeys::AlertState, UBlackboardKeyType_Int::StaticClass(), TEXT("Тревога: 0 спокоен, 1 насторожен, 2 бой, 3 поиск (ENoFearAlertState)") },
+			{ FNoFearBotKeys::FleeLocation, UBlackboardKeyType_Vector::StaticClass(), TEXT("Куда бежать или отходить (мирные)") },
+			{ FNoFearBotKeys::IsPanicking, UBlackboardKeyType_Bool::StaticClass(), TEXT("Мирный в панике и бежит") },
+			{ FNoFearBotKeys::IsCowering, UBlackboardKeyType_Bool::StaticClass(), TEXT("Мирный прячется: присел, закрыл голову") },
+			{ FNoFearBotKeys::IsWary, UBlackboardKeyType_Bool::StaticClass(), TEXT("Мирный насторожен и отходит шагом") },
 		};
 
 		bool bChanged = bCreated;
@@ -173,9 +178,16 @@ namespace
 		return FString::Printf(TEXT("(SelectedKeyName=\"%s\")"), *KeyName.ToString());
 	}
 
+	/** Значение для FValueOrBBKey_Float (Wait, MoveTo в 5.8). */
 	FString FloatValue(float Value)
 	{
 		return FString::Printf(TEXT("(DefaultValue=%f)"), Value);
+	}
+
+	/** Значение для обычного float-свойства (наши задачи). */
+	FString PlainFloat(float Value)
+	{
+		return FString::Printf(TEXT("%f"), Value);
 	}
 
 	/** Собирает граф дерева так же, как его собрал бы человек в редакторе. Порядок детей — порядок добавления. */
@@ -415,11 +427,39 @@ namespace
 		Builder.Wait(Wander, 3.f, 1.5f);
 	}
 
-	/** Мирный: пока просто стоит. */
+	/**
+	 * Мирный (состояние решает ANoFearCivilianAIController, дерево только исполняет):
+	 *   прячется → сидеть;
+	 *   паника → бежать к FleeLocation и спрятаться там (нет точки — спрятаться сразу);
+	 *   насторожен → посмотреть на звук, отойти шагом, осмотреться;
+	 *   иначе → бродить вокруг дома с паузами и осматриваться.
+	 */
 	void BuildCivilianTree(FTreeBuilder& Builder)
 	{
 		UBehaviorTreeGraphNode* Root = Builder.Selector(nullptr, TEXT("Мирный"));
-		Builder.Wait(Root, 5.f, 1.f);
+
+		UBehaviorTreeGraphNode* Cower = Builder.Wait(Root, 1.f);
+		Builder.IfSet(Cower, FNoFearBotKeys::IsCowering, TEXT("Both"), TEXT("Прячется?"));
+
+		UBehaviorTreeGraphNode* Panic = Builder.Selector(Root, TEXT("Паника"));
+		Builder.IfSet(Panic, FNoFearBotKeys::IsPanicking, TEXT("Both"), TEXT("В панике?"));
+		UBehaviorTreeGraphNode* Run = Builder.Sequence(Panic, TEXT("Бежать"));
+		Builder.MoveTo(Run, FNoFearBotKeys::FleeLocation, 100.f, TEXT("К безопасной точке"));
+		Builder.Task(Run, UBTTask_NoFearCivilianShelter::StaticClass());
+		Builder.Task(Panic, UBTTask_NoFearCivilianShelter::StaticClass());
+
+		UBehaviorTreeGraphNode* Wary = Builder.Selector(Root, TEXT("Насторожен"));
+		Builder.IfSet(Wary, FNoFearBotKeys::IsWary, TEXT("Both"), TEXT("Насторожен?"));
+		UBehaviorTreeGraphNode* StepAway = Builder.Sequence(Wary, TEXT("Отойти"));
+		Builder.Wait(StepAway, 1.5f, 0.3f);
+		Builder.MoveTo(StepAway, FNoFearBotKeys::FleeLocation, 80.f, TEXT("Подальше от звука"));
+		Builder.Task(StepAway, UBTTask_NoFearLookAround::StaticClass(), { { TEXT("Duration"), PlainFloat(3.f) }, { TEXT("RandomDeviation"), PlainFloat(1.f) } });
+		Builder.Task(Wary, UBTTask_NoFearLookAround::StaticClass(), { { TEXT("Duration"), PlainFloat(2.f) }, { TEXT("RandomDeviation"), PlainFloat(0.5f) } });
+
+		UBehaviorTreeGraphNode* Wander = Builder.Sequence(Root, TEXT("Бродить"));
+		Builder.Task(Wander, UBTTask_NoFearFindWanderLocation::StaticClass());
+		Builder.MoveTo(Wander, FNoFearBotKeys::MoveGoal, 50.f, TEXT("К точке"));
+		Builder.Task(Wander, UBTTask_NoFearLookAround::StaticClass(), { { TEXT("Duration"), PlainFloat(4.f) }, { TEXT("RandomDeviation"), PlainFloat(2.f) } });
 	}
 
 	/** Собранное дерево в лог: так видно, что вышло на самом деле (порядок детей, ключи, условия). */

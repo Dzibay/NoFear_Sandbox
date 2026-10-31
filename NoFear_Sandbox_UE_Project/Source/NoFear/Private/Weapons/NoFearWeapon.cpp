@@ -1,5 +1,6 @@
 #include "Weapons/NoFearWeapon.h"
 
+#include "AI/NoFearBotSubsystem.h"
 #include "AI/NoFearCombatSubsystem.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
@@ -534,6 +535,12 @@ void ANoFearWeapon::FireShot()
 	APawn* InstigatorPawn = GetInstigator();
 	UAISense_Hearing::ReportNoiseEvent(this, Start, Data->NoiseLoudness, InstigatorPawn ? static_cast<AActor*>(InstigatorPawn) : this,
 		Data->NoiseRange, TEXT("Gunshot"));
+	// Мирные: далёкий выстрел настораживает, близкий и пуля мимо — паника.
+	UNoFearBotSubsystem::ReportDanger(this, ENoFearDangerType::Gunshot, InstigatorPawn, Start, Data->NoiseRange, Start);
+	for (const FVector& BulletEnd : BulletEnds)
+	{
+		UNoFearBotSubsystem::ReportBulletPath(this, InstigatorPawn, Start, BulletEnd);
+	}
 
 	Bloom = FMath::Min(Bloom + Data->SpreadPerShot, Data->MaxBloom);
 	KickArms();

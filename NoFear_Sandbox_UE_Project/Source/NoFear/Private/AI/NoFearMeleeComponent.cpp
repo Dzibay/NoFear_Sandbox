@@ -1,5 +1,6 @@
 #include "AI/NoFearMeleeComponent.h"
 
+#include "AI/NoFearBotSubsystem.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/NoFearPoseComponent.h"
 #include "Core/NoFearHealthComponent.h"
@@ -62,6 +63,10 @@ bool UNoFearMeleeComponent::StartAttack(AActor* Target)
 	}
 
 	OnAttackStarted.Broadcast(Target);
+
+	// Драка рядом пугает мирных.
+	const FVector OwnerLocation = GetOwner()->GetActorLocation();
+	UNoFearBotSubsystem::ReportDanger(this, ENoFearDangerType::Fight, GetOwner(), OwnerLocation, UNoFearBotSubsystem::FightNoticeRadius, OwnerLocation);
 
 	if (WindupTime > 0.f)
 	{

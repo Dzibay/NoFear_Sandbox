@@ -21,6 +21,27 @@ enum class ENoFearNoiseType : uint8
 };
 
 /**
+ * Опасность, о которой узнают все боты рядом, а не только враги источника (в отличие от шума).
+ * Мирные по ней пугаются и бегут; остальные пока не реагируют (наследники переопределяют HandleDanger).
+ */
+UENUM(BlueprintType)
+enum class ENoFearDangerType : uint8
+{
+	/** Выстрел. Location — где стреляли. */
+	Gunshot,
+	/** Пуля пролетела рядом. Location — где стрелок. */
+	NearMiss,
+	/** Рядом дерутся (удар, рывок монстра). Location — где нападающий. */
+	Fight,
+	/** Крик паникующего мирного. Location — от чего он бежит. */
+	Scream,
+	/** Взрыв. Location — центр. */
+	Explosion,
+	/** Упала граната. Location — где она лежит. */
+	Grenade
+};
+
+/**
  * Реестр ботов и трупов в мире, шум и общая тревога.
  * Боты регистрируются сами (ANoFearAIController::OnPossess), трупы — ANoFearCharacter при смерти.
  * HUD обходит список ботов отсюда, а не ищет их по миру каждый кадр.
@@ -56,6 +77,22 @@ public:
 
 	/** Victim получил урон от Attacker: свои пострадавшего узнают нападавшего, свои нападавшего — пострадавшего. */
 	void NotifyAttack(AActor* Victim, AActor* Attacker);
+
+	/**
+	 * Опасность: все боты (кроме самого Source) в пределах Radius от Origin получают HandleDanger(Type, Source, ThreatLocation).
+	 * Origin — откуда разносится (выстрел, крик), ThreatLocation — от чего спасаться.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|AI", meta = (WorldContext = "WorldContextObject"))
+	static void ReportDanger(const UObject* WorldContextObject, ENoFearDangerType Type, AActor* Source, FVector Origin, float Radius, FVector ThreatLocation);
+
+	/** Пуля пролетела от Start до End: боты ближе NearMissRadius к её пути получают опасность NearMiss. */
+	static void ReportBulletPath(const UObject* WorldContextObject, AActor* Shooter, const FVector& Start, const FVector& End);
+
+	/** Насколько близко должна пройти пуля, чтобы её «услышали», см. */
+	static constexpr float NearMissRadius = 250.f;
+
+	/** На каком расстоянии замечают драку (удар монстра, попадание по боту), см. */
+	static constexpr float FightNoticeRadius = 1500.f;
 
 	/** Во сколько раз дальность шума падает, если между источником и слушателем стена. */
 	static constexpr float WallNoiseFactor = 0.6f;

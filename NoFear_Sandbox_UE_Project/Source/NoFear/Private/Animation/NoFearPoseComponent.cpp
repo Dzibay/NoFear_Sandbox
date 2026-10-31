@@ -108,6 +108,25 @@ void UNoFearPoseComponent::FillDefaultPoses()
 		MakeEntry(B::Head, 5.f),
 	};
 	Poses.Add(ENoFearPose::Wounded, WoundedPose);
+
+	// Закрыть голову руками: спина согнута, голова вниз, локти вперёд-вверх, кисти на затылке.
+	// Углы рук — в осях персонажа и наследуются от родителя: предплечье добавляет к плечу.
+	// Скрутка плеча сводит кисти к голове (подобрано замером кистей относительно кости head).
+	FNoFearPoseSettings CoverHeadPose;
+	CoverHeadPose.BlendInTime = 0.35f;
+	CoverHeadPose.BlendOutTime = 0.5f;
+	CoverHeadPose.Bones = {
+		MakeEntry(B::Spine02, 10.f),
+		MakeEntry(B::Spine03, 10.f),
+		MakeEntry(B::Spine04, 8.f),
+		MakeEntry(B::Neck01, 10.f),
+		MakeEntry(B::Head, 20.f),
+		MakeEntry(B::UpperArmL, -140.f, 0.f, 40.f),
+		MakeEntry(B::UpperArmR, -140.f, 0.f, -40.f),
+		MakeEntry(B::LowerArmL, -110.f),
+		MakeEntry(B::LowerArmR, -110.f),
+	};
+	Poses.Add(ENoFearPose::CoverHead, CoverHeadPose);
 }
 
 void UNoFearPoseComponent::BeginPlay()

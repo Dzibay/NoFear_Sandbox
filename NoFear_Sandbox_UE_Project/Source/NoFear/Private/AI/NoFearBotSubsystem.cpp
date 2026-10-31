@@ -165,4 +165,50 @@ void UNoFearBotSubsystem::NotifyAttack(AActor* Victim, AActor* Attacker)
 			Bot->ReceiveAlarm(Victim, Victim->GetActorLocation());
 		}
 	}
+
+	// Драку видят и посторонние (мирные пугаются).
+	ReportDanger(Victim, ENoFearDangerType::Fight, Attacker, Victim->GetActorLocation(), FightNoticeRadius, Attacker->GetActorLocation());
+}
+
+void UNoFearBotSubsystem::ReportDanger(const UObject* WorldContextObject, ENoFearDangerType Type, AActor* Source, FVector Origin, float Radius, FVector ThreatLocation)
+{
+	UNoFearBotSubsystem* Subsystem = Get(WorldContextObject);
+	if (!Subsystem || Radius <= 0.f)
+	{
+		return;
+	}
+	const float RadiusSquared = FMath::Square(Radius);
+	for (ANoFearAIController* Bot : Subsystem->GetBots())
+	{
+		const APawn* Listener = Bot->GetPawn();
+		if (!Listener || Listener == Source || UNoFearHealthComponent::IsActorDead(Listener)
+			|| FVector::DistSquared(Listener->GetActorLocation(), Origin) > RadiusSquared)
+		{
+			continue;
+		}
+		Bot->HandleDanger(Type, Source, ThreatLocation);
+	}
+}
+
+void UNoFearBotSubsystem::ReportBulletPath(const UObject* WorldContextObject, AActor* Shooter, const FVector& Start, const FVector& End)
+{
+	UNoFearBotSubsystem* Subsystem = Get(WorldContextObject);
+	if (!Subsystem)
+	{
+		return;
+	}
+	const FVector ShooterLocation = Shooter ? Shooter->GetActorLocation() : Start;
+	for (ANoFearAIController* Bot : Subsystem->GetBots())
+	{
+		const APawn* Listener = Bot->GetPawn();
+		if (!Listener || Listener == Shooter || UNoFearHealthComponent::IsActorDead(Listener))
+		{
+			continue;
+		}
+		const FVector Closest = FMath::ClosestPointOnSegment(Listener->GetActorLocation(), Start, End);
+		if (FVector::DistSquared(Closest, Listener->GetActorLocation()) <= FMath::Square(NearMissRadius))
+		{
+			Bot->HandleDanger(ENoFearDangerType::NearMiss, Shooter, ShooterLocation);
+		}
+	}
 }

@@ -37,6 +37,14 @@ struct NOFEAR_API FNoFearBotKeys
 	static const FName IsFollowing;
 	/** Int: ENoFearAlertState (0 спокоен, 1 насторожен, 2 бой, 3 поиск). */
 	static const FName AlertState;
+	/** Vector: куда бежать или отходить (мирные). */
+	static const FName FleeLocation;
+	/** Bool: мирный в панике и бежит. */
+	static const FName IsPanicking;
+	/** Bool: мирный прячется (присел, закрыл голову). */
+	static const FName IsCowering;
+	/** Bool: мирный насторожен далёкими выстрелами и отходит шагом. */
+	static const FName IsWary;
 };
 
 /** Уровень тревоги бота. Пишется в блэкборд (AlertState) и показывается значком над головой. */
@@ -124,9 +132,22 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NoFear|AI")
 	void ReportThreat(AActor* Threat);
 
-	/** Выставить флаги CharacterInputState у тела GASP: боком, прицел, шагом. */
+	/** Выставить флаги CharacterInputState у тела GASP: боком, прицел, шагом, спринт. */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|AI")
-	void SetMovementFlags(bool bStrafe, bool bAim, bool bWalk);
+	void SetMovementFlags(bool bStrafe, bool bAim, bool bWalk, bool bSprint = false);
+
+	/**
+	 * «Осматривается»: тело поворачивается за фокусом контроллера (боком), даже без цели.
+	 * Включает задача NoFear Look Around на время паузы.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|AI")
+	void SetLookAroundStance(bool bEnable);
+
+	/**
+	 * Опасность рядом (UNoFearBotSubsystem::ReportDanger): выстрел, пуля, драка, крик, взрыв, граната.
+	 * База ничего не делает; мирные пугаются.
+	 */
+	virtual void HandleDanger(ENoFearDangerType Type, AActor* Source, FVector ThreatLocation) {}
 
 	/**
 	 * Присесть / встать (ACharacter::Crouch). Присевший бот тише (шаги по CrouchFootstepRange) и труднее заметен,
@@ -405,7 +426,7 @@ protected:
 	/** Доля цели, не закрытая укрытием: проверка голова/центр/ноги. */
 	float ComputeExposure(const AActor* Target) const;
 
-	void UpdateAlertState();
+	virtual void UpdateAlertState();
 	void SetAlertState(ENoFearAlertState NewState);
 
 	/** Что-то подозрительное в Location: бот насторожен, смотрит туда и (если можно) идёт проверить. */
@@ -418,7 +439,8 @@ protected:
 	void GenerateSearchPoints(const FVector& Origin, const FVector& Velocity, int32 NumPoints);
 
 	void ScanCorpses();
-	void NoteCorpse(ANoFearCharacter* Corpse);
+	/** Заметил тело (своего или нейтрального). База идёт осмотреться; мирные пугаются. */
+	virtual void NoteCorpse(ANoFearCharacter* Corpse);
 	void ShareAlarm();
 	void DrawDebug() const;
 
@@ -430,6 +452,8 @@ protected:
 
 	FVector HomeLocation = FVector::ZeroVector;
 	TWeakObjectPtr<AActor> CurrentTarget;
+	/** Задача осмотра держит тело лицом к фокусу. */
+	bool bLookAroundStance = false;
 	TMap<TWeakObjectPtr<AActor>, FNoFearKnownActor> KnownActors;
 
 private:
