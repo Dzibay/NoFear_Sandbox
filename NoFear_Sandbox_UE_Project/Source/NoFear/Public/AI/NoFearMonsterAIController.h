@@ -5,6 +5,7 @@
 #include "NoFearMonsterAIController.generated.h"
 
 class UNoFearMeleeComponent;
+class UNoFearMonsterAttack;
 
 /**
  * Монстр: бродит стаей вокруг дома, заметив врага — рычит (стая в PackAlarmRadius бросается следом) и нападает
@@ -86,6 +87,20 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster")
 	bool bUseAttackTokens = true;
 
+	/**
+	 * Свой набор атак вида монстра (прыгун, плевун, танк). Не пустой — заменяет набор UNoFearMeleeComponent тела
+	 * при вселении. Пустой — у тела остаются его атаки.
+	 */
+	UPROPERTY(EditAnywhere, Instanced, BlueprintReadOnly, Category = "NoFear|Monster")
+	TArray<TObjectPtr<UNoFearMonsterAttack>> AttackSet;
+
+	/** На каком расстоянии от цели кружит без жетона (задача Find Circle Location), см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster", meta = (ClampMin = "0"))
+	float CircleMinRadius = 400.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster", meta = (ClampMin = "0"))
+	float CircleMaxRadius = 600.f;
+
 	// --- Стая ---
 
 	/** Монстры без PackName ближе этого друг к другу (по цепочке) — одна стая, см. */
@@ -153,6 +168,15 @@ protected:
 	virtual void ShareAlarm() override;
 	virtual bool CanInvestigateLocation(const FVector& Location) const override;
 
+	/** Настроить компонент ближнего боя тела под вид монстра: набор атак AttackSet и т. п. */
+	virtual void ConfigureMelee(UNoFearMeleeComponent* Melee);
+
+	/** Кружит вокруг цели без жетона. */
+	bool IsCircling() const;
+
+	/** Расстояние до текущей цели по горизонтали (без цели — очень большое). */
+	float GetTargetDistance2D() const;
+
 private:
 	UFUNCTION()
 	void HandleAttackFinished(AActor* Target);
@@ -163,7 +187,8 @@ private:
 	void AlarmPack(AActor* Threat);
 	void EndRoar();
 	void SetBlackboardBool(FName Key, bool bValue);
-	bool IsCircling() const;
+
+	TWeakObjectPtr<UNoFearMeleeComponent> ConfiguredMelee;
 
 	TArray<TWeakObjectPtr<ANoFearMonsterAIController>> PackMembers;
 	TWeakObjectPtr<ANoFearMonsterAIController> PackLeader;

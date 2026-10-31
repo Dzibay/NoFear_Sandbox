@@ -10,6 +10,7 @@
 #include "AI/NoFearCompanionAIController.h"
 #include "AI/NoFearMeleeComponent.h"
 #include "AI/NoFearMonsterAIController.h"
+#include "AI/NoFearMonsterKinds.h"
 #include "AI/NoFearRecruitableComponent.h"
 #include "AI/NoFearShooterAIController.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -32,12 +33,14 @@
 #include "BehaviorTreeGraphNode_Root.h"
 #include "BehaviorTreeGraphNode_Task.h"
 #include "Core/NoFearCharacter.h"
+#include "Core/NoFearHealthComponent.h"
 #include "Core/NoFearTeam.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
+#include "Components/CapsuleComponent.h"
 #include "HAL/IConsoleManager.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -134,6 +137,7 @@ namespace
 			{ FNoFearBotKeys::IsRoaring, UBlackboardKeyType_Bool::StaticClass(), TEXT("Монстр рычит и стоит") },
 			{ FNoFearBotKeys::ReturnHome, UBlackboardKeyType_Bool::StaticClass(), TEXT("Монстр бросил цель за территорией и идёт домой") },
 			{ FNoFearBotKeys::WanderCenter, UBlackboardKeyType_Vector::StaticClass(), TEXT("Вокруг чего бродить: дом или вожак стаи") },
+			{ FNoFearBotKeys::KeepAway, UBlackboardKeyType_Bool::StaticClass(), TEXT("Плевун отступает, держит дистанцию") },
 		};
 
 		bool bChanged = bCreated;
@@ -404,7 +408,8 @@ namespace
 	/**
 	 * Монстр (обычный и агрессивный):
 	 *   рычит → стоять;
-	 *   есть цель и жетон → догнать и ударить (атаку выбирает UNoFearMeleeComponent);
+	 *   есть цель и надо держать дистанцию (плевун) → отбежать от неё;
+ *   есть цель и жетон → догнать и ударить (атаку выбирает UNoFearMeleeComponent);
 	 *   есть цель без жетона → кружить вокруг неё на 400–600 см;
 	 *   цель ушла за территорию → шагом домой;
 	 *   есть что проверить → сбегать, осмотреться, забыть;
@@ -419,6 +424,10 @@ namespace
 
 		UBehaviorTreeGraphNode* Attack = Builder.Selector(Root, TEXT("Атака"));
 		Builder.IfSet(Attack, FNoFearBotKeys::AttackTarget, TEXT("Both"), TEXT("Есть цель?"));
+		UBehaviorTreeGraphNode* Retreat = Builder.Sequence(Attack, TEXT("Отступить"));
+		Builder.IfSet(Retreat, FNoFearBotKeys::KeepAway, TEXT("Both"), TEXT("Держать дистанцию?"));
+		Builder.Task(Retreat, UBTTask_NoFearFindRetreatLocation::StaticClass());
+		Builder.MoveTo(Retreat, FNoFearBotKeys::MoveGoal, 80.f, TEXT("Прочь от цели"));
 		UBehaviorTreeGraphNode* Hit = Builder.Sequence(Attack, TEXT("Ударить"));
 		Builder.IfSet(Hit, FNoFearBotKeys::HasAttackToken, TEXT("Both"), TEXT("Есть жетон?"));
 		Builder.Task(Hit, UBTTask_NoFearMeleeAttack::StaticClass());
@@ -575,6 +584,10 @@ namespace
 		/** Компонент, который появляется у этого тела (и наследуется его детьми). */
 		UClass* ComponentClass = nullptr;
 		const TCHAR* ComponentName = nullptr;
+		/** Запас здоровья; 0 — как у родителя. */
+		float MaxHealth = 0.f;
+		/** Масштаб тела (капсулы со всем, что на ней); 0 — как у родителя. */
+		float Scale = 0.f;
 	};
 
 	bool HasOwnComponent(const UBlueprint* Blueprint, const UClass* ComponentClass)
@@ -657,6 +670,16 @@ namespace
 		Defaults->bApplyBodyColor = true;
 		Defaults->BodyColor = Spec.Color;
 		Defaults->CharacterName = Spec.DisplayName;
+		if (UNoFearHealthComponent* Health = Spec.MaxHealth > 0.f ? Defaults->GetHealthComponent() : nullptr)
+		{
+			Health->Modify();
+			Health->MaxHealth = Spec.MaxHealth;
+		}
+		if (UCapsuleComponent* Capsule = Spec.Scale > 0.f ? Defaults->GetCapsuleComponent() : nullptr)
+		{
+			Capsule->Modify();
+			Capsule->SetRelativeScale3D(FVector(Spec.Scale));
+		}
 
 		if (UNoFearWeaponComponent* WeaponComponent = Spec.Weapons >= 0 ? Defaults->GetWeaponComponent() : nullptr)
 		{
@@ -700,6 +723,12 @@ namespace
 				NSLOCTEXT("NoFearBots", "Monster", "Монстр"), -1, UNoFearMeleeComponent::StaticClass(), TEXT("Melee") },
 			{ TEXT("CBP_Bot_AggroMonster"), TEXT("CBP_Bot_Monster"), ANoFearMonsterAIController::StaticClass(), ENoFearTeam::AggroMonster, FLinearColor(0.35f, 0.04f, 0.7f),
 				NSLOCTEXT("NoFearBots", "AggroMonster", "Бешеный монстр"), -1 },
+			{ TEXT("CBP_Bot_Jumper"), TEXT("CBP_Bot_Monster"), ANoFearJumperAIController::StaticClass(), ENoFearTeam::Monster, FLinearColor(1.f, 0.6f, 0.02f),
+				NSLOCTEXT("NoFearBots", "Jumper", "Прыгун"), -1, nullptr, nullptr, 60.f, 0.85f },
+			{ TEXT("CBP_Bot_Spitter"), TEXT("CBP_Bot_Monster"), ANoFearSpitterAIController::StaticClass(), ENoFearTeam::Monster, FLinearColor(0.2f, 0.75f, 0.05f),
+				NSLOCTEXT("NoFearBots", "Spitter", "Плевун"), -1, nullptr, nullptr, 80.f, 1.f },
+			{ TEXT("CBP_Bot_Tank"), TEXT("CBP_Bot_Monster"), ANoFearTankAIController::StaticClass(), ENoFearTeam::Monster, FLinearColor(0.35f, 0.02f, 0.05f),
+				NSLOCTEXT("NoFearBots", "Tank", "Танк"), -1, nullptr, nullptr, 400.f, 1.3f },
 			{ TEXT("CBP_NoFearBot_Soldier"), TEXT("CBP_NoFearBot"), ANoFearShooterAIController::StaticClass(), ENoFearTeam::Enemy, FLinearColor(0.4f, 0.4f, 0.4f),
 				NSLOCTEXT("NoFearBots", "Soldier", "Стрелок"), 1, UNoFearCombatComponent::StaticClass(), TEXT("Combat") },
 			{ TEXT("CBP_Bot_Enemy"), TEXT("CBP_NoFearBot_Soldier"), ANoFearShooterAIController::StaticClass(), ENoFearTeam::Enemy, FLinearColor(1.f, 0.3f, 0.02f),

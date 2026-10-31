@@ -3,6 +3,7 @@
 #include "AIController.h"
 #include "AI/NoFearAIController.h"
 #include "AI/NoFearBotSubsystem.h"
+#include "AI/NoFearMonsterAIController.h"
 #include "Core/NoFearHealthComponent.h"
 #include "Core/NoFearTeam.h"
 #include "BehaviorTree/BehaviorTree.h"
@@ -291,7 +292,15 @@ EBTNodeResult::Type UBTTask_NoFearFindCircleLocation::ExecuteTask(UBehaviorTreeC
 		}
 	}
 
-	const float Radius = FMath::FRandRange(MinRadius, FMath::Max(MinRadius, MaxRadius));
+	// Кольцо — своё у каждого вида монстра (у прыгуна шире), у остальных — из задачи.
+	float RingMin = MinRadius;
+	float RingMax = MaxRadius;
+	if (const ANoFearMonsterAIController* Monster = Cast<ANoFearMonsterAIController>(Controller))
+	{
+		RingMin = Monster->CircleMinRadius;
+		RingMax = Monster->CircleMaxRadius;
+	}
+	const float Radius = FMath::FRandRange(RingMin, FMath::Max(RingMin, RingMax));
 	const FVector Desired = Center + FRotator(0.f, BestAngle, 0.f).Vector() * Radius;
 	FVector Goal;
 	if (!ProjectToNav(Pawn, Desired, Goal))
@@ -306,4 +315,97 @@ FString UBTTask_NoFearFindCircleLocation::GetStaticDescription() const
 {
 	return FString::Printf(TEXT("%s = ring %.0f-%.0f around %s"), *GetSelectedBlackboardKey().ToString(), MinRadius, MaxRadius,
 		*TargetKey.SelectedKeyName.ToString());
+}
+
+// ---------------------------------------------------------------------------
+
+UBTTask_NoFearFindRetreatLocation::UBTTask_NoFearFindRetreatLocation(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	NodeName = TEXT("NoFear Find Retreat Location");
+
+	BlackboardKey.AddVectorFilter(this, GET_MEMBER_NAME_CHECKED(UBTTask_NoFearFindRetreatLocation, BlackboardKey));
+	BlackboardKey.SelectedKeyName = FNoFearBotKeys::MoveGoal;
+
+	TargetKey.AddObjectFilter(this, GET_MEMBER_NAME_CHECKED(UBTTask_NoFearFindRetreatLocation, TargetKey), AActor::StaticClass());
+	TargetKey.SelectedKeyName = FNoFearBotKeys::AttackTarget;
+}
+
+void UBTTask_NoFearFindRetreatLocation::InitializeFromAsset(UBehaviorTree& Asset)
+{
+	Super::InitializeFromAsset(Asset);
+	if (const UBlackboardData* BBAsset = GetBlackboardAsset())
+	{
+		TargetKey.ResolveSelectedKey(*BBAsset);
+	}
+}
+
+EBTNodeResult::Type UBTTask_NoFearFindRetreatLocation::ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
+{
+	AAIController* Controller = OwnerComp.GetAIOwner();
+	const APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
+	UBlackboardComponent* Blackboard = OwnerComp.GetBlackboardComponent();
+	const AActor* Target = Blackboard ? Cast<AActor>(Blackboard->GetValueAsObject(TargetKey.SelectedKeyName)) : nullptr;
+	UNavigationSystemV1* NavSys = Pawn ? FNavigationSystem::GetCurrent<UNavigationSystemV1>(Pawn->GetWorld()) : nullptr;
+	if (!Pawn || !Target || !NavSys)
+	{
+		return EBTNodeResult::Failed;
+	}
+
+	const FVector Center = Target->GetActorLocation();
+	const FVector PawnLocation = Pawn->GetActorLocation();
+	const float CurrentDistance = FVector::Dist2D(PawnLocation, Center);
+	FVector Away = (PawnLocation - Center).GetSafeNormal2D();
+	if (Away.IsNearlyZero())
+	{
+		Away = -Pawn->GetActorForwardVector().GetSafeNormal2D();
+	}
+	const float AwayAngle = FMath::RadiansToDegrees(FMath::Atan2(Away.Y, Away.X));
+
+	bool bFound = false;
+	FVector Best = FVector::ZeroVector;
+	float BestScore = -UE_BIG_NUMBER;
+	for (int32 Index = 0; Index < NumSamples; ++Index)
+	{
+		// Первые варианты — ближе к «прямо от цели», дальше разброс шире.
+		const float Spread = MaxAngle * FMath::Min(1.f, (Index + 1.f) / FMath::Max(NumSamples * 0.5f, 1.f));
+		const float Angle = AwayAngle + FMath::FRandRange(-Spread, Spread);
+		const float Distance = FMath::FRandRange(MinDistance, FMath::Max(MinDistance, MaxDistance));
+		FVector Point;
+		if (!ProjectToNav(Pawn, Center + FRotator(0.f, Angle, 0.f).Vector() * Distance, Point))
+		{
+			continue;
+		}
+		const float PointDistance = FVector::Dist2D(Point, Center);
+		if (PointDistance <= CurrentDistance + 100.f)
+		{
+			continue;
+		}
+		// Путь не должен вести мимо цели: путь заметно длиннее прямой — значит, в обход через неё или тупик.
+		FVector::FReal PathLength = 0.0;
+		if (NavSys->GetPathLength(PawnLocation, Point, PathLength) != ENavigationQueryResult::Success
+			|| PathLength > FVector::Dist2D(PawnLocation, Point) * 1.6f + 200.f)
+		{
+			continue;
+		}
+		const float Score = PointDistance - 0.3f * FMath::Abs(FMath::FindDeltaAngleDegrees(Angle, AwayAngle));
+		if (Score > BestScore)
+		{
+			BestScore = Score;
+			Best = Point;
+			bFound = true;
+		}
+	}
+	if (!bFound)
+	{
+		return EBTNodeResult::Failed;
+	}
+	Blackboard->SetValueAsVector(GetSelectedBlackboardKey(), Best);
+	return EBTNodeResult::Succeeded;
+}
+
+FString UBTTask_NoFearFindRetreatLocation::GetStaticDescription() const
+{
+	return FString::Printf(TEXT("%s = %.0f-%.0f away from %s (±%.0f°)"), *GetSelectedBlackboardKey().ToString(), MinDistance, MaxDistance,
+		*TargetKey.SelectedKeyName.ToString(), MaxAngle);
 }

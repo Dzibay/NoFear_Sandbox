@@ -2,6 +2,7 @@
 
 #include "AI/NoFearBotSubsystem.h"
 #include "AI/NoFearMeleeComponent.h"
+#include "AI/NoFearMonsterAttack.h"
 #include "Animation/NoFearPoseComponent.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
@@ -72,12 +73,31 @@ void ANoFearMonsterAIController::OnPossess(APawn* InPawn)
 	bRoaring = false;
 	NextPackUpdateTime = 0.0;
 
+	ConfiguredMelee.Reset();
+
 	Super::OnPossess(InPawn);
 
 	if (UNoFearMeleeComponent* Melee = GetMeleeComponent())
 	{
 		Melee->OnAttackFinished.AddUniqueDynamic(this, &ANoFearMonsterAIController::HandleAttackFinished);
+		ConfigureMelee(Melee);
+		ConfiguredMelee = Melee;
 	}
+}
+
+void ANoFearMonsterAIController::ConfigureMelee(UNoFearMeleeComponent* Melee)
+{
+	if (Melee && !AttackSet.IsEmpty())
+	{
+		Melee->SetAttacks(ObjectPtrDecay(AttackSet));
+	}
+}
+
+float ANoFearMonsterAIController::GetTargetDistance2D() const
+{
+	const APawn* MyPawn = GetPawn();
+	const AActor* Target = CurrentTarget.Get();
+	return MyPawn && Target ? FVector::Dist2D(MyPawn->GetActorLocation(), Target->GetActorLocation()) : UE_BIG_NUMBER;
 }
 
 void ANoFearMonsterAIController::OnUnPossess()
@@ -127,6 +147,11 @@ void ANoFearMonsterAIController::UpdateBot()
 		if (!Melee->OnAttackFinished.IsAlreadyBound(this, &ANoFearMonsterAIController::HandleAttackFinished))
 		{
 			Melee->OnAttackFinished.AddDynamic(this, &ANoFearMonsterAIController::HandleAttackFinished);
+		}
+		if (ConfiguredMelee.Get() != Melee)
+		{
+			ConfigureMelee(Melee);
+			ConfiguredMelee = Melee;
 		}
 	}
 

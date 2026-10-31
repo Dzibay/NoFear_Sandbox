@@ -68,6 +68,7 @@ public:
 /**
  * Точка на кольце MinRadius..MaxRadius вокруг цели для монстра без жетона атаки: шаг по кругу от текущего угла
  * в сторону, где меньше других монстров (они расходятся вокруг цели, а не толпятся). Результат — в ключ задачи.
+ * У монстра радиус кольца берётся из его контроллера (Circle Min/Max Radius), MinRadius/MaxRadius — для остальных.
  */
 UCLASS(meta = (DisplayName = "NoFear Find Circle Location"))
 class NOFEAR_API UBTTask_NoFearFindCircleLocation : public UBTTask_BlackboardBase
@@ -94,6 +95,38 @@ public:
 	/** Учитывать других монстров ближе этого к цели. */
 	UPROPERTY(EditAnywhere, Category = "Circle", meta = (ClampMin = "0"))
 	float CrowdRadius = 1200.f;
+
+	virtual EBTNodeResult::Type ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) override;
+	virtual void InitializeFromAsset(UBehaviorTree& Asset) override;
+	virtual FString GetStaticDescription() const override;
+};
+
+/**
+ * Точка отступления от цели: MinDistance..MaxDistance от неё, в сторону от цели (разброс ±MaxAngle), на навмеше,
+ * и дальше от цели, чем бот сейчас. Из нескольких вариантов — самый дальний от цели с доступным путём.
+ * Монстр-плевун так держит дистанцию. Результат — в ключ задачи.
+ */
+UCLASS(meta = (DisplayName = "NoFear Find Retreat Location"))
+class NOFEAR_API UBTTask_NoFearFindRetreatLocation : public UBTTask_BlackboardBase
+{
+	GENERATED_UCLASS_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, Category = "Retreat")
+	FBlackboardKeySelector TargetKey;
+
+	UPROPERTY(EditAnywhere, Category = "Retreat", meta = (ClampMin = "0"))
+	float MinDistance = 900.f;
+
+	UPROPERTY(EditAnywhere, Category = "Retreat", meta = (ClampMin = "0"))
+	float MaxDistance = 1300.f;
+
+	/** Разброс направления от «прямо от цели», градусы. */
+	UPROPERTY(EditAnywhere, Category = "Retreat", meta = (ClampMin = "0", ClampMax = "180"))
+	float MaxAngle = 70.f;
+
+	UPROPERTY(EditAnywhere, Category = "Retreat", meta = (ClampMin = "1"))
+	int32 NumSamples = 10;
 
 	virtual EBTNodeResult::Type ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) override;
 	virtual void InitializeFromAsset(UBehaviorTree& Asset) override;

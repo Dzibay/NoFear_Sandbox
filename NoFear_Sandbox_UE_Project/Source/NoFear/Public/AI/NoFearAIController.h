@@ -53,6 +53,8 @@ struct NOFEAR_API FNoFearBotKeys
 	static const FName ReturnHome;
 	/** Vector: вокруг чего бродить спокойным (дом или вожак стаи). */
 	static const FName WanderCenter;
+	/** Bool: цель слишком близко, монстр (плевун) отступает, чтобы держать дистанцию. */
+	static const FName KeepAway;
 };
 
 /** Уровень тревоги бота. Пишется в блэкборд (AlertState) и показывается значком над головой. */

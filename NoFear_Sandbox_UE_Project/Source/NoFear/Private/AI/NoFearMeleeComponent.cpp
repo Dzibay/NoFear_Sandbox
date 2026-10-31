@@ -85,6 +85,19 @@ UNoFearMonsterAttack* UNoFearMeleeComponent::FindAttack(FName Name) const
 	return nullptr;
 }
 
+void UNoFearMeleeComponent::SetAttacks(const TArray<UNoFearMonsterAttack*>& Templates)
+{
+	FinishAttack();
+	Attacks.Reset();
+	for (const UNoFearMonsterAttack* Template : Templates)
+	{
+		if (Template)
+		{
+			Attacks.Add(DuplicateObject<UNoFearMonsterAttack>(Template, this));
+		}
+	}
+}
+
 UNoFearMonsterAttack* UNoFearMeleeComponent::ChooseAttack(const AActor* Target) const
 {
 	if (!Target)
@@ -148,6 +161,7 @@ bool UNoFearMeleeComponent::BeginAttack(UNoFearMonsterAttack* Attack, AActor* Ta
 	AttackTarget = Target;
 	HitActors.Reset();
 	LastAttackName = Attack->AttackName;
+	Attack->bHitThisAttack = false;
 	++AttackCount;
 	Attack->NextUseTime = World->GetTimeSeconds() + Attack->Cooldown * CooldownScale;
 	Phase = EPhase::Windup;
@@ -202,6 +216,7 @@ void UNoFearMeleeComponent::BeginStrike()
 	{
 		UGameplayStatics::PlaySoundAtLocation(this, Attack->SwingSound, Owner->GetActorLocation());
 	}
+	Attack->StrikeStartTime = GetWorld()->GetTimeSeconds();
 	Attack->BeginStrike(this, Cast<ACharacter>(Owner), AttackTarget.Get());
 
 	SweepHits();
@@ -215,6 +230,10 @@ void UNoFearMeleeComponent::EndHitWindow()
 		return;
 	}
 	Phase = EPhase::Recovery;
+	if (CurrentAttack)
+	{
+		CurrentAttack->BeginRecovery(this, Cast<ACharacter>(GetOwner()), AttackTarget.Get());
+	}
 	const float RecoveryTime = CurrentAttack ? CurrentAttack->RecoveryTime : 0.f;
 	if (RecoveryTime > 0.f)
 	{
@@ -270,10 +289,7 @@ void UNoFearMeleeComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 	if (Phase == EPhase::Windup)
 	{
 		FaceTarget(DeltaTime);
-	}
-	else
-	{
-		KeepOffTarget();
+		return;
 	}
 
 	if (Phase == EPhase::Strike)
@@ -285,6 +301,8 @@ void UNoFearMeleeComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 			EndHitWindow();
 		}
 	}
+	// После TickStrike: атака могла сама задать скорость (таран).
+	KeepOffTarget();
 }
 
 void UNoFearMeleeComponent::KeepOffTarget()
@@ -340,7 +358,7 @@ void UNoFearMeleeComponent::SweepHits()
 	AActor* Owner = GetOwner();
 	UWorld* World = GetWorld();
 	UNoFearMonsterAttack* Attack = CurrentAttack;
-	if (!Owner || !World || !Attack)
+	if (!Owner || !World || !Attack || !Attack->bSweepHits)
 	{
 		return;
 	}
@@ -363,6 +381,7 @@ void UNoFearMeleeComponent::SweepHits()
 			continue;
 		}
 		HitActors.Add(Victim);
+		Attack->bHitThisAttack = true;
 
 		const FVector Direction = (Victim->GetActorLocation() - Owner->GetActorLocation()).GetSafeNormal();
 		const FHitResult Hit(Victim, Overlap.GetComponent(), Victim->GetActorLocation() - Direction * Attack->HitRadius * 0.5f, -Direction);

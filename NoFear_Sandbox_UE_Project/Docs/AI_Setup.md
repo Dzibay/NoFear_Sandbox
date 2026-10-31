@@ -23,6 +23,9 @@ C:\NoFear_Sandbox  →  C:\Users\долбаеб\Desktop\NoFear_Sandbox   (juncti
 | `CBP_Bot_Civilian` | Мирный житель | Civilian | белый | `NoFearCivilianAIController` | Бродит у дома; от опасности настораживается, паникует, убегает и прячется (раздел 7.4). Никогда не нападает. Его можно убить |
 | `CBP_Bot_Monster` | Монстр | Monster | красный | `NoFearMonsterAIController` | Бродит шагом вокруг точки появления, бежит к цели и бьёт с рывком |
 | `CBP_Bot_AggroMonster` | Бешеный монстр | AggroMonster | фиолетовый | `NoFearMonsterAIController` | Как монстр, но бьёт всех, включая монстров и других бешеных |
+| `CBP_Bot_Jumper` | Прыгун | Monster | жёлто-оранжевый, ×0.85 | `NoFearJumperAIController` | 60 HP. Прыгает на цель издалека, отскакивает и кружит, уклоняется от прицела (раздел 8.6) |
+| `CBP_Bot_Spitter` | Плевун | Monster | зелёный | `NoFearSpitterAIController` | 80 HP. Держится в 800–1500 см, плюёт кислотой по дуге, лужа жжёт; подошли — отступает |
+| `CBP_Bot_Tank` | Танк | Monster | бордовый, ×1.3 | `NoFearTankAIController` | 400 HP. Ходит шагом, бьёт широко с отбрасыванием, таранит; врезавшись в стену, оглушён на 1 с |
 | `CBP_Bot_Enemy` | Противник | Enemy | оранжевый | `NoFearShooterAIController` | Стоит на своей точке с винтовкой, стреляет очередями, сближается с целью |
 | `CBP_Bot_Ally` | Союзник | Ally | синий | `NoFearShooterAIController` | Как противник, но воюет за игрока. За игроком не ходит |
 | `CBP_Bot_Companion` | Напарник | Ally | зелёный | `NoFearCompanionAIController` | До вербовки — обычный союзник. После вербовки ходит за игроком и воюет рядом с ним |
@@ -48,7 +51,10 @@ CBP_SandboxCharacter                          AAIController
 └── CBP_NoFearBot             (серый)         └── ANoFearAIController             восприятие, выбор цели, память, блэкборд, походка
     ├── CBP_Bot_Civilian                          ├── ANoFearCivilianAIController     не атакует, BT_NoFear_Civilian
     ├── CBP_Bot_Monster       + Melee             ├── ANoFearMonsterAIController      ближний бой, BT_NoFear_Monster
-    │   └── CBP_Bot_AggroMonster                  └── ANoFearShooterAIController      оружие, точность, поводок, BT_NoFear_Soldier
+    │   ├── CBP_Bot_AggroMonster                  │   ├── ANoFearJumperAIController   прыжок, уклонение
+    │   ├── CBP_Bot_Jumper                        │   ├── ANoFearSpitterAIController  плевок, отступление
+    │   ├── CBP_Bot_Spitter                       │   └── ANoFearTankAIController     удар с размаху, таран
+    │   └── CBP_Bot_Tank                          └── ANoFearShooterAIController      оружие, точность, поводок, BT_NoFear_Soldier
     └── CBP_NoFearBot_Soldier + винтовка, Combat          └── ANoFearCompanionAIController    лидер, следование
         ├── CBP_Bot_Enemy
         ├── CBP_Bot_Ally
@@ -87,7 +93,7 @@ NoFear.GenerateBotAssets [trees] [bodies]
 
 - Без аргументов создаёт только то, чего нет, и ничего не перезаписывает.
 - `trees` пересобирает деревья заново: ручные правки в них пропадут.
-- `bodies` заново выставляет готовым телам родителя, команду, цвет, имя, контроллер и оружие; остальные правки тел сохраняются.
+- `bodies` заново выставляет готовым телам родителя, команду, цвет, имя, контроллер, оружие, запас здоровья и масштаб (у прыгуна, плевуна и танка); остальные правки тел сохраняются.
 
 Из Python: `unreal.NoFearBotAssetsLibrary.generate_bot_assets(True, False)`.
 
@@ -115,6 +121,7 @@ NoFear.GenerateBotAssets [trees] [bodies]
 | `IsPanicking` | Bool | Мирный в панике |
 | `IsCowering` | Bool | Мирный прячется, закрыв голову руками |
 | `IsWary` | Bool | Мирный насторожен |
+| `KeepAway` | Bool | Плевун отступает от цели |
 
 ## 6. Деревья
 
@@ -137,6 +144,7 @@ NoFear.GenerateBotAssets [trees] [bodies]
 Монстр (Selector)
 ├── Рык                [IsRoaring, прерывание Both]: Wait 1.2
 ├── Атака              [AttackTarget задан, прерывание Both]
+│   ├── Отступить      [KeepAway, прерывание Both]: Find Retreat Location → Move To MoveGoal (радиус 80)
 │   ├── Ударить        [HasAttackToken]: Melee Attack → Wait 0.2
 │   ├── Кружить: Find Circle Location → Move To MoveGoal (радиус 60) → Wait 0.3 ± 0.2
 │   └── Wait 0.3
@@ -165,7 +173,8 @@ NoFear.GenerateBotAssets [trees] [bodies]
 |---|---|
 | **NoFear Shoot** | Стреляет очередями, пока `CanFire`. Очередь 0.35–1 с, пауза 0.3–0.8 с, 2–4 очереди за раз. Одиночное оружие жмёт спуск раз в 0.25–0.5 с |
 | **NoFear Melee Attack** | Подходит к цели и начинает подходящую атаку из набора компонента ближнего боя; ждёт её конца |
-| **NoFear Find Circle Location** | Точка на кольце 400–600 см вокруг цели, на 15–50° дальше по кругу; из 6 вариантов выбирает ту, что дальше от своих у той же цели |
+| **NoFear Find Circle Location** | Точка на кольце вокруг цели (радиус — **Circle Min / Max Radius** контроллера монстра, по умолчанию 400–600 см), на 15–50° дальше по кругу; из 6 вариантов выбирает ту, что дальше от своих у той же цели |
+| **NoFear Find Retreat Location** | Точка в 900–1300 см от цели, в пределах ±70° от направления «от цели»; путь не длиннее 1.6 прямой + 200 см, дальше от цели, чем сейчас |
 | **NoFear Find Wander Location** | Случайная точка на навмеше в радиусе 800 от `HomeLocation`, не ближе 200 к боту |
 | **NoFear Find Chase Location** | Точка на навмеше у последнего известного места цели, не доходя 150 |
 | **NoFear Clear Key** | Очищает ключ блэкборда |
@@ -391,6 +400,36 @@ Class Defaults контроллера → **NoFear | AI**:
 
 Команда AggroMonster: без стаи, территории и очереди за жетоном. Бьёт ближайшего кого угодно и легко переключается (**Aggro Target Stickiness** 0.1). Перезарядка атак умножается на **Aggro Cooldown Scale** (0.6).
 
+### 8.6. Виды монстров
+
+Прыгун, плевун и танк — дочерние тела `CBP_Bot_Monster` со своими контроллерами (`Source/NoFear/Public/AI/NoFearMonsterKinds.h`). Набор атак задаёт контроллер в поле **Attack Set** (Instanced): при захвате тела он заменяет атаки в `NoFearMeleeComponent`. Пустой **Attack Set** — атаки компонента не трогаются (так у обычного монстра). Радиус кружения без жетона — **Circle Min / Max Radius**.
+
+| | Прыгун | Плевун | Танк |
+|---|---|---|---|
+| Здоровье, масштаб | 60, ×0.85 | 80, ×1 | 400, ×1.3 |
+| Движение | К цели спринтом | Как монстр; стоит, пока цель в досягаемости плевка | Всегда шагом (200) |
+| Кружение | 600–850 | — (жетон не нужен) | 450–650 |
+| Атаки | **Leap**, **Swipe** | **Spit**, **Swipe** | **Smash**, **Charge** |
+
+Атаки:
+
+| Параметр | Leap | Spit | Smash | Charge |
+|---|---|---|---|---|
+| Класс | `UNoFearMonsterAttack_Leap` | `UNoFearMonsterAttack_Spit` | `UNoFearMonsterAttack_Swing` | `UNoFearMonsterAttack_Charge` |
+| Min / Max Range | 550 / 950 | 500 / 1600 | 0 / 290 | 450 / 1400 |
+| Cooldown / Weight | 3 / 2 | 2.2 / 1 | 2 / 1 | 7 / 3 |
+| Damage | 22 | 10 (попадание) | 35 | 30 |
+| Отбрасывание | — | — | 800 / 300 | 1000 / 400 |
+| Windup / Hit Window / Recovery | 0.4 / 1.8 / 0.6 | 0.45 / 0.1 / 0.45 | 0.6 / 0.25 / 0.7 | 0.7 / 1.5 / 0.6 |
+| Особое | Прыжок по дуге (до 1300 вперёд, 650 вверх), приземляется за 110 см до цели; после — отскок назад (**Bounce Speed** 650, **Bounce Up Speed** 350) | Только при прямой видимости; снаряд по дуге (**Arc Param** 0.35) с упреждением (**Lead Factor** 0.7) | Широкая сфера 140 на 140 см перед собой | Несётся на 1200 по прямой, пока не заденет цель; стена впереди (**Wall Check Distance** 40) — стоп и оглушение на **Stun Time** 1 с |
+| Поза | Lunge | Spit (новая) | Swing | Lunge |
+
+**Swipe** — слабый удар вплотную: у прыгуна 12 урона раз в 0.9 с, у плевуна 8 урона раз в 1.5 с (досягаемость 220).
+
+- **Уклонение прыгуна.** Если на прыгуна смотрит ствол видимого врага с оружием в руках (точнее **Dodge Aim Angle** 6°, вблизи — по ширине тела) и тот ближе **Dodge Max Distance** (2500), прыгун отпрыгивает вбок (**Dodge Speed** 750, **Dodge Up Speed** 250) от линии прицела, от стены — в другую сторону. Не чаще раза в **Dodge Cooldown** (2.5 с), не в прыжке, атаке или оглушении. Выключается **Dodge When Aimed At**.
+- **Снаряд и лужа.** `ANoFearSpitProjectile` (зелёная сфера) летит с гравитацией, ранит не-союзника при попадании и оставляет на земле `ANoFearAcidPuddle`: радиус 150, живёт 6 с, каждые 0.5 с наносит 4 урона всем не-союзникам плевуна в луже (8 в секунду). Несколько луж не складываются: стоящий в них горит как в одной. Класс снаряда — **Projectile Class** у атаки Spit, класс лужи — **Puddle Class** у снаряда.
+- **Отступление плевуна.** Цель ближе **Retreat Start Distance** (700) — ключ `KeepAway`, ветка «Отступить»: точку ищет **Find Retreat Location**. Отходит, пока цель не дальше **Retreat Stop Distance** (950). Очереди за жетоном нет (**Use Attack Tokens** выключен).
+
 ## 9. Стрелки
 
 `NoFearShooterAIController`: **Infinite Reserve Ammo** (бесконечный запас патронов, магазин перезаряжается как у игрока) и **Aim In Combat** (в бою держит оружие у плеча). Оружие — `DA_Rifle` в `Starting Weapons` у `CBP_NoFearBot_Soldier`.
@@ -455,8 +494,9 @@ Class Defaults контроллера → **NoFear | AI**:
 
 ## 12. Чего пока нет
 
-- Позы плевка и броска появятся с новыми монстрами и гранатами (этапы 5–6).
-- У монстров нет анимации ударов: работают процедурные позы Swing, Lunge и Roar, слот `Montage` пустой.
+- Поза броска появится с гранатами (этап 6).
+- У монстров нет анимации ударов: работают процедурные позы Swing, Lunge, Spit и Roar, слот `Montage` пустой.
+- Прыгун, плевун и танк — манекен с другим цветом и масштабом, своих моделей нет. Звуков плевка, лужи и тарана нет (слоты есть).
 - Территорию нельзя задать объёмом на уровне, только радиусом у контроллера.
 - Укрытий нет. Классы `EnvQueryContext_NoFearThreat` и `EnvQueryTest_NoFearCover` для EQS остались, но в деревьях не используются. Подавление считается и ключ `IsSuppressed` пишется, но отдельной ветки «укрыться» нет.
 

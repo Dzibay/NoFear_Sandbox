@@ -183,6 +183,24 @@ void UNoFearPoseComponent::FillDefaultPoses()
 		MakeEntry(B::LowerArmR, -50.f),
 	};
 	Poses.Add(ENoFearPose::Roar, RoarPose);
+
+	// Плевок: грудь подана назад, шея и голова вытянуты вперёд к цели, руки прижаты — выход из позы и есть плевок.
+	FNoFearPoseSettings SpitPose;
+	SpitPose.BlendInTime = 0.2f;
+	SpitPose.BlendOutTime = 0.15f;
+	SpitPose.Bones = {
+		MakeEntry(B::Spine02, -6.f),
+		MakeEntry(B::Spine03, -10.f),
+		MakeEntry(B::Spine04, -6.f),
+		MakeEntry(B::Neck01, 18.f),
+		MakeEntry(B::Neck02, 12.f),
+		MakeEntry(B::Head, -20.f),
+		MakeEntry(B::UpperArmL, -15.f, 25.f),
+		MakeEntry(B::UpperArmR, -15.f, -25.f),
+		MakeEntry(B::LowerArmL, -60.f),
+		MakeEntry(B::LowerArmR, -60.f),
+	};
+	Poses.Add(ENoFearPose::Spit, SpitPose);
 }
 
 void UNoFearPoseComponent::BeginPlay()

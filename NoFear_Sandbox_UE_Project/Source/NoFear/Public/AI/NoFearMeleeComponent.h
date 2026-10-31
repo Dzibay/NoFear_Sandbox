@@ -66,6 +66,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Melee")
 	UNoFearMonsterAttack* FindAttack(FName Name) const;
 
+	/** Заменить набор атак копиями Templates (владелец копий — компонент). Идущая атака прерывается. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Melee")
+	void SetAttacks(const TArray<UNoFearMonsterAttack*>& Templates);
+
 	UPROPERTY(BlueprintAssignable, Category = "NoFear|Melee")
 	FNoFearMeleeAttackSignature OnAttackStarted;
 
@@ -91,6 +95,13 @@ public:
 	/** Минимальная пауза между концом одной атаки и началом следующей, сек. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Melee", meta = (ClampMin = "0"))
 	float MinTimeBetweenAttacks = 0.25f;
+
+	/**
+	 * Задача Melee Attack не подбегает к цели, если та уже на дистанции какой-нибудь атаки, а ждёт перезарядки
+	 * на месте (стрелок-плевун держит дистанцию).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Melee")
+	bool bHoldPositionInRange = false;
 
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 

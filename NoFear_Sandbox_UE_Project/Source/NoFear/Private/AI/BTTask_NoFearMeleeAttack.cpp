@@ -63,8 +63,10 @@ bool UBTTask_NoFearMeleeAttack::AttackOrChase(UBehaviorTreeComponent& OwnerComp,
 		return true;
 	}
 
-	if (!bChase)
+	if (!bChase || (Melee->bHoldPositionInRange && Melee->IsInAttackRange(Target)))
 	{
+		// Держит дистанцию: на дистанции атаки стоит и ждёт перезарядки, не подбегая.
+		StopChase(OwnerComp, Memory);
 		// Без погони ждём перезарядки только на дистанции удара.
 		return Melee->IsInAttackRange(Target);
 	}

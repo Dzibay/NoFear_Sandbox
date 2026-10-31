@@ -154,7 +154,7 @@ void ANoFearPlayerController::NoFearSpawnBot(const FString& Type, int32 Count)
 	UClass* BotClass = LoadClass<APawn>(nullptr, *ClassPath);
 	if (!BotClass)
 	{
-		ClientMessage(FString::Printf(TEXT("NoFearSpawnBot: class %s not found. Types: Civilian, Monster, AggroMonster, Enemy, Ally, Companion"), *ClassPath));
+		ClientMessage(FString::Printf(TEXT("NoFearSpawnBot: class %s not found. Types: Civilian, Monster, AggroMonster, Jumper, Spitter, Tank, Enemy, Ally, Companion"), *ClassPath));
 		return;
 	}
 
