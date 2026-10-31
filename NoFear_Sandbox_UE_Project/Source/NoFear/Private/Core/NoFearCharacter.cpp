@@ -174,6 +174,11 @@ void ANoFearCharacter::ApplyPoseAnimBlueprint()
 
 	// Меш держит один пост-процесс: ABP_NoFearPose — копия штатного, поэтому подмена его не ломает.
 	CharacterMesh->SetOverridePostProcessAnimBP(PoseClass, /*ReinitAnimInstances=*/true);
+	// Пересоздание анимации отвязало слои позы GASP (оружие висит в опущенных руках) — вернуть их.
+	if (WeaponComponent)
+	{
+		WeaponComponent->RelinkOverlayState();
+	}
 }
 
 float ANoFearCharacter::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)

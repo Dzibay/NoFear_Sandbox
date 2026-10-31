@@ -145,6 +145,12 @@ public:
 	/** Вернуть позу по текущему оружию (или безоружную). */
 	void RefreshOverlayState() const;
 
+	/**
+	 * Анимацию меша пересоздали (SetOverridePostProcessAnimBP и т.п. не шлют OnAnimInitialized): слои позы GASP
+	 * сброшены к Default, хотя переменная прежняя. В ближайший тик поза привяжется заново.
+	 */
+	void RelinkOverlayState() { bOverlayLayersLost = true; }
+
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
 	TArray<ANoFearWeapon*> GetWeapons() const { return ObjectPtrDecay(Weapons); }
 
@@ -207,6 +213,21 @@ private:
 	int32 LastEquippedIndex = 0;
 	bool bWantsToAim = false;
 	bool bOwnerDead = false;
+
+	/** Последняя заказанная поза: Blueprint персонажа может сбросить OverlayState сам, тогда тик вернёт её. */
+	mutable FName DesiredOverlayState;
+
+	/** Анимация меша пересоздана: слои позы GASP слетели, хотя переменная осталась прежней. */
+	bool bOverlayLayersLost = false;
+
+	/**
+	 * Вернуть заказанную позу, если переменная персонажа изменилась помимо компонента
+	 * или анимацию пересоздали (слои позы привязывает только OnRep_OverlayState).
+	 */
+	void EnforceOverlayState();
+
+	UFUNCTION()
+	void HandleAnimInitialized();
 	bool bHandsBusy = false;
 
 	// Идёт убирание текущего оружия; после него достаём PendingIndex.

@@ -122,6 +122,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|AI", meta = (ClampMin = "1"))
 	int32 MaxAttackersPerTarget = 2;
 
+	/**
+	 * Держатель, который не ударил за столько секунд, теряет жетон, если его ждут другие (застрял, не может дойти
+	 * или достать цель). Иначе двое застрявших держали бы жетоны вечно, а остальные кружили бы вокруг.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|AI", meta = (ClampMin = "1"))
+	float TokenHoldTimeout = 8.f;
+
 	/** Ударивший монстр уступает жетон ожидающему на столько секунд. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|AI", meta = (ClampMin = "0"))
 	float TokenPassDelay = 2.f;
@@ -142,6 +149,8 @@ private:
 	struct FAttackTokens
 	{
 		TArray<TWeakObjectPtr<AActor>> Holders;
+		/** Когда держатель получил жетон. */
+		TMap<TWeakObjectPtr<AActor>, double> HeldSince;
 		/** Кто просил жетон и не получил, и когда. */
 		TMap<TWeakObjectPtr<AActor>, double> Waiting;
 		/** Кто уступил жетон и до какого времени не может попросить снова. */
@@ -149,7 +158,7 @@ private:
 	};
 
 	/** Убрать погибших и исчезнувших держателей. */
-	static void PruneTokens(FAttackTokens& Tokens, double Now);
+	void PruneTokens(FAttackTokens& Tokens, double Now) const;
 
 	TArray<TWeakObjectPtr<ANoFearAIController>> Bots;
 	TMap<TWeakObjectPtr<AActor>, FAttackTokens> AttackTokens;

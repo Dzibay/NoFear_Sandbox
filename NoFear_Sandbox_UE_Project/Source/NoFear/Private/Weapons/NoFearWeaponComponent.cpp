@@ -24,10 +24,15 @@ void UNoFearWeaponComponent::BeginPlay()
 	Super::BeginPlay();
 
 	const ACharacter* Character = Cast<ACharacter>(GetOwner());
-	if (bDriveArmRecoil && Character && Character->GetMesh())
+	if ((bDriveArmRecoil || bDriveOverlayState) && Character && Character->GetMesh())
 	{
-		// Пишем переменные отдачи до того, как меш начнёт считать анимацию в этом кадре.
+		// Пишем переменные отдачи и позу до того, как меш начнёт считать анимацию в этом кадре.
 		Character->GetMesh()->PrimaryComponentTick.AddPrerequisite(this, PrimaryComponentTick);
+		if (bDriveOverlayState)
+		{
+			// Пересоздание анимации (пост-процесс поз в BeginPlay персонажа) сбрасывает слои позы к Default.
+			Character->GetMesh()->OnAnimInitialized.AddDynamic(this, &UNoFearWeaponComponent::HandleAnimInitialized);
+		}
 	}
 	else
 	{
@@ -442,7 +447,64 @@ void UNoFearWeaponComponent::OnHolsterInput()
 void UNoFearWeaponComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
-	UpdateArmRecoilVariables();
+	if (bDriveArmRecoil)
+	{
+		UpdateArmRecoilVariables();
+	}
+	EnforceOverlayState();
+}
+
+void UNoFearWeaponComponent::HandleAnimInitialized()
+{
+	// Перепривязываем в тике, а не посреди инициализации анимации.
+	RelinkOverlayState();
+}
+
+void UNoFearWeaponComponent::EnforceOverlayState()
+{
+	AActor* Owner = GetOwner();
+	if (!bDriveOverlayState || DesiredOverlayState.IsNone() || !Owner)
+	{
+		return;
+	}
+
+	if (bOverlayLayersLost)
+	{
+		bOverlayLayersLost = false;
+		SetOverlayState(DesiredOverlayState);
+		return;
+	}
+
+	const FProperty* Property = Owner->GetClass()->FindPropertyByName(OverlayStateProperty);
+	const UEnum* Enum = nullptr;
+	int64 Current = INDEX_NONE;
+	if (const FByteProperty* ByteProperty = CastField<FByteProperty>(Property))
+	{
+		Enum = ByteProperty->Enum;
+		Current = ByteProperty->GetPropertyValue_InContainer(Owner);
+	}
+	else if (const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
+	{
+		Enum = EnumProperty->GetEnum();
+		Current = EnumProperty->GetUnderlyingProperty()->GetSignedIntPropertyValue(EnumProperty->ContainerPtrToValuePtr<void>(Owner));
+	}
+	if (!Enum)
+	{
+		return;
+	}
+
+	const FString Wanted = DesiredOverlayState.ToString();
+	for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+	{
+		if (Enum->GetNameStringByIndex(Index) == Wanted || Enum->GetDisplayNameTextByIndex(Index).ToString() == Wanted)
+		{
+			if (Enum->GetValueByIndex(Index) != Current)
+			{
+				SetOverlayState(DesiredOverlayState);
+			}
+			return;
+		}
+	}
 }
 
 void UNoFearWeaponComponent::UpdateArmRecoilVariables()
@@ -565,6 +627,7 @@ void UNoFearWeaponComponent::SetOverlayState(FName StateName) const
 		UE_LOG(LogTemp, Warning, TEXT("NoFearWeaponComponent: в %s нет позы '%s'"), *Enum->GetName(), *Wanted);
 		return;
 	}
+	DesiredOverlayState = StateName;
 
 	void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Owner);
 	if (const FByteProperty* ByteProperty = CastField<FByteProperty>(Property))

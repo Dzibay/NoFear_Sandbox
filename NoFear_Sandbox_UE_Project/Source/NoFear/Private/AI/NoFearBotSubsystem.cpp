@@ -170,7 +170,7 @@ void UNoFearBotSubsystem::BroadcastAlarm(const ANoFearAIController* Origin, AAct
 
 // --- Жетоны атаки ---
 
-void UNoFearBotSubsystem::PruneTokens(FAttackTokens& Tokens, double Now)
+void UNoFearBotSubsystem::PruneTokens(FAttackTokens& Tokens, double Now) const
 {
 	Tokens.Holders.RemoveAll([](const TWeakObjectPtr<AActor>& Holder)
 	{
@@ -180,6 +180,27 @@ void UNoFearBotSubsystem::PruneTokens(FAttackTokens& Tokens, double Now)
 	{
 		// Ожидание без повторной просьбы больше секунды — монстр, видимо, уже занят другим.
 		if (!It.Key().IsValid() || Now - It.Value() > 1.0)
+		{
+			It.RemoveCurrent();
+		}
+	}
+	// Долго держит и не бьёт, а другие ждут — жетон отбирается; вернуть его сразу тот не сможет.
+	if (!Tokens.Waiting.IsEmpty())
+	{
+		for (int32 Index = Tokens.Holders.Num() - 1; Index >= 0; --Index)
+		{
+			const TWeakObjectPtr<AActor> Holder = Tokens.Holders[Index];
+			const double* Since = Tokens.HeldSince.Find(Holder);
+			if (Since && Now - *Since > TokenHoldTimeout)
+			{
+				Tokens.Holders.RemoveAt(Index);
+				Tokens.PassedUntil.Add(Holder, Now + TokenPassDelay);
+			}
+		}
+	}
+	for (auto It = Tokens.HeldSince.CreateIterator(); It; ++It)
+	{
+		if (!Tokens.Holders.Contains(It.Key()))
 		{
 			It.RemoveCurrent();
 		}
@@ -211,6 +232,7 @@ bool UNoFearBotSubsystem::RequestAttackToken(AActor* Attacker, AActor* Target)
 	if (!bPassed && Tokens.Holders.Num() < MaxAttackersPerTarget)
 	{
 		Tokens.Holders.Add(Attacker);
+		Tokens.HeldSince.Add(Attacker, Now);
 		Tokens.Waiting.Remove(Attacker);
 		return true;
 	}
