@@ -85,6 +85,38 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NoFear|AI", meta = (WorldContext = "WorldContextObject"))
 	static void ReportDanger(const UObject* WorldContextObject, ENoFearDangerType Type, AActor* Source, FVector Origin, float Radius, FVector ThreatLocation);
 
+	/**
+	 * Жетон атаки: одновременно бить одну цель могут не больше MaxAttackersPerTarget монстров, остальные кружат рядом.
+	 * true — жетон у Attacker (выдан сейчас или уже был). Пока жетонов нет, Attacker записывается в очередь.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|AI")
+	bool RequestAttackToken(AActor* Attacker, AActor* Target);
+
+	/**
+	 * Вернуть жетон. bPassOn — атакующий только что ударил: если жетона кто-то ждёт, сам он снова попросить
+	 * сможет только через TokenPassDelay, и жетон перейдёт к ожидающему.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|AI")
+	void ReleaseAttackToken(AActor* Attacker, AActor* Target, bool bPassOn = false);
+
+	/** Вернуть все жетоны Attacker (сменил цель, погиб). */
+	void ReleaseAllAttackTokens(AActor* Attacker);
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	bool HasAttackToken(const AActor* Attacker, const AActor* Target) const;
+
+	/** Сколько монстров сейчас держат жетон на эту цель. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	int32 GetAttackTokenCount(const AActor* Target) const;
+
+	/** Сколько жетонов атаки на одну цель. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|AI", meta = (ClampMin = "1"))
+	int32 MaxAttackersPerTarget = 2;
+
+	/** Ударивший монстр уступает жетон ожидающему на столько секунд. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|AI", meta = (ClampMin = "0"))
+	float TokenPassDelay = 2.f;
+
 	/** Пуля пролетела от Start до End: боты ближе NearMissRadius к её пути получают опасность NearMiss. */
 	static void ReportBulletPath(const UObject* WorldContextObject, AActor* Shooter, const FVector& Start, const FVector& End);
 
@@ -98,6 +130,19 @@ public:
 	static constexpr float WallNoiseFactor = 0.6f;
 
 private:
+	struct FAttackTokens
+	{
+		TArray<TWeakObjectPtr<AActor>> Holders;
+		/** Кто просил жетон и не получил, и когда. */
+		TMap<TWeakObjectPtr<AActor>, double> Waiting;
+		/** Кто уступил жетон и до какого времени не может попросить снова. */
+		TMap<TWeakObjectPtr<AActor>, double> PassedUntil;
+	};
+
+	/** Убрать погибших и исчезнувших держателей. */
+	static void PruneTokens(FAttackTokens& Tokens, double Now);
+
 	TArray<TWeakObjectPtr<ANoFearAIController>> Bots;
+	TMap<TWeakObjectPtr<AActor>, FAttackTokens> AttackTokens;
 	TArray<TWeakObjectPtr<ANoFearCharacter>> Corpses;
 };

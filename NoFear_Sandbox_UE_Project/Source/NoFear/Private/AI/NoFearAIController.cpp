@@ -74,6 +74,10 @@ const FName FNoFearBotKeys::FleeLocation(TEXT("FleeLocation"));
 const FName FNoFearBotKeys::IsPanicking(TEXT("IsPanicking"));
 const FName FNoFearBotKeys::IsCowering(TEXT("IsCowering"));
 const FName FNoFearBotKeys::IsWary(TEXT("IsWary"));
+const FName FNoFearBotKeys::HasAttackToken(TEXT("HasAttackToken"));
+const FName FNoFearBotKeys::IsRoaring(TEXT("IsRoaring"));
+const FName FNoFearBotKeys::ReturnHome(TEXT("ReturnHome"));
+const FName FNoFearBotKeys::WanderCenter(TEXT("WanderCenter"));
 
 ANoFearAIController::ANoFearAIController(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -591,6 +595,10 @@ void ANoFearAIController::HandleTargetChanged(AActor* NewTarget, AActor* OldTarg
 
 void ANoFearAIController::SetInvestigateLocation(const FVector& Location)
 {
+	if (!CanInvestigateLocation(Location))
+	{
+		return;
+	}
 	if (UBlackboardComponent* BlackboardComp = GetBlackboardComponent())
 	{
 		BlackboardComp->SetValueAsVector(FNoFearBotKeys::InvestigateLocation, Location);

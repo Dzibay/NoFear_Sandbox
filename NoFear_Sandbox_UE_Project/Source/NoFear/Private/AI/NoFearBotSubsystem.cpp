@@ -91,8 +91,10 @@ void UNoFearBotSubsystem::ReportNoise(const UObject* WorldContextObject, AActor*
 			continue;
 		}
 
+		// У монстров слух острее: тот же шум они слышат дальше.
+		const float HeardRange = Range * Bot->GetHearingRangeScale();
 		const float Distance = FVector::Dist(Listener->GetActorLocation(), Location);
-		if (Distance > Range)
+		if (Distance > HeardRange)
 		{
 			continue;
 		}
@@ -105,7 +107,7 @@ void UNoFearBotSubsystem::ReportNoise(const UObject* WorldContextObject, AActor*
 			Source->GetAttachedActors(Attached);
 			Listener->GetAttachedActors(Attached, /*bResetArray=*/false);
 			Params.AddIgnoredActors(Attached);
-			if (World->LineTraceTestByChannel(Location, Listener->GetActorLocation(), ECC_Visibility, Params) && Distance > Range * WallNoiseFactor)
+			if (World->LineTraceTestByChannel(Location, Listener->GetActorLocation(), ECC_Visibility, Params) && Distance > HeardRange * WallNoiseFactor)
 			{
 				continue;
 			}
@@ -135,6 +137,106 @@ void UNoFearBotSubsystem::BroadcastAlarm(const ANoFearAIController* Origin, AAct
 			Bot->ReceiveAlarm(Threat, ThreatLocation);
 		}
 	}
+}
+
+// --- Жетоны атаки ---
+
+void UNoFearBotSubsystem::PruneTokens(FAttackTokens& Tokens, double Now)
+{
+	Tokens.Holders.RemoveAll([](const TWeakObjectPtr<AActor>& Holder)
+	{
+		return !Holder.IsValid() || UNoFearHealthComponent::IsActorDead(Holder.Get());
+	});
+	for (auto It = Tokens.Waiting.CreateIterator(); It; ++It)
+	{
+		// Ожидание без повторной просьбы больше секунды — монстр, видимо, уже занят другим.
+		if (!It.Key().IsValid() || Now - It.Value() > 1.0)
+		{
+			It.RemoveCurrent();
+		}
+	}
+	for (auto It = Tokens.PassedUntil.CreateIterator(); It; ++It)
+	{
+		if (!It.Key().IsValid() || Now >= It.Value())
+		{
+			It.RemoveCurrent();
+		}
+	}
+}
+
+bool UNoFearBotSubsystem::RequestAttackToken(AActor* Attacker, AActor* Target)
+{
+	if (!Attacker || !Target)
+	{
+		return false;
+	}
+	const double Now = GetWorld()->GetTimeSeconds();
+	FAttackTokens& Tokens = AttackTokens.FindOrAdd(Target);
+	PruneTokens(Tokens, Now);
+
+	if (Tokens.Holders.Contains(Attacker))
+	{
+		return true;
+	}
+	const bool bPassed = Tokens.PassedUntil.Contains(Attacker);
+	if (!bPassed && Tokens.Holders.Num() < MaxAttackersPerTarget)
+	{
+		Tokens.Holders.Add(Attacker);
+		Tokens.Waiting.Remove(Attacker);
+		return true;
+	}
+	Tokens.Waiting.Add(Attacker, Now);
+	return false;
+}
+
+void UNoFearBotSubsystem::ReleaseAttackToken(AActor* Attacker, AActor* Target, bool bPassOn)
+{
+	FAttackTokens* Tokens = Target ? AttackTokens.Find(Target) : nullptr;
+	if (!Attacker || !Tokens || Tokens->Holders.Remove(Attacker) == 0)
+	{
+		return;
+	}
+	const double Now = GetWorld()->GetTimeSeconds();
+	PruneTokens(*Tokens, Now);
+	// Уступаем, только если жетона действительно кто-то ждёт: одинокий монстр бьёт без пауз.
+	if (bPassOn && Tokens->Waiting.Num() > 0)
+	{
+		Tokens->PassedUntil.Add(Attacker, Now + TokenPassDelay);
+	}
+}
+
+void UNoFearBotSubsystem::ReleaseAllAttackTokens(AActor* Attacker)
+{
+	for (auto It = AttackTokens.CreateIterator(); It; ++It)
+	{
+		It.Value().Holders.Remove(Attacker);
+		It.Value().Waiting.Remove(Attacker);
+		if (!It.Key().IsValid() || (It.Value().Holders.IsEmpty() && It.Value().Waiting.IsEmpty() && It.Value().PassedUntil.IsEmpty()))
+		{
+			It.RemoveCurrent();
+		}
+	}
+}
+
+bool UNoFearBotSubsystem::HasAttackToken(const AActor* Attacker, const AActor* Target) const
+{
+	const FAttackTokens* Tokens = Target ? AttackTokens.Find(Target) : nullptr;
+	return Tokens && Tokens->Holders.Contains(Attacker);
+}
+
+int32 UNoFearBotSubsystem::GetAttackTokenCount(const AActor* Target) const
+{
+	const FAttackTokens* Tokens = Target ? AttackTokens.Find(Target) : nullptr;
+	if (!Tokens)
+	{
+		return 0;
+	}
+	int32 Count = 0;
+	for (const TWeakObjectPtr<AActor>& Holder : Tokens->Holders)
+	{
+		Count += Holder.IsValid() && !UNoFearHealthComponent::IsActorDead(Holder.Get()) ? 1 : 0;
+	}
+	return Count;
 }
 
 void UNoFearBotSubsystem::NotifyAttack(AActor* Victim, AActor* Attacker)

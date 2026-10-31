@@ -32,6 +32,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Team")
 	void SetTeam(ENoFearTeam NewTeam);
 
+	/**
+	 * Стая монстра. Монстры с одинаковым именем — одна стая, где бы ни стояли. Пусто — стая собирается сама
+	 * из монстров без имени, стоящих рядом (ANoFearMonsterAIController::PackFormRadius).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Team")
+	FName PackName;
+
 	/** Имя для интерфейса (панель напарника, подсказка «[E] ...»). Пусто — имя актора. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Appearance")
 	FText CharacterName;

@@ -130,6 +130,10 @@ namespace
 			{ FNoFearBotKeys::IsPanicking, UBlackboardKeyType_Bool::StaticClass(), TEXT("Мирный в панике и бежит") },
 			{ FNoFearBotKeys::IsCowering, UBlackboardKeyType_Bool::StaticClass(), TEXT("Мирный прячется: присел, закрыл голову") },
 			{ FNoFearBotKeys::IsWary, UBlackboardKeyType_Bool::StaticClass(), TEXT("Мирный насторожен и отходит шагом") },
+			{ FNoFearBotKeys::HasAttackToken, UBlackboardKeyType_Bool::StaticClass(), TEXT("Монстру можно бить цель (жетон атаки)") },
+			{ FNoFearBotKeys::IsRoaring, UBlackboardKeyType_Bool::StaticClass(), TEXT("Монстр рычит и стоит") },
+			{ FNoFearBotKeys::ReturnHome, UBlackboardKeyType_Bool::StaticClass(), TEXT("Монстр бросил цель за территорией и идёт домой") },
+			{ FNoFearBotKeys::WanderCenter, UBlackboardKeyType_Vector::StaticClass(), TEXT("Вокруг чего бродить: дом или вожак стаи") },
 		};
 
 		bool bChanged = bCreated;
@@ -399,20 +403,37 @@ namespace
 
 	/**
 	 * Монстр (обычный и агрессивный):
-	 *   есть цель → добежать и ударить с рывком; не вышло — короткая пауза;
-	 *   есть что проверить → сходить, осмотреться, забыть;
-	 *   иначе → бродить вокруг дома.
+	 *   рычит → стоять;
+	 *   есть цель и жетон → догнать и ударить (атаку выбирает UNoFearMeleeComponent);
+	 *   есть цель без жетона → кружить вокруг неё на 400–600 см;
+	 *   цель ушла за территорию → шагом домой;
+	 *   есть что проверить → сбегать, осмотреться, забыть;
+	 *   иначе → бродить вокруг дома (вожак) или вожака (остальные).
 	 */
 	void BuildMonsterTree(FTreeBuilder& Builder)
 	{
 		UBehaviorTreeGraphNode* Root = Builder.Selector(nullptr, TEXT("Монстр"));
 
+		UBehaviorTreeGraphNode* RoarWait = Builder.Wait(Root, 1.2f);
+		Builder.IfSet(RoarWait, FNoFearBotKeys::IsRoaring, TEXT("Both"), TEXT("Рычит?"));
+
 		UBehaviorTreeGraphNode* Attack = Builder.Selector(Root, TEXT("Атака"));
 		Builder.IfSet(Attack, FNoFearBotKeys::AttackTarget, TEXT("Both"), TEXT("Есть цель?"));
-		UBehaviorTreeGraphNode* Hit = Builder.Sequence(Attack, TEXT("Догнать и ударить"));
-		Builder.MoveTo(Hit, FNoFearBotKeys::AttackTarget, 150.f, TEXT("К цели"));
+		UBehaviorTreeGraphNode* Hit = Builder.Sequence(Attack, TEXT("Ударить"));
+		Builder.IfSet(Hit, FNoFearBotKeys::HasAttackToken, TEXT("Both"), TEXT("Есть жетон?"));
 		Builder.Task(Hit, UBTTask_NoFearMeleeAttack::StaticClass());
-		Builder.Wait(Attack, 0.4f);
+		Builder.Wait(Hit, 0.2f);
+		UBehaviorTreeGraphNode* Circle = Builder.Sequence(Attack, TEXT("Кружить"));
+		Builder.Task(Circle, UBTTask_NoFearFindCircleLocation::StaticClass());
+		Builder.MoveTo(Circle, FNoFearBotKeys::MoveGoal, 60.f, TEXT("По кругу"));
+		Builder.Wait(Circle, 0.3f, 0.2f);
+		Builder.Wait(Attack, 0.3f);
+
+		UBehaviorTreeGraphNode* GoHome = Builder.Sequence(Root, TEXT("Домой"));
+		Builder.IfSet(GoHome, FNoFearBotKeys::ReturnHome, TEXT("Both"), TEXT("Возвращается?"));
+		UBehaviorTreeGraphNode* WalkHome = Builder.MoveTo(GoHome, FNoFearBotKeys::HomeLocation, 150.f, TEXT("К дому"));
+		Builder.Decorator(WalkHome, UBTDecorator_ForceSuccess::StaticClass());
+		Builder.Task(GoHome, UBTTask_NoFearClearBlackboardKey::StaticClass(), { { TEXT("BlackboardKey"), KeyValue(FNoFearBotKeys::ReturnHome) } });
 
 		UBehaviorTreeGraphNode* Investigate = Builder.Sequence(Root, TEXT("Проверить"));
 		Builder.IfSet(Investigate, FNoFearBotKeys::InvestigateLocation, TEXT("Both"), TEXT("Есть что проверить?"));
@@ -422,7 +443,10 @@ namespace
 		Builder.Task(Investigate, UBTTask_NoFearClearBlackboardKey::StaticClass(), { { TEXT("BlackboardKey"), KeyValue(FNoFearBotKeys::InvestigateLocation) } });
 
 		UBehaviorTreeGraphNode* Wander = Builder.Sequence(Root, TEXT("Бродить"));
-		Builder.Task(Wander, UBTTask_NoFearFindWanderLocation::StaticClass());
+		Builder.Task(Wander, UBTTask_NoFearFindWanderLocation::StaticClass(), {
+			{ TEXT("OriginKey"), KeyValue(FNoFearBotKeys::WanderCenter) },
+			{ TEXT("Radius"), PlainFloat(700.f) },
+		});
 		Builder.MoveTo(Wander, FNoFearBotKeys::MoveGoal, 50.f, TEXT("К точке"));
 		Builder.Wait(Wander, 3.f, 1.5f);
 	}

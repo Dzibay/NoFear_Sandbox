@@ -2,6 +2,9 @@
 
 #include "AIController.h"
 #include "AI/NoFearAIController.h"
+#include "AI/NoFearBotSubsystem.h"
+#include "Core/NoFearHealthComponent.h"
+#include "Core/NoFearTeam.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
@@ -198,4 +201,109 @@ EBTNodeResult::Type UBTTask_NoFearClearBlackboardKey::ExecuteTask(UBehaviorTreeC
 FString UBTTask_NoFearClearBlackboardKey::GetStaticDescription() const
 {
 	return FString::Printf(TEXT("Clear %s"), *GetSelectedBlackboardKey().ToString());
+}
+
+// ---------------------------------------------------------------------------
+// Circle
+// ---------------------------------------------------------------------------
+
+UBTTask_NoFearFindCircleLocation::UBTTask_NoFearFindCircleLocation(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	NodeName = TEXT("NoFear Find Circle Location");
+
+	BlackboardKey.AddVectorFilter(this, GET_MEMBER_NAME_CHECKED(UBTTask_NoFearFindCircleLocation, BlackboardKey));
+	BlackboardKey.SelectedKeyName = FNoFearBotKeys::MoveGoal;
+
+	TargetKey.AddObjectFilter(this, GET_MEMBER_NAME_CHECKED(UBTTask_NoFearFindCircleLocation, TargetKey), AActor::StaticClass());
+	TargetKey.SelectedKeyName = FNoFearBotKeys::AttackTarget;
+}
+
+void UBTTask_NoFearFindCircleLocation::InitializeFromAsset(UBehaviorTree& Asset)
+{
+	Super::InitializeFromAsset(Asset);
+	if (const UBlackboardData* BBAsset = GetBlackboardAsset())
+	{
+		TargetKey.ResolveSelectedKey(*BBAsset);
+	}
+}
+
+EBTNodeResult::Type UBTTask_NoFearFindCircleLocation::ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
+{
+	AAIController* Controller = OwnerComp.GetAIOwner();
+	const APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
+	UBlackboardComponent* Blackboard = OwnerComp.GetBlackboardComponent();
+	const AActor* Target = Blackboard ? Cast<AActor>(Blackboard->GetValueAsObject(TargetKey.SelectedKeyName)) : nullptr;
+	if (!Pawn || !Target)
+	{
+		return EBTNodeResult::Failed;
+	}
+
+	const FVector Center = Target->GetActorLocation();
+	const FVector PawnLocation = Pawn->GetActorLocation();
+	FVector FromCenter = (PawnLocation - Center).GetSafeNormal2D();
+	if (FromCenter.IsNearlyZero())
+	{
+		FromCenter = -Target->GetActorForwardVector().GetSafeNormal2D();
+	}
+	const float CurrentAngle = FMath::RadiansToDegrees(FMath::Atan2(FromCenter.Y, FromCenter.X));
+
+	// Углы других монстров вокруг той же цели.
+	TArray<float> OtherAngles;
+	if (const UNoFearBotSubsystem* Subsystem = UNoFearBotSubsystem::Get(Pawn))
+	{
+		for (const ANoFearAIController* Bot : Subsystem->GetBots())
+		{
+			const APawn* OtherPawn = Bot ? Bot->GetPawn() : nullptr;
+			if (!OtherPawn || OtherPawn == Pawn || UNoFearHealthComponent::IsActorDead(OtherPawn)
+				|| FVector::DistSquared2D(OtherPawn->GetActorLocation(), Center) > FMath::Square(CrowdRadius)
+				|| !UNoFearTeamLibrary::AreFriendly(Pawn, OtherPawn))
+			{
+				continue;
+			}
+			const FVector Dir = (OtherPawn->GetActorLocation() - Center).GetSafeNormal2D();
+			OtherAngles.Add(FMath::RadiansToDegrees(FMath::Atan2(Dir.Y, Dir.X)));
+		}
+	}
+
+	auto Separation = [&OtherAngles](float Angle)
+	{
+		float Best = 180.f;
+		for (const float Other : OtherAngles)
+		{
+			Best = FMath::Min(Best, FMath::Abs(FMath::FindDeltaAngleDegrees(Angle, Other)));
+		}
+		return Best;
+	};
+
+	// Кандидаты по обе стороны; выбрать тот, что дальше всех от соседей (при равенстве — случайный).
+	float BestAngle = CurrentAngle;
+	float BestScore = -1.f;
+	for (int32 Index = 0; Index < 6; ++Index)
+	{
+		const float Sign = Index % 2 == 0 ? 1.f : -1.f;
+		const float Angle = CurrentAngle + Sign * FMath::FRandRange(MinStepAngle, FMath::Max(MinStepAngle, MaxStepAngle));
+		const float Score = Separation(Angle) + FMath::FRandRange(0.f, 5.f);
+		if (Score > BestScore)
+		{
+			BestScore = Score;
+			BestAngle = Angle;
+		}
+	}
+
+	const float Radius = FMath::FRandRange(MinRadius, FMath::Max(MinRadius, MaxRadius));
+	const FVector Desired = Center + FRotator(0.f, BestAngle, 0.f).Vector() * Radius;
+	FVector Goal;
+	if (!ProjectToNav(Pawn, Desired, Goal))
+	{
+		return EBTNodeResult::Failed;
+	}
+	Blackboard->SetValueAsVector(GetSelectedBlackboardKey(), Goal);
+	return EBTNodeResult::Succeeded;
+}
+
+FString UBTTask_NoFearFindCircleLocation::GetStaticDescription() const
+{
+	return FString::Printf(TEXT("%s = ring %.0f-%.0f around %s"), *GetSelectedBlackboardKey().ToString(), MinRadius, MaxRadius,
+		*TargetKey.SelectedKeyName.ToString());
 }

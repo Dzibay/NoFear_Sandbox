@@ -5,9 +5,10 @@
 #include "BTTask_NoFearMeleeAttack.generated.h"
 
 /**
- * Удар UNoFearMeleeComponent по цели из ключа (по умолчанию AttackTarget).
- * Цель дальше Attack Range — провал (дерево снова подведёт бота ближе).
- * Удар на перезарядке — ждёт до Max Wait Time. Успех, когда атака закончилась.
+ * Атака UNoFearMeleeComponent по цели из ключа (по умолчанию AttackTarget).
+ * Бежит к цели (Chase), а как только какая-нибудь атака подходит по дистанции и перезарядке — останавливается
+ * и бьёт: издалека это рывок, вплотную — удар с места. Успех, когда атака закончилась;
+ * провал, если за Max Wait Time так и не ударил или цель пропала.
  */
 UCLASS(meta = (DisplayName = "NoFear Melee Attack"))
 class NOFEAR_API UBTTask_NoFearMeleeAttack : public UBTTask_BlackboardBase
@@ -15,9 +16,17 @@ class NOFEAR_API UBTTask_NoFearMeleeAttack : public UBTTask_BlackboardBase
 	GENERATED_UCLASS_BODY()
 
 public:
-	/** Сколько ждать перезарядки удара, сек. */
+	/** Сколько гнаться и ждать перезарядки, прежде чем сдаться, сек. */
 	UPROPERTY(EditAnywhere, Category = "Melee", meta = (ClampMin = "0"))
-	float MaxWaitTime = 2.f;
+	float MaxWaitTime = 5.f;
+
+	/** Бежать к цели, пока ни одна атака не достаёт. false — сразу провал, если цель вне дистанции. */
+	UPROPERTY(EditAnywhere, Category = "Melee")
+	bool bChase = true;
+
+	/** До какого расстояния подбегать, см. */
+	UPROPERTY(EditAnywhere, Category = "Melee", meta = (ClampMin = "0", EditCondition = "bChase"))
+	float ChaseAcceptanceRadius = 100.f;
 
 	virtual EBTNodeResult::Type ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) override;
 	virtual EBTNodeResult::Type AbortTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) override;
@@ -34,5 +43,10 @@ private:
 	{
 		double GiveUpTime = 0.0;
 		bool bAttackStarted = false;
+		bool bChasing = false;
 	};
+
+	/** Ударить, если можно; иначе (если разрешено) бежать к цели. false — ни то ни другое. */
+	bool AttackOrChase(UBehaviorTreeComponent& OwnerComp, FMeleeMemory& Memory, AActor* Target) const;
+	void StopChase(UBehaviorTreeComponent& OwnerComp, FMeleeMemory& Memory) const;
 };

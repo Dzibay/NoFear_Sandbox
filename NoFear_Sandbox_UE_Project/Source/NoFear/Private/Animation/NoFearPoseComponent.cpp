@@ -127,6 +127,62 @@ void UNoFearPoseComponent::FillDefaultPoses()
 		MakeEntry(B::LowerArmR, -110.f),
 	};
 	Poses.Add(ENoFearPose::CoverHead, CoverHeadPose);
+
+	// Замах: плечи развёрнуты вправо, правая рука отведена в сторону и вверх, локоть согнут — удар идёт на выходе из позы.
+	FNoFearPoseSettings SwingPose;
+	SwingPose.BlendInTime = 0.15f;
+	SwingPose.BlendOutTime = 0.2f;
+	SwingPose.Bones = {
+		MakeEntry(B::Spine02, 6.f, 0.f, 10.f),
+		MakeEntry(B::Spine03, 6.f, 0.f, 12.f),
+		MakeEntry(B::Spine04, 4.f, 0.f, 8.f),
+		MakeEntry(B::Head, -6.f, 0.f, -18.f),
+		MakeEntry(B::UpperArmR, -50.f, -80.f),
+		MakeEntry(B::LowerArmR, -70.f),
+		MakeEntry(B::UpperArmL, -30.f, 20.f),
+		MakeEntry(B::LowerArmL, -40.f),
+	};
+	Poses.Add(ENoFearPose::Swing, SwingPose);
+
+	// Рывок: низко пригнулся, обе руки вперёд когтями, колени согнуты, голова поднята к цели.
+	FNoFearPoseSettings LungePose;
+	LungePose.BlendInTime = 0.15f;
+	LungePose.BlendOutTime = 0.3f;
+	LungePose.Bones = {
+		MakeEntry(B::Pelvis, 8.f),
+		MakeEntry(B::Spine01, 8.f),
+		MakeEntry(B::Spine02, 10.f),
+		MakeEntry(B::Spine03, 10.f),
+		MakeEntry(B::Spine04, 6.f),
+		MakeEntry(B::Neck01, -8.f),
+		MakeEntry(B::Head, -18.f),
+		MakeEntry(B::UpperArmL, -75.f, 15.f),
+		MakeEntry(B::UpperArmR, -75.f, -15.f),
+		MakeEntry(B::LowerArmL, -25.f),
+		MakeEntry(B::LowerArmR, -25.f),
+		MakeEntry(B::ThighL, -25.f),
+		MakeEntry(B::ThighR, -25.f),
+		MakeEntry(B::CalfL, 40.f),
+		MakeEntry(B::CalfR, 40.f),
+	};
+	Poses.Add(ENoFearPose::Lunge, LungePose);
+
+	// Рык: грудь вперёд, голова запрокинута, руки разведены в стороны и согнуты.
+	FNoFearPoseSettings RoarPose;
+	RoarPose.BlendInTime = 0.2f;
+	RoarPose.BlendOutTime = 0.4f;
+	RoarPose.Bones = {
+		MakeEntry(B::Spine02, -4.f),
+		MakeEntry(B::Spine03, -8.f),
+		MakeEntry(B::Spine04, -8.f),
+		MakeEntry(B::Neck01, -10.f),
+		MakeEntry(B::Head, -25.f),
+		MakeEntry(B::UpperArmL, -20.f, 55.f),
+		MakeEntry(B::UpperArmR, -20.f, -55.f),
+		MakeEntry(B::LowerArmL, -50.f),
+		MakeEntry(B::LowerArmR, -50.f),
+	};
+	Poses.Add(ENoFearPose::Roar, RoarPose);
 }
 
 void UNoFearPoseComponent::BeginPlay()

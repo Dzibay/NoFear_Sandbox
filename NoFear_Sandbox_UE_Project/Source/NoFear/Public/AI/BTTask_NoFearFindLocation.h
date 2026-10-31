@@ -64,3 +64,38 @@ public:
 	virtual EBTNodeResult::Type ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) override;
 	virtual FString GetStaticDescription() const override;
 };
+
+/**
+ * Точка на кольце MinRadius..MaxRadius вокруг цели для монстра без жетона атаки: шаг по кругу от текущего угла
+ * в сторону, где меньше других монстров (они расходятся вокруг цели, а не толпятся). Результат — в ключ задачи.
+ */
+UCLASS(meta = (DisplayName = "NoFear Find Circle Location"))
+class NOFEAR_API UBTTask_NoFearFindCircleLocation : public UBTTask_BlackboardBase
+{
+	GENERATED_UCLASS_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, Category = "Circle")
+	FBlackboardKeySelector TargetKey;
+
+	UPROPERTY(EditAnywhere, Category = "Circle", meta = (ClampMin = "0"))
+	float MinRadius = 400.f;
+
+	UPROPERTY(EditAnywhere, Category = "Circle", meta = (ClampMin = "0"))
+	float MaxRadius = 600.f;
+
+	/** Шаг по кругу за раз, градусы. */
+	UPROPERTY(EditAnywhere, Category = "Circle", meta = (ClampMin = "0"))
+	float MinStepAngle = 15.f;
+
+	UPROPERTY(EditAnywhere, Category = "Circle", meta = (ClampMin = "0"))
+	float MaxStepAngle = 50.f;
+
+	/** Учитывать других монстров ближе этого к цели. */
+	UPROPERTY(EditAnywhere, Category = "Circle", meta = (ClampMin = "0"))
+	float CrowdRadius = 1200.f;
+
+	virtual EBTNodeResult::Type ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) override;
+	virtual void InitializeFromAsset(UBehaviorTree& Asset) override;
+	virtual FString GetStaticDescription() const override;
+};

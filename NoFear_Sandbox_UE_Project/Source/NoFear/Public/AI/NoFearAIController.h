@@ -45,6 +45,14 @@ struct NOFEAR_API FNoFearBotKeys
 	static const FName IsCowering;
 	/** Bool: мирный насторожен далёкими выстрелами и отходит шагом. */
 	static const FName IsWary;
+	/** Bool: монстру можно бить цель (жетон атаки есть). Нет — кружит рядом и ждёт. */
+	static const FName HasAttackToken;
+	/** Bool: монстр рычит (стоит на месте). */
+	static const FName IsRoaring;
+	/** Bool: монстр бросил цель за границей территории и идёт домой. */
+	static const FName ReturnHome;
+	/** Vector: вокруг чего бродить спокойным (дом или вожак стаи). */
+	static const FName WanderCenter;
 };
 
 /** Уровень тревоги бота. Пишется в блэкборд (AlertState) и показывается значком над головой. */
@@ -186,6 +194,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
 	float GetAlertShareRadius() const { return AlertShareRadius; }
 
+	/** Во сколько раз дальше обычного бот слышит шум (монстры — дальше). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	float GetHearingRangeScale() const { return HearingRangeScale; }
+
 	/** Шум. Выстрел выдаёт источник сразу, шаги и приземление только повышают подозрение. */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|AI")
 	void HearNoise(AActor* Source, FVector Location, ENoFearNoiseType Type);
@@ -322,6 +334,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Detection", meta = (ClampMin = "0"))
 	float SuspiciousHoldTime = 6.f;
 
+	/** Во сколько раз дальше обычного слышен любой шум (шаги, выстрелы, приземление). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Detection", meta = (ClampMin = "0"))
+	float HearingRangeScale = 1.f;
+
 	/** Прибавка к шкале за один услышанный шаг. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Detection", meta = (ClampMin = "0"))
 	float FootstepAwarenessGain = 0.3f;
@@ -441,7 +457,10 @@ protected:
 	void ScanCorpses();
 	/** Заметил тело (своего или нейтрального). База идёт осмотреться; мирные пугаются. */
 	virtual void NoteCorpse(ANoFearCharacter* Corpse);
-	void ShareAlarm();
+	virtual void ShareAlarm();
+
+	/** Можно ли идти проверять эту точку (шум, поиск). Монстр не выходит за свою территорию. */
+	virtual bool CanInvestigateLocation(const FVector& Location) const { return true; }
 	void DrawDebug() const;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "NoFear|AI")
