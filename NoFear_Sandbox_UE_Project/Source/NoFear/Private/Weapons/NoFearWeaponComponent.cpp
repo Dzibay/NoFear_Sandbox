@@ -129,7 +129,7 @@ void UNoFearWeaponComponent::HolsterWeapon()
 
 void UNoFearWeaponComponent::RequestWeapon(int32 Index)
 {
-	if (bOwnerDead)
+	if (bOwnerDead || bHandsBusy)
 	{
 		return;
 	}
@@ -232,7 +232,7 @@ ANoFearWeapon* UNoFearWeaponComponent::GetCurrentWeapon() const
 
 void UNoFearWeaponComponent::StartFire()
 {
-	if (bOwnerDead)
+	if (bOwnerDead || bHandsBusy)
 	{
 		return;
 	}
@@ -256,7 +256,7 @@ void UNoFearWeaponComponent::StopFire()
 
 void UNoFearWeaponComponent::Reload()
 {
-	if (bOwnerDead)
+	if (bOwnerDead || bHandsBusy)
 	{
 		return;
 	}
@@ -264,6 +264,45 @@ void UNoFearWeaponComponent::Reload()
 	{
 		Weapon->Reload();
 	}
+}
+
+void UNoFearWeaponComponent::SetHandsBusy(bool bBusy)
+{
+	if (bHandsBusy == bBusy)
+	{
+		return;
+	}
+	bHandsBusy = bBusy;
+
+	ANoFearWeapon* Weapon = GetCurrentWeapon();
+	if (bBusy)
+	{
+		StopFire();
+		if (Weapon)
+		{
+			Weapon->SetActorHiddenInGame(true);
+		}
+		return;
+	}
+	if (Weapon && Weapon->GetWeaponState() != ENoFearWeaponState::Holstered && !bOwnerDead)
+	{
+		Weapon->SetActorHiddenInGame(false);
+	}
+	if (!bOwnerDead)
+	{
+		RefreshOverlayState();
+	}
+}
+
+bool UNoFearWeaponComponent::IsWeaponBusy() const
+{
+	if (bSwitching)
+	{
+		return true;
+	}
+	const ANoFearWeapon* Weapon = GetCurrentWeapon();
+	return Weapon && (Weapon->GetWeaponState() == ENoFearWeaponState::Reloading || Weapon->GetWeaponState() == ENoFearWeaponState::Equipping
+		|| Weapon->GetWeaponState() == ENoFearWeaponState::Holstering);
 }
 
 void UNoFearWeaponComponent::SetAiming(bool bNewAiming)

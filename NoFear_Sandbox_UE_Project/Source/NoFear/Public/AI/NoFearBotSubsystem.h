@@ -6,6 +6,7 @@
 
 class ANoFearAIController;
 class ANoFearCharacter;
+class ANoFearGrenade;
 
 /** Откуда шум. Контроллеры по типу решают, насколько он их насторожил. */
 UENUM(BlueprintType)
@@ -64,6 +65,14 @@ public:
 
 	/** Тела погибших (кроме уже исчезнувших). */
 	TArray<ANoFearCharacter*> GetCorpses() const;
+
+	/** Гранаты регистрируются сами (ANoFearGrenade::BeginPlay / EndPlay). */
+	void RegisterGrenade(ANoFearGrenade* Grenade);
+	void UnregisterGrenade(ANoFearGrenade* Grenade);
+
+	/** Брошенные гранаты, которые ещё не взорвались (HUD рисует по ним значок опасности, боты — от них убегают). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	TArray<ANoFearGrenade*> GetLiveGrenades() const;
 
 	/**
 	 * Шум. Все враги Source в пределах Range получают его (через стену слышно тише) и настораживаются:
@@ -145,4 +154,5 @@ private:
 	TArray<TWeakObjectPtr<ANoFearAIController>> Bots;
 	TMap<TWeakObjectPtr<AActor>, FAttackTokens> AttackTokens;
 	TArray<TWeakObjectPtr<ANoFearCharacter>> Corpses;
+	TArray<TWeakObjectPtr<ANoFearGrenade>> Grenades;
 };

@@ -151,6 +151,20 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
 	bool IsAiming() const { return bWantsToAim; }
 
+	/**
+	 * Руки заняты (бросок гранаты): спуск отпущен, оружие в руках спрятано, стрельба, перезарядка и смена оружия
+	 * не работают. Снятие возвращает оружие и позу по нему.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Weapon")
+	void SetHandsBusy(bool bBusy);
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
+	bool AreHandsBusy() const { return bHandsBusy; }
+
+	/** Идёт смена оружия или перезарядка: руки заняты оружием. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
+	bool IsWeaponBusy() const;
+
 	UPROPERTY(BlueprintAssignable, Category = "NoFear|Weapon")
 	FNoFearWeaponChangedSignature OnWeaponChanged;
 
@@ -193,6 +207,7 @@ private:
 	int32 LastEquippedIndex = 0;
 	bool bWantsToAim = false;
 	bool bOwnerDead = false;
+	bool bHandsBusy = false;
 
 	// Идёт убирание текущего оружия; после него достаём PendingIndex.
 	bool bSwitching = false;

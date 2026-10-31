@@ -9,6 +9,7 @@
 
 class UAnimInstance;
 class UMaterialInterface;
+class UNoFearGrenadeComponent;
 class UNoFearPoseComponent;
 class UNoFearWeaponComponent;
 
@@ -73,6 +74,9 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
 	UNoFearWeaponComponent* GetWeaponComponent() const { return WeaponComponent; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
+	UNoFearGrenadeComponent* GetGrenadeComponent() const { return GrenadeComponent; }
 
 	UFUNCTION(BlueprintPure, Category = "NoFear|Health")
 	UNoFearHealthComponent* GetHealthComponent() const { return HealthComponent; }
@@ -172,6 +176,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "NoFear|Weapon")
 	TObjectPtr<UNoFearWeaponComponent> WeaponComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "NoFear|Weapon")
+	TObjectPtr<UNoFearGrenadeComponent> GrenadeComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "NoFear|Health")
 	TObjectPtr<UNoFearHealthComponent> HealthComponent;

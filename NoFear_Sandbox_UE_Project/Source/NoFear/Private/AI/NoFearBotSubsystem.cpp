@@ -4,6 +4,7 @@
 #include "Core/NoFearCharacter.h"
 #include "Core/NoFearHealthComponent.h"
 #include "Core/NoFearTeam.h"
+#include "Weapons/NoFearGrenade.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 
@@ -43,6 +44,34 @@ TArray<ANoFearAIController*> UNoFearBotSubsystem::GetBots() const
 		if (Bot && Bot->GetPawn())
 		{
 			Result.Add(Bot);
+		}
+	}
+	return Result;
+}
+
+void UNoFearBotSubsystem::RegisterGrenade(ANoFearGrenade* Grenade)
+{
+	if (Grenade)
+	{
+		Grenades.RemoveAll([](const TWeakObjectPtr<ANoFearGrenade>& Entry) { return !Entry.IsValid(); });
+		Grenades.AddUnique(Grenade);
+	}
+}
+
+void UNoFearBotSubsystem::UnregisterGrenade(ANoFearGrenade* Grenade)
+{
+	Grenades.RemoveAll([Grenade](const TWeakObjectPtr<ANoFearGrenade>& Entry) { return !Entry.IsValid() || Entry.Get() == Grenade; });
+}
+
+TArray<ANoFearGrenade*> UNoFearBotSubsystem::GetLiveGrenades() const
+{
+	TArray<ANoFearGrenade*> Result;
+	for (const TWeakObjectPtr<ANoFearGrenade>& Entry : Grenades)
+	{
+		ANoFearGrenade* Grenade = Entry.Get();
+		if (Grenade && !Grenade->HasExploded())
+		{
+			Result.Add(Grenade);
 		}
 	}
 	return Result;

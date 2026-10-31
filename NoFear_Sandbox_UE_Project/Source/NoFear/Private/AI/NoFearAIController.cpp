@@ -1,5 +1,6 @@
 #include "AI/NoFearAIController.h"
 
+#include "AI/NoFearFleeLibrary.h"
 #include "Animation/NoFearPoseComponent.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BrainComponent.h"
@@ -9,6 +10,7 @@
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Navigation/PathFollowingComponent.h"
 #include "NavigationSystem.h"
 #include "Perception/AIPerceptionComponent.h"
 #include "Perception/AISenseConfig_Hearing.h"
@@ -16,6 +18,9 @@
 #include "Perception/AISense_Hearing.h"
 #include "Perception/AISense_Sight.h"
 #include "TimerManager.h"
+#include "Weapons/NoFearGrenade.h"
+#include "Weapons/NoFearGrenadeComponent.h"
+#include "Weapons/NoFearGrenadeData.h"
 #include "Weapons/NoFearWeaponComponent.h"
 
 namespace
@@ -212,6 +217,10 @@ void ANoFearAIController::OnPossess(APawn* InPawn)
 			Pose->OnHitReaction.AddUniqueDynamic(this, &ANoFearAIController::HandleHitReaction);
 			BoundPose = Pose;
 		}
+		if (UNoFearGrenadeComponent* Grenades = BotCharacter->GetGrenadeComponent())
+		{
+			Grenades->SetGrenadeCount(BotGrenades);
+		}
 	}
 
 	if (UAIPerceptionComponent* Perception = GetPerceptionComponent())
@@ -262,6 +271,7 @@ void ANoFearAIController::OnUnPossess()
 		Pose->OnHitReaction.RemoveDynamic(this, &ANoFearAIController::HandleHitReaction);
 	}
 	BoundPose.Reset();
+	EndGrenadeEvade();
 	ReleaseStagger();
 
 	Super::OnUnPossess();
@@ -339,6 +349,11 @@ void ANoFearAIController::UpdateBot()
 	{
 		ClearFocus(EAIFocusPriority::Gameplay);
 		bSuspicionFocus = false;
+	}
+	if (bEvadingGrenade)
+	{
+		// Убегая, смотрит куда бежит, а не на врага.
+		ClearFocus(EAIFocusPriority::Gameplay);
 	}
 
 	ShareAlarm();
@@ -1139,17 +1154,250 @@ void ANoFearAIController::ReleaseStagger()
 	}
 	bLogicPausedByStagger = false;
 
-	// Мёртвого дерево не продолжает: StopLogic уже вызван при смерти.
+	// Мёртвого дерево не продолжает: StopLogic уже вызван при смерти. Бегство от гранаты держит паузу дальше.
 	UBrainComponent* Brain = GetBrainComponent();
-	if (Brain && Brain->IsPaused() && !UNoFearHealthComponent::IsActorDead(GetPawn()))
+	if (Brain && Brain->IsPaused() && !bLogicPausedByGrenade && !UNoFearHealthComponent::IsActorDead(GetPawn()))
 	{
 		Brain->ResumeLogic(TEXT("Stagger over"));
 	}
 	UpdateMovementStance();
 }
 
+void ANoFearAIController::HandleDanger(ENoFearDangerType Type, AActor* Source, FVector ThreatLocation)
+{
+	if (Type == ENoFearDangerType::Grenade && bEvadeGrenades)
+	{
+		BeginGrenadeEvade(Cast<ANoFearGrenade>(Source));
+	}
+}
+
+void ANoFearAIController::GetKnownGrenadeThreats(TArray<FVector>& OutLocations, float& OutSafeDistance) const
+{
+	OutLocations.Reset();
+	OutSafeDistance = 0.f;
+	for (const TWeakObjectPtr<ANoFearGrenade>& Weak : KnownGrenades)
+	{
+		const ANoFearGrenade* Grenade = Weak.Get();
+		if (!Grenade || Grenade->HasExploded())
+		{
+			continue;
+		}
+		OutLocations.Add(Grenade->GetActorLocation());
+		const float Margin = Grenade->Data ? Grenade->Data->EvadeMargin : 200.f;
+		OutSafeDistance = FMath::Max(OutSafeDistance, Grenade->GetRadius() + Margin);
+	}
+}
+
+bool ANoFearAIController::IsInGrenadeDanger(const FVector& Location) const
+{
+	for (const TWeakObjectPtr<ANoFearGrenade>& Weak : KnownGrenades)
+	{
+		const ANoFearGrenade* Grenade = Weak.Get();
+		if (!Grenade || Grenade->HasExploded())
+		{
+			continue;
+		}
+		const float Margin = Grenade->Data ? Grenade->Data->EvadeMargin : 200.f;
+		if (FVector::Dist(Location, Grenade->GetActorLocation()) < Grenade->GetRadius() + Margin)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ANoFearAIController::FindGrenadeEvadeLocation(FVector& OutLocation) const
+{
+	APawn* MyPawn = GetPawn();
+	TArray<FVector> Threats;
+	float SafeDistance = 0.f;
+	GetKnownGrenadeThreats(Threats, SafeDistance);
+	if (!MyPawn || Threats.Num() == 0)
+	{
+		return false;
+	}
+	const FVector Origin = MyPawn->GetActorLocation();
+	float Nearest = TNumericLimits<float>::Max();
+	FVector NearestThreat = Threats[0];
+	for (const FVector& Threat : Threats)
+	{
+		const float Distance = FVector::Dist2D(Origin, Threat);
+		if (Distance < Nearest)
+		{
+			Nearest = Distance;
+			NearestThreat = Threat;
+		}
+	}
+
+	// Сначала бегство как у мирных (подальше и за укрытие), но на короткую дистанцию: из радиуса и чуть дальше.
+	const float MinRun = FMath::Max(SafeDistance - Nearest + 80.f, 200.f);
+	FVector Candidate;
+	if (UNoFearFleeLibrary::FindFleeLocation(MyPawn, Threats, Candidate, MinRun, MinRun + 500.f, 60.f, 24)
+		&& UNoFearFleeLibrary::IsLocationSafe(Candidate, Threats, SafeDistance))
+	{
+		OutLocation = Candidate;
+		return true;
+	}
+
+	// Иначе — по прямой от гранаты и веером вбок, до навигации.
+	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
+	FVector Away = (Origin - NearestThreat) * FVector(1.f, 1.f, 0.f);
+	Away = Away.IsNearlyZero() ? -MyPawn->GetActorForwardVector() : Away.GetSafeNormal();
+	for (const float Angle : { 0.f, 35.f, -35.f, 70.f, -70.f, 110.f, -110.f })
+	{
+		const FVector Raw = NearestThreat + Away.RotateAngleAxis(Angle, FVector::UpVector) * (SafeDistance + 120.f);
+		FNavLocation NavLocation;
+		if (NavSys && NavSys->ProjectPointToNavigation(Raw, NavLocation, FVector(150.f, 150.f, 300.f))
+			&& UNoFearFleeLibrary::IsLocationSafe(NavLocation.Location, Threats, SafeDistance))
+		{
+			OutLocation = NavLocation.Location;
+			return true;
+		}
+	}
+	return false;
+}
+
+void ANoFearAIController::BeginGrenadeEvade(ANoFearGrenade* Grenade)
+{
+	APawn* MyPawn = GetPawn();
+	if (!Grenade || Grenade->HasExploded() || !MyPawn || UNoFearHealthComponent::IsActorDead(MyPawn))
+	{
+		return;
+	}
+	KnownGrenades.RemoveAll([](const TWeakObjectPtr<ANoFearGrenade>& Weak) { return !Weak.IsValid() || Weak->HasExploded(); });
+	KnownGrenades.AddUnique(Grenade);
+
+	if (!IsInGrenadeDanger(MyPawn->GetActorLocation()))
+	{
+		return;
+	}
+	GrenadeEvadeTimeout = FMath::Max(GrenadeEvadeTimeout, GetNow() + Grenade->GetTimeToExplode() + 1.5);
+	GrenadeClearSince = -1.0;
+
+	// Уже бежит, и точка по-прежнему вне всех известных гранат — бег не трогаем.
+	if (bEvadingGrenade && bHasGrenadeEvadeGoal && !IsInGrenadeDanger(GrenadeEvadeGoal))
+	{
+		return;
+	}
+
+	if (!bEvadingGrenade)
+	{
+		bEvadingGrenade = true;
+		if (const ANoFearCharacter* BotCharacter = GetNoFearCharacter())
+		{
+			if (UNoFearWeaponComponent* Weapons = BotCharacter->GetWeaponComponent())
+			{
+				Weapons->StopFire();
+				Weapons->SetAiming(false);
+			}
+		}
+		if (UBrainComponent* Brain = GetBrainComponent(); Brain && !Brain->IsPaused())
+		{
+			Brain->PauseLogic(TEXT("Grenade"));
+		}
+		bLogicPausedByGrenade = true;
+		GetWorldTimerManager().SetTimer(GrenadeEvadeTimer, this, &ANoFearAIController::PollGrenadeEvade, 0.2f, true);
+	}
+
+	bHasGrenadeEvadeGoal = FindGrenadeEvadeLocation(GrenadeEvadeGoal);
+	if (bHasGrenadeEvadeGoal && !UNoFearPoseComponent::IsActorStaggered(MyPawn))
+	{
+		MoveToLocation(GrenadeEvadeGoal, 40.f, /*bStopOnOverlap=*/false, /*bUsePathfinding=*/true, /*bProjectDestinationToNavigation=*/true, /*bCanStrafe=*/false);
+	}
+	ClearFocus(EAIFocusPriority::Gameplay);
+	UpdateMovementStance();
+}
+
+void ANoFearAIController::PollGrenadeEvade()
+{
+	APawn* MyPawn = GetPawn();
+	if (!MyPawn || UNoFearHealthComponent::IsActorDead(MyPawn))
+	{
+		EndGrenadeEvade();
+		return;
+	}
+	const double Now = GetNow();
+	if (!IsInGrenadeDanger(MyPawn->GetActorLocation()))
+	{
+		// Чуть постоять за радиусом: граната может откатиться.
+		if (GrenadeClearSince < 0.0)
+		{
+			GrenadeClearSince = Now;
+		}
+		if (Now - GrenadeClearSince >= 0.3)
+		{
+			EndGrenadeEvade();
+		}
+		return;
+	}
+	GrenadeClearSince = -1.0;
+	if (Now > GrenadeEvadeTimeout)
+	{
+		EndGrenadeEvade();
+		return;
+	}
+	if (UNoFearPoseComponent::IsActorStaggered(MyPawn))
+	{
+		return;
+	}
+	// Пошатывание остановило бег, или точка оказалась под другой гранатой: бежать дальше.
+	if (GetMoveStatus() == EPathFollowingStatus::Idle || !bHasGrenadeEvadeGoal || IsInGrenadeDanger(GrenadeEvadeGoal))
+	{
+		bHasGrenadeEvadeGoal = FindGrenadeEvadeLocation(GrenadeEvadeGoal);
+		if (bHasGrenadeEvadeGoal)
+		{
+			MoveToLocation(GrenadeEvadeGoal, 40.f, false, true, true, false);
+		}
+	}
+}
+
+void ANoFearAIController::EndGrenadeEvade()
+{
+	GetWorldTimerManager().ClearTimer(GrenadeEvadeTimer);
+	if (!bEvadingGrenade && !bLogicPausedByGrenade)
+	{
+		return;
+	}
+	bEvadingGrenade = false;
+	bHasGrenadeEvadeGoal = false;
+	GrenadeEvadeTimeout = 0.0;
+	GrenadeClearSince = -1.0;
+
+	const bool bWasPaused = bLogicPausedByGrenade;
+	bLogicPausedByGrenade = false;
+	UBrainComponent* Brain = GetBrainComponent();
+	if (bWasPaused && Brain && Brain->IsPaused() && !bLogicPausedByStagger && !UNoFearHealthComponent::IsActorDead(GetPawn()))
+	{
+		StopMovement();
+		Brain->ResumeLogic(TEXT("Grenade over"));
+	}
+	if (GetPawn())
+	{
+		UpdateMovementStance();
+	}
+}
+
+void ANoFearAIController::Shout(FText Text, float Duration)
+{
+	ShoutText = Text;
+	ShoutUntil = GetNow() + FMath::Max(Duration, 0.f);
+}
+
+FText ANoFearAIController::GetShoutText() const
+{
+	return GetNow() < ShoutUntil ? ShoutText : FText::GetEmpty();
+}
+
 void ANoFearAIController::SetMovementFlags(bool bStrafe, bool bAim, bool bWalk, bool bSprint)
 {
+	if (bEvadingGrenade)
+	{
+		// Кто бы ни выставлял походку (наследники тоже), от гранаты бегут спринтом и лицом по ходу.
+		bStrafe = false;
+		bAim = false;
+		bWalk = false;
+		bSprint = true;
+	}
 	APawn* MyPawn = GetPawn();
 	const FStructProperty* StateProperty = MyPawn ? FindFProperty<FStructProperty>(MyPawn->GetClass(), InputStateProperty) : nullptr;
 	if (!StateProperty)

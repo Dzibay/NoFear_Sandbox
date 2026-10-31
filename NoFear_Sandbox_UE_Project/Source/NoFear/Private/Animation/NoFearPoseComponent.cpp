@@ -201,6 +201,22 @@ void UNoFearPoseComponent::FillDefaultPoses()
 		MakeEntry(B::LowerArmR, -60.f),
 	};
 	Poses.Add(ENoFearPose::Spit, SpitPose);
+
+	// Бросок гранаты: держится, пока игрок целится; выход из позы — сам бросок (рука идёт вперёд).
+	FNoFearPoseSettings ThrowPose;
+	ThrowPose.BlendInTime = 0.25f;
+	ThrowPose.BlendOutTime = 0.12f;
+	ThrowPose.Bones = {
+		MakeEntry(B::Spine02, -4.f, 0.f, 10.f),
+		MakeEntry(B::Spine03, -6.f, 0.f, 14.f),
+		MakeEntry(B::Spine04, -4.f, 0.f, 8.f),
+		MakeEntry(B::Head, 4.f, 0.f, -24.f),
+		MakeEntry(B::UpperArmR, -40.f, -95.f, 20.f),
+		MakeEntry(B::LowerArmR, -95.f),
+		MakeEntry(B::UpperArmL, -70.f, 10.f),
+		MakeEntry(B::LowerArmL, -15.f),
+	};
+	Poses.Add(ENoFearPose::Throw, ThrowPose);
 }
 
 void UNoFearPoseComponent::BeginPlay()

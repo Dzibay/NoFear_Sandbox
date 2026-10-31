@@ -19,6 +19,9 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
+#include "Weapons/NoFearGrenade.h"
+#include "Weapons/NoFearGrenadeComponent.h"
+#include "Weapons/NoFearGrenadeData.h"
 #include "Weapons/NoFearWeapon.h"
 #include "Weapons/NoFearWeaponComponent.h"
 #include "Weapons/NoFearWeaponData.h"
@@ -40,6 +43,11 @@ namespace
 	TAutoConsoleVariable<int32> CVarBotIndicators(
 		TEXT("NoFear.HUD.BotIndicators"), 1,
 		TEXT("Панель над ботами (здоровье, «?» и «!»): 0 — выключить, 1 — по правилам, 2 — показывать у всех, даже сквозь стены."),
+		ECVF_Default);
+
+	TAutoConsoleVariable<bool> CVarShowEnemyLoadout(
+		TEXT("NoFear.HUD.ShowEnemyLoadout"), false,
+		TEXT("Показывать запас гранат над врагами (как ANoFearHUD::bShowEnemyLoadout)."),
 		ECVF_Default);
 
 	/**
@@ -298,14 +306,22 @@ void ANoFearHUD::DrawHUD()
 		{
 			DrawInteractionPrompt();
 		}
+		if (bShowGrenades)
+		{
+			DrawGrenadeDanger();
+			DrawGrenadeAim();
+		}
 
 		const APawn* Pawn = GetOwningPawn();
 		const UNoFearWeaponComponent* WeaponComponent = Pawn ? Pawn->FindComponentByClass<UNoFearWeaponComponent>() : nullptr;
 		ANoFearWeapon* Weapon = WeaponComponent ? WeaponComponent->GetCurrentWeapon() : nullptr;
+		const ANoFearCharacter* PawnCharacter = Cast<ANoFearCharacter>(Pawn);
+		const UNoFearGrenadeComponent* Grenades = PawnCharacter ? PawnCharacter->GetGrenadeComponent() : nullptr;
+		const bool bGrenadeAiming = Grenades && Grenades->IsAiming();
 
-		// Оружие убрано (или ещё не выдано) — прицел и патроны не нужны.
+		// Оружие убрано (или ещё не выдано) — прицел и патроны не нужны. Целясь гранатой, прицел заменяет дуга.
 		const bool bArmed = Weapon && Weapon->GetWeaponData() && Weapon->GetWeaponState() != ENoFearWeaponState::Holstered;
-		if (bArmed && bShowCrosshair)
+		if (bArmed && bShowCrosshair && !bGrenadeAiming)
 		{
 			DrawCrosshair(Weapon);
 		}
@@ -318,9 +334,14 @@ void ANoFearHUD::DrawHUD()
 		{
 			DrawHitMarker();
 		}
+		float AmmoTop = Canvas->SizeY - Margin * GetUIScale();
 		if (bArmed && bShowAmmo)
 		{
-			DrawAmmo(Weapon);
+			AmmoTop = DrawAmmo(Weapon);
+		}
+		if (bShowGrenades)
+		{
+			DrawGrenadeCounter(AmmoTop);
 		}
 		if (bShowWeaponSlots)
 		{
@@ -453,7 +474,7 @@ void ANoFearHUD::DrawHealth()
 	DrawLabel(MaxText, X + NumberWidth + 8.f * S, NumberY + NumberHeight - MaxHeight - 2.f * S, FLinearColor(0.8f, 0.8f, 0.8f, 0.8f), MaxScale, ELabelAlign::Left);
 }
 
-void ANoFearHUD::DrawAmmo(ANoFearWeapon* Weapon)
+float ANoFearHUD::DrawAmmo(ANoFearWeapon* Weapon)
 {
 	const UNoFearWeaponData* Data = Weapon->GetWeaponData();
 	const float S = GetUIScale();
@@ -511,6 +532,148 @@ void ANoFearHUD::DrawAmmo(ANoFearWeapon* Weapon)
 	float NameHeight = 0.f;
 	GetTextSize(Name, Unused, NameHeight, GetFont(), NameScale);
 	DrawLabel(Name, Right, MagazineY - 4.f * S - NameHeight, FLinearColor(0.85f, 0.85f, 0.85f, 0.9f), NameScale, ELabelAlign::Right);
+	return MagazineY - 4.f * S - NameHeight;
+}
+
+void ANoFearHUD::DrawGrenadeCounter(float Bottom)
+{
+	const APawn* Pawn = GetOwningPawn();
+	const ANoFearCharacter* Character = Cast<ANoFearCharacter>(Pawn);
+	const UNoFearGrenadeComponent* Grenades = Character ? Character->GetGrenadeComponent() : nullptr;
+	if (!Grenades)
+	{
+		return;
+	}
+
+	// «◆ N» справа внизу, над счётчиком патронов. Ромб рисуем сами: в шрифте движка нет такого знака.
+	const float S = GetUIScale();
+	const float Right = Canvas->SizeX - Margin * S;
+	const int32 Count = Grenades->GetGrenadeCount();
+	const FString Text = FString::FromInt(Count);
+	const float TextScale = 1.5f * S;
+	float TextWidth = 0.f;
+	float TextHeight = 0.f;
+	GetTextSize(Text, TextWidth, TextHeight, GetFont(), TextScale);
+	const float Y = Bottom - 8.f * S - TextHeight;
+
+	FLinearColor Color = Count > 0 ? GrenadeColor : FLinearColor(0.6f, 0.6f, 0.6f, 0.6f);
+	if (Grenades->IsAiming())
+	{
+		Color = FLinearColor::White;
+	}
+	DrawLabel(Text, Right, Y, Color, TextScale, ELabelAlign::Right);
+	DrawDiamond(FVector2D(Right - TextWidth - 14.f * S, Y + TextHeight * 0.5f), 7.f * S, Color);
+}
+
+void ANoFearHUD::DrawWorldCircle(const FVector& Center, float Radius, const FLinearColor& Color, float Thickness)
+{
+	const APlayerController* PC = GetOwningPlayerController();
+	if (!PC || !Canvas)
+	{
+		return;
+	}
+	FVector CameraLocation;
+	FRotator CameraRotation;
+	PC->GetPlayerViewPoint(CameraLocation, CameraRotation);
+
+	constexpr int32 Segments = 40;
+	FVector Previous = Center + FVector(Radius, 0.f, 0.f);
+	for (int32 Index = 1; Index <= Segments; ++Index)
+	{
+		const float Angle = UE_TWO_PI * Index / Segments;
+		const FVector Next = Center + FVector(Radius * FMath::Cos(Angle), Radius * FMath::Sin(Angle), 0.f);
+		// Отрезки за камерой проецируются криво — пропускаем.
+		if (CameraRotation.UnrotateVector(Previous - CameraLocation).X > 10.f && CameraRotation.UnrotateVector(Next - CameraLocation).X > 10.f)
+		{
+			const FVector A = Canvas->Project(Previous, false);
+			const FVector B = Canvas->Project(Next, false);
+			DrawLine(A.X, A.Y, B.X, B.Y, Color, Thickness);
+		}
+		Previous = Next;
+	}
+}
+
+void ANoFearHUD::DrawGrenadeAim()
+{
+	APawn* Pawn = GetOwningPawn();
+	const ANoFearCharacter* Character = Cast<ANoFearCharacter>(Pawn);
+	const UNoFearGrenadeComponent* Grenades = Character ? Character->GetGrenadeComponent() : nullptr;
+	const APlayerController* PC = GetOwningPlayerController();
+	if (!Grenades || !Grenades->IsAiming() || !PC)
+	{
+		return;
+	}
+
+	TArray<FVector> Points;
+	FVector Landing;
+	if (!Grenades->PredictArc(Points, Landing) || Points.Num() < 2)
+	{
+		return;
+	}
+
+	FVector CameraLocation;
+	FRotator CameraRotation;
+	PC->GetPlayerViewPoint(CameraLocation, CameraRotation);
+	const float S = GetUIScale();
+	const float Thickness = FMath::Max(1.5f, 2.5f * S);
+
+	// Дуга: к концу ярче, чтобы читалось, куда летит.
+	for (int32 Index = 1; Index < Points.Num(); ++Index)
+	{
+		const FVector& From = Points[Index - 1];
+		const FVector& To = Points[Index];
+		if (CameraRotation.UnrotateVector(From - CameraLocation).X <= 10.f || CameraRotation.UnrotateVector(To - CameraLocation).X <= 10.f)
+		{
+			continue;
+		}
+		FLinearColor Color = GrenadeArcColor;
+		Color.A *= FMath::Lerp(0.35f, 1.f, static_cast<float>(Index) / (Points.Num() - 1));
+		const FVector A = Canvas->Project(From, false);
+		const FVector B = Canvas->Project(To, false);
+		DrawLine(A.X, A.Y, B.X, B.Y, Color, Thickness);
+	}
+
+	// Круг поражения в точке падения и ромб в центре.
+	const FVector Ground = Landing + FVector(0.f, 0.f, 4.f);
+	FLinearColor Ring = GrenadeDangerColor;
+	Ring.A = 0.8f;
+	DrawWorldCircle(Ground, Grenades->GetRadius(), FLinearColor(0.f, 0.f, 0.f, 0.45f), Thickness + 2.f * S);
+	DrawWorldCircle(Ground, Grenades->GetRadius(), Ring, Thickness);
+	DrawWorldMarker(Ground, GrenadeArcColor, 5.f * S, /*bEdgeArrow=*/false, FString());
+}
+
+void ANoFearHUD::DrawGrenadeDanger()
+{
+	const APawn* PlayerPawn = GetOwningPawn();
+	const UNoFearBotSubsystem* Subsystem = UNoFearBotSubsystem::Get(this);
+	if (!PlayerPawn || !Subsystem)
+	{
+		return;
+	}
+
+	const float S = GetUIScale();
+	const double Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	for (const ANoFearGrenade* Grenade : Subsystem->GetLiveGrenades())
+	{
+		if (!Grenade || Grenade->HasExploded())
+		{
+			continue;
+		}
+		const float WarningRadius = Grenade->Data ? Grenade->Data->HUDWarningRadius : 1000.f;
+		const float Distance = FVector::Dist(PlayerPawn->GetActorLocation(), Grenade->GetActorLocation());
+		if (Distance > WarningRadius)
+		{
+			continue;
+		}
+
+		// Внутри радиуса взрыва — красный, и мигает тем чаще, чем ближе взрыв.
+		const bool bInside = Distance < Grenade->GetRadius();
+		FLinearColor Color = bInside ? GrenadeDangerColor : GrenadeColor;
+		const float Rate = FMath::Lerp(14.f, 5.f, FMath::Clamp(Grenade->GetTimeToExplode() / 3.f, 0.f, 1.f));
+		Color.A = 0.65f + 0.35f * FMath::Sin(static_cast<float>(Now) * Rate);
+		const FString Caption = FText::Format(GrenadeWarningText, FText::FromString(FormatDistance(Distance))).ToString();
+		DrawWorldMarker(Grenade->GetActorLocation() + FVector(0.f, 0.f, 25.f), Color, 9.f * S, /*bEdgeArrow=*/true, Caption);
+	}
 }
 
 void ANoFearHUD::DrawWeaponSlots()
@@ -1095,6 +1258,8 @@ void ANoFearHUD::DrawBotIndicators()
 		float Distance = 0.f;
 		bool bHealth = false;
 		bool bAlert = false;
+		int32 Grenades = 0;
+		FString Shout;
 		bool bCompanion = false;
 		bool bHostile = false;
 		ENoFearTeam Team = ENoFearTeam::Neutral;
@@ -1172,7 +1337,16 @@ void ANoFearHUD::DrawBotIndicators()
 		}
 		const bool bWantAlert = Alert != ENoFearAlertState::Calm && (bHostile || Mode >= 2);
 
-		bool bWant = (bWantHealth || bWantAlert) && Distance <= MaxDistance;
+		// Запас гранат: напарник и союзники — всегда, враги — по настройке, монстры и мирные — никогда.
+		const ANoFearCharacter* BotCharacter = Cast<ANoFearCharacter>(Pawn);
+		const UNoFearGrenadeComponent* BotGrenades = BotCharacter ? BotCharacter->GetGrenadeComponent() : nullptr;
+		const int32 GrenadeCount = BotGrenades ? BotGrenades->GetGrenadeCount() : 0;
+		const bool bLoadoutTeam = bCompanion || Team == ENoFearTeam::Ally
+			|| (Team == ENoFearTeam::Enemy && (bShowEnemyLoadout || CVarShowEnemyLoadout.GetValueOnGameThread()));
+		const bool bWantLoadout = GrenadeCount > 0 && bLoadoutTeam;
+		const FString Shout = Bot->GetShoutText().ToString();
+
+		bool bWant = (bWantHealth || bWantAlert || bWantLoadout || !Shout.IsEmpty()) && Distance <= MaxDistance;
 
 		// На экране ли голова бота.
 		FVector2D Screen = FVector2D::ZeroVector;
@@ -1222,6 +1396,8 @@ void ANoFearHUD::DrawBotIndicators()
 		Panel.Distance = Distance;
 		Panel.bHealth = bWantHealth;
 		Panel.bAlert = bWantAlert;
+		Panel.Grenades = bWantLoadout ? GrenadeCount : 0;
+		Panel.Shout = Shout;
 		Panel.bCompanion = bCompanion;
 		Panel.bHostile = bHostile;
 		Panel.Team = Team;
@@ -1264,6 +1440,25 @@ void ANoFearHUD::DrawBotIndicators()
 		const float CenterX = Panel.Screen.X;
 		// Над ромбом напарника (и его подписью с расстоянием).
 		float TopY = Panel.Screen.Y - (Panel.bCompanion ? 46.f * S : 4.f * S);
+
+		// Нижняя строка — запас гранат «◆ N», над ней полоска здоровья.
+		if (Panel.Grenades > 0)
+		{
+			FLinearColor Color = GrenadeColor;
+			Color.A *= Opacity;
+			const FString Count = FString::FromInt(Panel.Grenades);
+			const float TextScale = 0.85f * PanelScale;
+			float TextWidth = 0.f;
+			float TextHeight = 0.f;
+			GetTextSize(Count, TextWidth, TextHeight, GetFont(), TextScale);
+			const float DiamondRadius = 4.f * PanelScale;
+			const float RowWidth = DiamondRadius * 2.f + 4.f * PanelScale + TextWidth;
+			const float RowLeft = CenterX - RowWidth * 0.5f;
+			const float RowY = TopY - TextHeight;
+			DrawDiamond(FVector2D(RowLeft + DiamondRadius, RowY + TextHeight * 0.5f), DiamondRadius, Color);
+			DrawLabel(Count, RowLeft + RowWidth, RowY, Color, TextScale, ELabelAlign::Right);
+			TopY = RowY - 3.f * PanelScale;
+		}
 
 		if (Panel.bHealth)
 		{
@@ -1320,6 +1515,19 @@ void ANoFearHUD::DrawBotIndicators()
 			const float TextScale = TextHeight > 1.f ? Radius * 2.2f / TextHeight : PanelScale;
 			GetTextSize(Symbol, TextWidth, TextHeight, GetFont(), TextScale);
 			DrawLabel(Symbol, Center.X, Center.Y - TextHeight * 0.5f, Color, TextScale, ELabelAlign::Center);
+			TopY = Center.Y - Radius - Thickness - 4.f * PanelScale;
+		}
+
+		// Крик («Граната!») — над всем.
+		if (!Panel.Shout.IsEmpty())
+		{
+			FLinearColor Color = ShoutColor;
+			Color.A *= Opacity;
+			const float TextScale = 1.1f * PanelScale;
+			float TextWidth = 0.f;
+			float TextHeight = 0.f;
+			GetTextSize(Panel.Shout, TextWidth, TextHeight, GetFont(), TextScale);
+			DrawLabel(Panel.Shout, CenterX, TopY - TextHeight, Color, TextScale, ELabelAlign::Center);
 		}
 	}
 }

@@ -93,6 +93,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|HUD")
 	bool bShowDeathScreen = true;
 
+	/** Счётчик гранат, дуга броска с кругом поражения, значок у живой гранаты рядом. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|HUD")
+	bool bShowGrenades = true;
+
 	/** Шрифт. Не задан — стандартный шрифт движка. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|HUD")
 	TObjectPtr<UFont> HudFont;
@@ -295,6 +299,32 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots")
 	FLinearColor AlertSearchColor = FLinearColor(1.f, 0.55f, 0.1f, 1.f);
 
+	/**
+	 * Запас гранат «◆ N» и у врагов. У напарника и союзников он виден всегда, у монстров и мирных — никогда.
+	 * Включается и командой NoFear.HUD.ShowEnemyLoadout 1.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots")
+	bool bShowEnemyLoadout = false;
+
+	/** Цвет крика над ботом («Граната!»). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots")
+	FLinearColor ShoutColor = FLinearColor(1.f, 0.95f, 0.6f, 1.f);
+
+	// --- Гранаты ---
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grenades")
+	FLinearColor GrenadeColor = FLinearColor(1.f, 0.75f, 0.2f, 1.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grenades")
+	FLinearColor GrenadeArcColor = FLinearColor(1.f, 0.9f, 0.45f, 0.9f);
+
+	/** Круг поражения и значок гранаты, в радиус которой попал игрок. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grenades")
+	FLinearColor GrenadeDangerColor = FLinearColor(1.f, 0.2f, 0.1f, 1.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grenades")
+	FText GrenadeWarningText = NSLOCTEXT("NoFearHUD", "GrenadeWarning", "ГРАНАТА {0}");
+
 	// --- Взаимодействие ---
 
 	/** Подсказка «[E] Завербовать» под прицелом, когда есть с чем взаимодействовать. */
@@ -334,7 +364,16 @@ private:
 	bool IsEnemyUnderCrosshair(const ANoFearWeapon* Weapon) const;
 	void DrawHitMarker();
 	void DrawHealth();
-	void DrawAmmo(ANoFearWeapon* Weapon);
+	/** Возвращает верх блока патронов (Y), над ним рисуется счётчик гранат. */
+	float DrawAmmo(ANoFearWeapon* Weapon);
+	/** «◆ N» над нижней границей Bottom. */
+	void DrawGrenadeCounter(float Bottom);
+	/** Дуга броска и круг поражения, пока игрок держит G. */
+	void DrawGrenadeAim();
+	/** Значок со стрелкой у края экрана у живой гранаты в UNoFearGrenadeData::HUDWarningRadius от игрока. */
+	void DrawGrenadeDanger();
+	/** Круг в мире (в плоскости XY), спроецированный на экран. */
+	void DrawWorldCircle(const FVector& Center, float Radius, const FLinearColor& Color, float Thickness);
 	void DrawWeaponSlots();
 	void DrawDamageIndicators();
 	void DrawVignette();

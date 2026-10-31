@@ -20,11 +20,13 @@
 #include "Perception/AIPerceptionComponent.h"
 #include "Perception/AIPerceptionSystem.h"
 #include "Perception/AISense_Sight.h"
+#include "Weapons/NoFearGrenadeComponent.h"
 #include "Weapons/NoFearWeaponComponent.h"
 
 ANoFearCharacter::ANoFearCharacter()
 {
 	WeaponComponent = CreateDefaultSubobject<UNoFearWeaponComponent>(TEXT("WeaponComponent"));
+	GrenadeComponent = CreateDefaultSubobject<UNoFearGrenadeComponent>(TEXT("GrenadeComponent"));
 	HealthComponent = CreateDefaultSubobject<UNoFearHealthComponent>(TEXT("HealthComponent"));
 	PoseComponent = CreateDefaultSubobject<UNoFearPoseComponent>(TEXT("PoseComponent"));
 	PoseAnimBlueprint = TSoftClassPtr<UAnimInstance>(FSoftObjectPath(TEXT("/Game/Blueprints/ABP_NoFearPose.ABP_NoFearPose_C")));
@@ -254,6 +256,10 @@ void ANoFearCharacter::HandleDeath(UNoFearHealthComponent* Component, const FNoF
 		Subsystem->RegisterCorpse(this);
 	}
 
+	if (GrenadeComponent)
+	{
+		GrenadeComponent->HandleOwnerDeath();
+	}
 	if (WeaponComponent)
 	{
 		WeaponComponent->HandleOwnerDeath();
@@ -384,5 +390,9 @@ void ANoFearCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 	if (WeaponComponent)
 	{
 		WeaponComponent->SetupPlayerInput(PlayerInputComponent);
+	}
+	if (GrenadeComponent)
+	{
+		GrenadeComponent->SetupPlayerInput(PlayerInputComponent);
 	}
 }

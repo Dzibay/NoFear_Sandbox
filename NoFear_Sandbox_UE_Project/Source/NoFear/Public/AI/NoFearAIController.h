@@ -9,6 +9,7 @@
 
 class ANoFearAIController;
 class ANoFearCharacter;
+class ANoFearGrenade;
 class UAISenseConfig_Hearing;
 class UAISenseConfig_Sight;
 class UBehaviorTree;
@@ -155,9 +156,21 @@ public:
 
 	/**
 	 * Опасность рядом (UNoFearBotSubsystem::ReportDanger): выстрел, пуля, драка, крик, взрыв, граната.
-	 * База ничего не делает; мирные пугаются.
+	 * База убегает от гранаты (Source — ANoFearGrenade), остальное пропускает; мирные пугаются всего.
 	 */
-	virtual void HandleDanger(ENoFearDangerType Type, AActor* Source, FVector ThreatLocation) {}
+	virtual void HandleDanger(ENoFearDangerType Type, AActor* Source, FVector ThreatLocation);
+
+	/** Убегает от гранаты: дерево на паузе, бот бежит спринтом из радиуса взрыва. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	bool IsEvadingGrenade() const { return bEvadingGrenade; }
+
+	/** Крикнуть: HUD покажет текст над ботом Duration секунд. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|AI")
+	void Shout(FText Text, float Duration = 1.5f);
+
+	/** Текущий крик (пусто — не кричит). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	FText GetShoutText() const;
 
 	/**
 	 * Присесть / встать (ACharacter::Crouch). Присевший бот тише (шаги по CrouchFootstepRange) и труднее заметен,
@@ -392,6 +405,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Alarm", meta = (ClampMin = "0.5"))
 	float AlarmInterval = 3.5f;
 
+	// --- Гранаты ---
+
+	/** Увидев или услышав гранату рядом, убегать из радиуса взрыва (UNoFearGrenadeData::Radius + EvadeMargin). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Grenade")
+	bool bEvadeGrenades = true;
+
+	/** Сколько гранат у тела после захвата (UNoFearGrenadeComponent). У стрелков 2, у остальных 0. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Grenade", meta = (ClampMin = "0"))
+	int32 BotGrenades = 0;
+
 protected:
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnUnPossess() override;
@@ -429,6 +452,16 @@ protected:
 	/** Раз в 0.1 с, пока пошатнувшийся стоит: отпустить дерево, когда пошатывание закончилось. */
 	void PollStagger();
 	void ReleaseStagger();
+
+	void BeginGrenadeEvade(ANoFearGrenade* Grenade);
+	/** Раз в 0.2 с, пока бот убегает: продолжить бег после пошатывания, закончить, когда гранат рядом нет. */
+	void PollGrenadeEvade();
+	void EndGrenadeEvade();
+	/** Куда бежать от известных гранат. false — некуда. */
+	bool FindGrenadeEvadeLocation(FVector& OutLocation) const;
+	/** Живые известные гранаты, в радиус которых (с запасом) попадает Location. */
+	bool IsInGrenadeDanger(const FVector& Location) const;
+	void GetKnownGrenadeThreats(TArray<FVector>& OutLocations, float& OutSafeDistance) const;
 
 	void SetTarget(AActor* NewTarget);
 	void SetInvestigateLocation(const FVector& Location);
@@ -484,6 +517,19 @@ private:
 	TWeakObjectPtr<UNoFearPoseComponent> BoundPose;
 	/** Дерево поставлено на паузу пошатыванием (и только им). */
 	bool bLogicPausedByStagger = false;
+
+	/** Бегство от гранаты держит дерево на паузе (пауза снимается, только когда её не держит и пошатывание). */
+	bool bLogicPausedByGrenade = false;
+	bool bEvadingGrenade = false;
+	FTimerHandle GrenadeEvadeTimer;
+	TArray<TWeakObjectPtr<ANoFearGrenade>> KnownGrenades;
+	FVector GrenadeEvadeGoal = FVector::ZeroVector;
+	bool bHasGrenadeEvadeGoal = false;
+	double GrenadeEvadeTimeout = 0.0;
+	double GrenadeClearSince = -1.0;
+
+	FText ShoutText;
+	double ShoutUntil = -1.0;
 
 	ENoFearAlertState AlertState = ENoFearAlertState::Calm;
 
