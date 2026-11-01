@@ -4,7 +4,9 @@
 
 #include "AI/NoFearBotSubsystem.h"
 #include "AI/NoFearCombatComponent.h"
+#include "AI/NoFearCivilianAIController.h"
 #include "AI/NoFearCompanionAIController.h"
+#include "AI/NoFearMonsterKinds.h"
 #include "AI/NoFearShooterAIController.h"
 #include "Core/NoFearCharacter.h"
 #include "Core/NoFearFearComponent.h"
@@ -13,7 +15,10 @@
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
+#include "NoFear.h"
 #include "NavigationSystem.h"
+#include "Portal/NoFearPortal.h"
+#include "Portal/NoFearPortalSubsystem.h"
 #include "Weapons/NoFearGrenadeComponent.h"
 #include "Weapons/NoFearWeapon.h"
 #include "Weapons/NoFearWeaponComponent.h"
@@ -52,6 +57,9 @@ namespace
 		case ENoFearSquadOrder::Reinforce:
 		case ENoFearSquadOrder::Heal:
 		case ENoFearSquadOrder::Assist:
+		case ENoFearSquadOrder::Free:
+		case ENoFearSquadOrder::Calm:
+		case ENoFearSquadOrder::CoverRescue:
 			return true;
 		default:
 			return false;
@@ -99,6 +107,26 @@ namespace
 	const FText ShoutHelpComing = NSLOCTEXT("NoFear", "SquadHelpComing", "Идём на помощь!");
 	const FText ShoutHelpArrived = NSLOCTEXT("NoFear", "SquadHelpArrived", "Мы здесь!");
 	const FText ShoutHelpReturn = NSLOCTEXT("NoFear", "SquadHelpReturn", "Возвращаемся!");
+	const FText ShoutRescueClear = NSLOCTEXT("NoFear", "SquadRescueClear", "Зачищаем подходы, потом вытащим его!");
+	const FText ShoutRescueFree = NSLOCTEXT("NoFear", "SquadRescueFree", "Прикрываем! Выводи его!");
+	const FText ShoutRescueCalm = NSLOCTEXT("NoFear", "SquadRescueCalm", "Прикрываем! Успокой его!");
+	const FText ShoutRescueAbort = NSLOCTEXT("NoFear", "SquadRescueAbort", "Назад! Сначала отобьёмся!");
+	const FText ShoutRescueTooMany = NSLOCTEXT("NoFear", "SquadRescueTooMany", "Их слишком много, не пройдём! Держим позиции!");
+	const FText ShoutSteady = NSLOCTEXT("NoFear", "SquadSteady", "Держись! Мы рядом!");
+	const FText ShoutOutmatched = NSLOCTEXT("NoFear", "SquadOutmatched", "Их слишком много! Отходим!");
+
+	bool IsMonsterTeam(const AActor* Actor)
+	{
+		const ENoFearTeam Team = UNoFearTeamLibrary::GetTeam(Actor);
+		return Team == ENoFearTeam::Monster || Team == ENoFearTeam::AggroMonster;
+	}
+
+	/** Колосс в счёте угрозы весит больше. */
+	bool IsTankActor(const AActor* Actor)
+	{
+		const APawn* Pawn = Cast<APawn>(Actor);
+		return Pawn && Cast<ANoFearTankAIController>(Pawn->GetController()) != nullptr;
+	}
 }
 
 UNoFearSquadSubsystem* UNoFearSquadSubsystem::Get(const UObject* WorldContextObject)
@@ -224,6 +252,7 @@ void UNoFearSquadSubsystem::UpdateSquads()
 		UpdateMembers(Squad, Now, DeltaTime);
 		UpdateEngagement(Squad, Now);
 		UpdateMorale(Squad, DeltaTime);
+		UpdateSteady(Squad, Now, DeltaTime);
 		UpdateTactic(Squad, Now);
 		UpdateHelp(Squad, Now);
 		IssueOrders(Squad, Now);
@@ -613,12 +642,109 @@ void UNoFearSquadSubsystem::UpdateMorale(FSquad& Squad, float DeltaTime)
 	Squad.Morale = FMath::FInterpConstantTo(Squad.Morale, Baseline, DeltaTime, Rate);
 }
 
+void UNoFearSquadSubsystem::UpdateSteady(FSquad& Squad, double Now, float DeltaTime)
+{
+	// Союзники держат строй: свои рядом — страшно, но до слома не доходит. Монстров больше, чем бойцов, — отряд отходит (UpdateTactic).
+	// Аура портала строй не держит — там ломает как прежде; кроме спасающего: его прикрывает отряд.
+	Squad.bSteady = false;
+	Squad.bOutmatched = false;
+	const UNoFearPortalSubsystem* Portals = UNoFearPortalSubsystem::Get(this);
+	if (!bSquadSteady || Squad.Team != ENoFearTeam::Ally)
+	{
+		return;
+	}
+	TArray<APawn*, TInlineAllocator<8>> Alive;
+	for (const FMember& Member : Squad.Members)
+	{
+		APawn* Pawn = Member.Pawn.Get();
+		if (Pawn && !UNoFearHealthComponent::IsActorIncapacitated(Pawn) && !(Portals && Portals->IsFeeder(Pawn)))
+		{
+			Alive.Add(Pawn);
+		}
+	}
+	if (Alive.Num() < 2)
+	{
+		return;
+	}
+
+	const FVector Centroid = GetCentroid(Squad);
+	float Threat = 0.f;
+	if (const UNoFearBotSubsystem* Bots = UNoFearBotSubsystem::Get(this))
+	{
+		for (const ANoFearAIController* Bot : Bots->GetBots())
+		{
+			const APawn* Monster = Bot ? Bot->GetPawn() : nullptr;
+			if (Monster && IsMonsterTeam(Monster) && !UNoFearHealthComponent::IsActorIncapacitated(Monster)
+				&& FVector::Dist2D(Monster->GetActorLocation(), Centroid) <= SteadyThreatRadius)
+			{
+				Threat += IsTankActor(Monster) ? RescueTankWeight : 1.f;
+			}
+		}
+	}
+	Squad.bOutmatched = Threat > Alive.Num();
+	Squad.bSteady = true;
+
+	const TArray<ANoFearPortal*> PortalList = Portals ? Portals->GetPortals() : TArray<ANoFearPortal*>();
+	for (APawn* Pawn : Alive)
+	{
+		UNoFearFearComponent* Fear = UNoFearFearComponent::FindFear(Pawn);
+		const FVector Location = Pawn->GetActorLocation();
+		const bool bRescuer = Pawn == Squad.Rescuer.Get();
+		APawn* NearestMate = nullptr;
+		// Спасающего прикрывают из-за края ауры — ему хватит любого живого своего.
+		float NearestSq = bRescuer ? TNumericLimits<float>::Max() : FMath::Square(SteadyMateRadius);
+		for (APawn* Mate : Alive)
+		{
+			const float DistSq = FVector::DistSquared2D(Mate->GetActorLocation(), Location);
+			if (Mate != Pawn && DistSq <= NearestSq)
+			{
+				NearestSq = DistSq;
+				NearestMate = Mate;
+			}
+		}
+		const bool bInAura = PortalList.ContainsByPredicate([&](const ANoFearPortal* Portal)
+		{
+			return Portal && FVector::Dist2D(Portal->GetActorLocation(), Location) <= Portals->GetAuraRadius(Portal);
+		});
+		if (!Fear || !NearestMate || (bInAura && !bRescuer))
+		{
+			continue;
+		}
+		Fear->SetSteady(SteadyFearCap, Now + 0.5);
+		const float Excess = Fear->GetFear() - SteadyFearCap;
+		if (Excess <= 0.f)
+		{
+			continue;
+		}
+		// Был на грани слома — командир (или ближайший свой) подбадривает.
+		if (Portals && Portals->GetBreakProgress(Pawn) > 0.f && Now - Squad.LastSteadyShoutTime >= 8.0)
+		{
+			APawn* Commander = Squad.Commander.Get();
+			APawn* Speaker = Commander && Commander != Pawn && Alive.Contains(Commander)
+				&& FVector::DistSquared2D(Commander->GetActorLocation(), Location) <= FMath::Square(SteadyMateRadius) ? Commander : NearestMate;
+			Squad.LastSteadyShoutTime = Now;
+			SquadShout(Squad, Speaker, ShoutSteady, 2.f);
+		}
+		Fear->Soothe(FMath::Min(Excess, SteadySootheRate * DeltaTime));
+	}
+}
+
 void UNoFearSquadSubsystem::UpdateTactic(FSquad& Squad, double Now)
 {
 	const double PreviousEngagedTime = Squad.LastEngagedTime;
 	if (Squad.bEngaged)
 	{
 		Squad.LastEngagedTime = Now;
+	}
+
+	// Спасение у портала — пока можно без лишнего риска; нельзя — обычная тактика (оборона, отход).
+	if (UpdateRescue(Squad, Now))
+	{
+		if (Squad.bEngaged)
+		{
+			Squad.bWasEngaged = true;
+		}
+		return;
 	}
 
 	// Боя нет. Отход доводится до конца и без врага на виду.
@@ -731,6 +857,12 @@ void UNoFearSquadSubsystem::UpdateTactic(FSquad& Squad, double Now)
 		if (Squad.Morale < FallbackMorale && Now >= Squad.NextFallbackTime)
 		{
 			BeginFallback(Squad, Now, ShoutFallback);
+			return;
+		}
+		// Монстров больше, чем бойцов: строй не удержать — отойти, пока никто не сломался.
+		if (Squad.bOutmatched && !Squad.bHoldingLine && Now >= Squad.NextFallbackTime)
+		{
+			BeginFallback(Squad, Now, ShoutOutmatched);
 			return;
 		}
 	}
@@ -1033,6 +1165,439 @@ void UNoFearSquadSubsystem::BeginFallback(FSquad& Squad, double Now, const FText
 	SetTactic(Squad, ENoFearSquadTactic::Fallback, Now);
 	Squad.TacticReason = ShoutText.ToString();
 	SquadShout(Squad, Squad.Commander.Get(), ShoutText, 2.5f);
+}
+
+float UNoFearSquadSubsystem::GetRescueThreat(const FSquad& Squad, const FVector& Target, const FVector& Centroid, double Now,
+	float ClearRadius, float& OutClearWeight, AActor*& OutNearest) const
+{
+	OutClearWeight = 0.f;
+	OutNearest = nullptr;
+	float Weight = 0.f;
+	float NearestDistance = TNumericLimits<float>::Max();
+	TSet<const AActor*, DefaultKeyFuncs<const AActor*>, TInlineSetAllocator<16>> Counted;
+	auto Count = [&](AActor* Actor, float Distance, bool bBlocksClear)
+	{
+		const float ActorWeight = IsTankActor(Actor) ? RescueTankWeight : 1.f;
+		Weight += ActorWeight;
+		Counted.Add(Actor);
+		if (bBlocksClear)
+		{
+			OutClearWeight += ActorWeight;
+			if (Distance < NearestDistance)
+			{
+				NearestDistance = Distance;
+				OutNearest = Actor;
+			}
+		}
+	};
+
+	// Все живые монстры у цели — даже те, кого отряд ещё не видел (стража портала стоит у проводников).
+	if (const UNoFearBotSubsystem* Bots = UNoFearBotSubsystem::Get(this))
+	{
+		for (ANoFearAIController* Bot : Bots->GetBots())
+		{
+			APawn* Monster = Bot ? Bot->GetPawn() : nullptr;
+			if (!Monster || !IsMonsterTeam(Monster) || UNoFearHealthComponent::IsActorIncapacitated(Monster))
+			{
+				continue;
+			}
+			const float Distance = FVector::Dist(Monster->GetActorLocation(), Target);
+			if (Distance <= RescueThreatRadius)
+			{
+				Count(Monster, Distance, Distance <= ClearRadius);
+			}
+		}
+	}
+
+	// Враги, которых отряд видел недавно, — у цели или у самого отряда (сначала бой, спасение потом).
+	for (const TPair<TWeakObjectPtr<AActor>, FEnemy>& Pair : Squad.Enemies)
+	{
+		AActor* Enemy = Pair.Key.Get();
+		if (!Enemy || Counted.Contains(Enemy) || Now - Pair.Value.LastSeenTime > CombatMemoryTime || UNoFearHealthComponent::IsActorIncapacitated(Enemy))
+		{
+			continue;
+		}
+		const float ToTarget = FVector::Dist(Pair.Value.Location, Target);
+		const float ToSquad = FVector::Dist(Pair.Value.Location, Centroid);
+		if (ToTarget <= RescueThreatRadius || ToSquad <= RescueThreatRadius)
+		{
+			const bool bFresh = Now - Pair.Value.LastSeenTime <= 3.0;
+			Count(Enemy, ToTarget, ToTarget <= ClearRadius || (bFresh && ToSquad <= ClearRadius));
+		}
+	}
+	return Weight;
+}
+
+APawn* UNoFearSquadSubsystem::ChooseRescueTarget(const FSquad& Squad, const FVector& Centroid, int32 Alive, double Now, bool& bOutCalm, AActor*& OutPortal) const
+{
+	bOutCalm = false;
+	OutPortal = nullptr;
+	const UNoFearPortalSubsystem* Portals = UNoFearPortalSubsystem::Get(this);
+	if (!Portals)
+	{
+		return nullptr;
+	}
+	const ANoFearAIController* OwnRescuer = nullptr;
+	if (const APawn* Rescuer = Squad.Rescuer.Get())
+	{
+		OwnRescuer = Cast<ANoFearAIController>(Rescuer->GetController());
+	}
+	const APawn* Commander = Squad.Commander.Get();
+	const APawn* Current = Squad.RescueTarget.Get();
+
+	auto IsUsable = [&](const APawn* Candidate)
+	{
+		const double* SkipUntil = Squad.RescueSkips.Find(TWeakObjectPtr<APawn>(const_cast<APawn*>(Candidate)));
+		// Текущую цель — с запасом по радиусу: отряд сдвинулся к ней, а не передумал.
+		if ((SkipUntil && Now < *SkipUntil) || Portals->IsRescueTaken(Candidate, OwnRescuer)
+			|| FVector::Dist2D(Candidate->GetActorLocation(), Centroid) > RescueSearchRadius * (Candidate == Current ? 1.3f : 1.f))
+		{
+			return false;
+		}
+		// Монстров у цели больше, чем бойцов (колосс — за нескольких), — не ходить.
+		float ClearWeight = 0.f;
+		AActor* Nearest = nullptr;
+		return GetRescueThreat(Squad, Candidate->GetActorLocation(), Centroid, Now, RescueClearRadius, ClearWeight, Nearest) <= Alive;
+	};
+
+	// Проводники: освободить — портал сжимается. Ближайший, текущая цель — с запасом (не метаться).
+	APawn* Best = nullptr;
+	float BestScore = TNumericLimits<float>::Max();
+	for (APawn* Feeder : Portals->GetFeeders())
+	{
+		if (!Feeder || (Commander && UNoFearTeamLibrary::AreHostile(Commander, Feeder)) || !IsUsable(Feeder))
+		{
+			continue;
+		}
+		const float Score = FVector::Dist2D(Feeder->GetActorLocation(), Centroid) * (Feeder == Current ? 0.5f : 1.f);
+		if (Score < BestScore)
+		{
+			Best = Feeder;
+			BestScore = Score;
+		}
+	}
+	if (Best)
+	{
+		OutPortal = Portals->GetFeederPortal(Best);
+		return Best;
+	}
+
+	// Проводников нет — паникующие мирные в ауре портала: первым тот, кто ближе к срыву в транс.
+	const UNoFearFearSubsystem* Fear = UNoFearFearSubsystem::Get(this);
+	const UNoFearBotSubsystem* Bots = UNoFearBotSubsystem::Get(this);
+	if (!Fear || !Bots)
+	{
+		return nullptr;
+	}
+	for (ANoFearAIController* Bot : Bots->GetBots())
+	{
+		APawn* Civilian = Cast<ANoFearCivilianAIController>(Bot) ? Bot->GetPawn() : nullptr;
+		if (!Civilian || Portals->IsFeeder(Civilian) || UNoFearHealthComponent::IsActorIncapacitated(Civilian) || FindSquadOf(Civilian))
+		{
+			continue;
+		}
+		const float Progress = Portals->GetBreakProgress(Civilian);
+		const float CivilianFear = UNoFearFearComponent::GetActorFear(Civilian);
+		if (Progress <= 0.f && CivilianFear < Fear->PanicThreshold && !(Civilian == Current && CivilianFear > Fear->CalmTargetFear))
+		{
+			continue;
+		}
+		ANoFearPortal* Portal = Portals->FindNearestPortal(Civilian->GetActorLocation(), false);
+		if (!Portal || FVector::Dist(Portal->GetActorLocation(), Civilian->GetActorLocation()) > Portals->GetAuraRadius(Portal) || !IsUsable(Civilian))
+		{
+			continue;
+		}
+		const float Score = (FVector::Dist2D(Civilian->GetActorLocation(), Centroid) - Progress * 2000.f) * (Civilian == Current ? 0.5f : 1.f);
+		if (Score < BestScore)
+		{
+			Best = Civilian;
+			BestScore = Score;
+			OutPortal = Portal;
+		}
+	}
+	bOutCalm = Best != nullptr;
+	return Best;
+}
+
+bool UNoFearSquadSubsystem::UpdateRescue(FSquad& Squad, double Now)
+{
+	UNoFearPortalSubsystem* Portals = UNoFearPortalSubsystem::Get(this);
+	const bool bActive = Squad.Tactic == ENoFearSquadTactic::Rescue;
+	const int32 Alive = CountActive(Squad);
+
+	// Когда спасать нельзя: мало бойцов, мораль низкая, отходят или держат рубеж, погиб командир, все ранены.
+	bool bAllWounded = true;
+	for (const FMember& Member : Squad.Members)
+	{
+		if (Member.Pawn.IsValid() && Member.AssistSquad.IsNone() && GetHealthFraction(Member.Pawn.Get()) >= WoundedFraction)
+		{
+			bAllWounded = false;
+			break;
+		}
+	}
+	const bool bCommanderLost = Squad.CommanderDeathTime > 0.0 && Now - Squad.CommanderDeathTime < 15.0;
+
+	// Боец начал ломаться от ужаса (аура портала, монстры) — не губить отряд: бросить спасение и отойти.
+	if (Portals && (bActive || Squad.RescueTarget.IsValid()))
+	{
+		for (const FMember& Member : Squad.Members)
+		{
+			const APawn* Pawn = Member.Pawn.Get();
+			if (Pawn && !Portals->IsFeeder(Pawn) && Portals->GetBreakProgress(Pawn) >= RescueBreakAbort)
+			{
+				Squad.RescueBlockedUntil = Now + RescueRetryTime;
+				SquadShout(Squad, Squad.Commander.Get(), ShoutRescueAbort, 2.f);
+				UE_LOG(LogNoFearAI, Log, TEXT("Squad %s: спасение брошено — %s ломается у портала"), *Squad.Name.ToString(), *Pawn->GetName());
+				break;
+			}
+		}
+	}
+
+	const TCHAR* Forbid = nullptr;
+	if (!bPortalRescue || !Portals || Squad.Team != ENoFearTeam::Ally)
+	{
+		Forbid = TEXT("выключено");
+	}
+	else if (Alive < 2)
+	{
+		Forbid = TEXT("мало бойцов");
+	}
+	else if (Squad.Morale < DefendMorale)
+	{
+		Forbid = TEXT("низкая мораль");
+	}
+	else if (Squad.Tactic == ENoFearSquadTactic::Fallback || Squad.bHoldingLine)
+	{
+		Forbid = TEXT("отход или рубеж");
+	}
+	else if (bCommanderLost)
+	{
+		Forbid = TEXT("погиб командир");
+	}
+	else if (bAllWounded)
+	{
+		Forbid = TEXT("все ранены");
+	}
+	else if (Now < Squad.RescueBlockedUntil)
+	{
+		Forbid = TEXT("боец ломается");
+	}
+	if (Forbid)
+	{
+		if (bActive || Squad.RescueTarget.IsValid())
+		{
+			EndSquadRescue(Squad, Now, Forbid);
+		}
+		return false;
+	}
+
+	for (auto It = Squad.RescueSkips.CreateIterator(); It; ++It)
+	{
+		if (!It.Key().IsValid() || It.Value() <= Now)
+		{
+			It.RemoveCurrent();
+		}
+	}
+
+	const FVector Centroid = GetCentroid(Squad);
+	ANoFearShooterAIController* RescuerBot = nullptr;
+	for (const FMember& Member : Squad.Members)
+	{
+		if (Member.Pawn.IsValid() && Member.Pawn.Get() == Squad.Rescuer.Get())
+		{
+			RescuerBot = Member.Bot.Get();
+		}
+	}
+	if (!RescuerBot && Squad.Rescuer.IsValid())
+	{
+		Squad.Rescuer = nullptr;
+	}
+
+	// Спасающий закончил или бросил (подсистема порталов сняла его): удача — к следующей цели, неудача — дважды и цель в сторону.
+	if (RescuerBot && Portals->GetRescueTarget(RescuerBot) == nullptr)
+	{
+		APawn* Target = Squad.RescueTarget.Get();
+		const UNoFearFearSubsystem* Fear = UNoFearFearSubsystem::Get(this);
+		const bool bDone = !Target || UNoFearHealthComponent::IsActorIncapacitated(Target) || (Squad.bRescueCalm
+			? Portals->IsFeeder(Target) || UNoFearFearComponent::GetActorFear(Target) <= (Fear ? Fear->CalmTargetFear : 15.f)
+			: !Portals->IsFeeder(Target));
+		if (bDone)
+		{
+			if (Target && Squad.bRescueCalm)
+			{
+				// Успокоенного не хватать снова сразу: пусть уйдёт сам.
+				Squad.RescueSkips.Add(Target, Now + RescueRetryTime);
+			}
+			Squad.RescueTarget = nullptr;
+			Squad.RescueFails = 0;
+		}
+		else if (++Squad.RescueFails >= 2)
+		{
+			Squad.RescueSkips.Add(Target, Now + RescueRetryTime);
+			Squad.RescueTarget = nullptr;
+			Squad.RescueFails = 0;
+		}
+		Squad.Rescuer = nullptr;
+		RescuerBot = nullptr;
+		Squad.NextRescueThinkTime = 0.0;
+	}
+
+	// Цель — раз в полсекунды (текущая держится с запасом).
+	if (Now >= Squad.NextRescueThinkTime)
+	{
+		Squad.NextRescueThinkTime = Now + 0.5;
+		bool bCalm = false;
+		AActor* Portal = nullptr;
+		APawn* Chosen = ChooseRescueTarget(Squad, Centroid, Alive, Now, bCalm, Portal);
+		if (Chosen != Squad.RescueTarget.Get())
+		{
+			if (RescuerBot)
+			{
+				Portals->StopSquadRescue(RescuerBot);
+				Squad.Rescuer = nullptr;
+				RescuerBot = nullptr;
+			}
+			Squad.RescueFails = 0;
+		}
+		if (!Chosen && bActive && Squad.RescueTarget.IsValid())
+		{
+			// Цель жива, но у неё стало слишком опасно.
+			float ClearWeight = 0.f;
+			AActor* Nearest = nullptr;
+			if (GetRescueThreat(Squad, Squad.RescueTarget->GetActorLocation(), Centroid, Now, RescueClearRadius, ClearWeight, Nearest) > Alive)
+			{
+				SquadShout(Squad, Squad.Commander.Get(), ShoutRescueTooMany, 2.5f);
+			}
+		}
+		Squad.RescueTarget = Chosen;
+		Squad.bRescueCalm = bCalm;
+		Squad.RescuePortal = Portal;
+	}
+
+	APawn* Target = Squad.RescueTarget.Get();
+	if (!Target)
+	{
+		if (bActive)
+		{
+			EndSquadRescue(Squad, Now, TEXT("нет цели"));
+		}
+		return false;
+	}
+
+	if (!bActive)
+	{
+		SetTactic(Squad, ENoFearSquadTactic::Rescue, Now);
+		Squad.bRescueClear = false;
+		Squad.Rescuer = nullptr;
+		UE_LOG(LogNoFearAI, Log, TEXT("Squad %s: спасение %s (%s)"), *Squad.Name.ToString(), *Target->GetName(), Squad.bRescueCalm ? TEXT("успокоить") : TEXT("вывести"));
+	}
+
+	// Зачистка: пока у цели монстры (или отряд в перестрелке рядом), спасающий не идёт — прикрытие работает по ближнему к цели.
+	float ClearWeight = 0.f;
+	AActor* Nearest = nullptr;
+	Squad.RescueThreat = GetRescueThreat(Squad, Target->GetActorLocation(), Centroid, Now, RescueClearRadius, ClearWeight, Nearest);
+	Squad.RescueEnemy = Nearest;
+	bool bClear = ClearWeight <= 0.f;
+
+	// Монстр подобрался к спасающему — назад, отбиться.
+	if (const APawn* Rescuer = Squad.Rescuer.Get(); Rescuer && bClear)
+	{
+		float RescuerClear = 0.f;
+		AActor* RescuerNearest = nullptr;
+		GetRescueThreat(Squad, Rescuer->GetActorLocation(), Rescuer->GetActorLocation(), Now, RescueAbortDistance, RescuerClear, RescuerNearest);
+		if (RescuerClear > 0.f)
+		{
+			bClear = false;
+			Squad.RescueEnemy = RescuerNearest;
+		}
+	}
+
+	if (!bClear)
+	{
+		if (RescuerBot)
+		{
+			Portals->StopSquadRescue(RescuerBot);
+			SquadShout(Squad, Squad.Commander.Get(), ShoutRescueAbort, 2.f);
+			Squad.Rescuer = nullptr;
+		}
+		if (Squad.bRescueClear || Squad.TacticReason.IsEmpty())
+		{
+			SquadShout(Squad, Squad.Commander.Get(), ShoutRescueClear, 2.f);
+		}
+		Squad.bRescueClear = false;
+		Squad.TacticReason = TEXT("зачистка");
+		return true;
+	}
+	Squad.bRescueClear = true;
+
+	// Чисто: идёт ближайший к цели боец (не командир), остальные прикрывают.
+	if (!Squad.Rescuer.IsValid())
+	{
+		const APawn* Commander = Squad.Commander.Get();
+		FMember* Best = nullptr;
+		float BestScore = TNumericLimits<float>::Max();
+		for (FMember& Member : Squad.Members)
+		{
+			const APawn* Pawn = Member.Pawn.Get();
+			const ANoFearShooterAIController* Bot = Member.Bot.Get();
+			if (!Pawn || !Bot || !Member.AssistSquad.IsNone() || (Pawn == Commander && Alive > 1) || Bot->IsRetreating() || Bot->IsPortalControlled()
+				|| Portals->IsFeeder(Pawn) || UNoFearHealthComponent::IsActorIncapacitated(Pawn))
+			{
+				continue;
+			}
+			// Раненый — в последнюю очередь.
+			const float Score = FVector::Dist(Pawn->GetActorLocation(), Target->GetActorLocation())
+				+ (GetHealthFraction(Pawn) < WoundedFraction ? 5000.f : 0.f);
+			if (Score < BestScore)
+			{
+				Best = &Member;
+				BestScore = Score;
+			}
+		}
+		if (Best && Portals->StartSquadRescue(Best->Bot.Get(), Target, Squad.bRescueCalm, RescueAbortDistance))
+		{
+			Squad.Rescuer = Best->Pawn.Get();
+			SquadShout(Squad, Commander, Squad.bRescueCalm ? ShoutRescueCalm : ShoutRescueFree, 2.f);
+		}
+		else if (Best && ++Squad.RescueFails >= 2)
+		{
+			Squad.RescueSkips.Add(Target, Now + RescueRetryTime);
+			Squad.RescueTarget = nullptr;
+			Squad.RescueFails = 0;
+			Squad.NextRescueThinkTime = 0.0;
+		}
+	}
+	Squad.TacticReason = Squad.bRescueCalm ? TEXT("успокаивают") : TEXT("выводят");
+	return true;
+}
+
+void UNoFearSquadSubsystem::EndSquadRescue(FSquad& Squad, double Now, const TCHAR* Reason)
+{
+	if (Squad.Tactic == ENoFearSquadTactic::Rescue)
+	{
+		UE_LOG(LogNoFearAI, Log, TEXT("Squad %s: спасение окончено — %s"), *Squad.Name.ToString(), Reason);
+	}
+	if (UNoFearPortalSubsystem* Portals = UNoFearPortalSubsystem::Get(this))
+	{
+		if (const APawn* Rescuer = Squad.Rescuer.Get())
+		{
+			Portals->StopSquadRescue(Cast<ANoFearAIController>(Rescuer->GetController()));
+		}
+	}
+	const bool bWasRescue = Squad.Tactic == ENoFearSquadTactic::Rescue;
+	Squad.RescueTarget = nullptr;
+	Squad.RescuePortal = nullptr;
+	Squad.Rescuer = nullptr;
+	Squad.RescueEnemy = nullptr;
+	Squad.bRescueClear = false;
+	Squad.RescueThreat = 0.f;
+	Squad.RescueFails = 0;
+	if (bWasRescue)
+	{
+		// После спасения — сбор у командира (или сразу бой, если он идёт).
+		Squad.bWasEngaged = true;
+		SetTactic(Squad, Squad.bEngaged ? ENoFearSquadTactic::Engage : ENoFearSquadTactic::None, Now);
+	}
 }
 
 void UNoFearSquadSubsystem::BeginRegroup(FSquad& Squad, double Now)
@@ -1371,6 +1936,7 @@ void UNoFearSquadSubsystem::IssueOrders(FSquad& Squad, double Now)
 	int32 RingIndex = 0;
 	const FSquad* AssistCaller = nullptr;
 	FVector AssistPoint = FVector::ZeroVector;
+	int32 CoverIndex = 0;
 
 	for (FMember& Member : Squad.Members)
 	{
@@ -1394,6 +1960,61 @@ void UNoFearSquadSubsystem::IssueOrders(FSquad& Squad, double Now)
 				SetOrder(Member, ENoFearSquadOrder::Assist, Now, &AssistPoint, nullptr, Caller->MainEnemy.Get());
 				continue;
 			}
+		}
+
+		// Спасение у портала — поверх помощи: один выводит (успокаивает), остальные прикрывают по бокам от цели.
+		if (Squad.Tactic == ENoFearSquadTactic::Rescue && Squad.RescueTarget.IsValid())
+		{
+			APawn* RescueTarget = Squad.RescueTarget.Get();
+			if (Pawn == Squad.Rescuer.Get())
+			{
+				SetOrder(Member, Squad.bRescueCalm ? ENoFearSquadOrder::Calm : ENoFearSquadOrder::Free, Now, nullptr, RescueTarget, nullptr);
+				continue;
+			}
+			const FVector TargetLocation = RescueTarget->GetActorLocation();
+			const float Sign = CoverIndex % 2 == 0 ? 1.f : -1.f;
+			const int32 Step = CoverIndex / 2;
+			++CoverIndex;
+			const ANoFearPortal* RescuePortal = Cast<ANoFearPortal>(Squad.RescuePortal.Get());
+			const UNoFearPortalSubsystem* Portals = UNoFearPortalSubsystem::Get(this);
+			const float GuardRing = RescuePortal && Portals ? Portals->GetAuraRadius(RescuePortal) + RescueAuraMargin : 0.f;
+			const FVector PortalToTarget = RescuePortal ? (TargetLocation - RescuePortal->GetActorLocation()) * FVector(1.f, 1.f, 0.f) : FVector::ZeroVector;
+			FVector Slot;
+			if (RescuePortal && PortalToTarget.Size() < GuardRing)
+			{
+				// Цель в ауре — дугой за краем ауры со стороны цели (0°, ∓25°, ∓45°...): внутрь идёт только спасающий.
+				FVector Dir = PortalToTarget.GetSafeNormal();
+				if (Dir.IsNearlyZero())
+				{
+					Dir = (GetCentroid(Squad) - TargetLocation).GetSafeNormal2D();
+				}
+				const int32 Arc = CoverIndex - 1;
+				const float Angle = Arc == 0 ? 0.f : (Arc % 2 == 1 ? -1.f : 1.f) * (25.f + 20.f * ((Arc - 1) / 2));
+				Slot = RescuePortal->GetActorLocation() + Dir.RotateAngleAxis(Angle, FVector::UpVector) * GuardRing;
+				Slot.Z = TargetLocation.Z;
+			}
+			else
+			{
+				FVector Dir = RescuePortal ? -PortalToTarget.GetSafeNormal() : FVector::ZeroVector;
+				if (Dir.IsNearlyZero())
+				{
+					Dir = (TargetLocation - GetCentroid(Squad)).GetSafeNormal2D();
+				}
+				if (Dir.IsNearlyZero())
+				{
+					Dir = FVector::ForwardVector;
+				}
+				// Места по бокам, чуть к порталу: ±70°, ±95°, ±120°...
+				Slot = TargetLocation + Dir.RotateAngleAxis(Sign * (70.f + 25.f * Step), FVector::UpVector) * RescueGuardRadius;
+			}
+			FVector SlotLocation;
+			if (!ProjectToNav(GetWorld(), Slot, FVector(150.f, 150.f, 300.f), SlotLocation))
+			{
+				SlotLocation = TargetLocation;
+			}
+			AActor* Enemy = Squad.RescueEnemy.IsValid() ? Squad.RescueEnemy.Get() : MainEnemy;
+			SetOrder(Member, ENoFearSquadOrder::CoverRescue, Now, &SlotLocation, RescueTarget, Enemy);
+			continue;
 		}
 
 		// Помощь своим — поверх тактики.
@@ -2463,7 +3084,24 @@ FNoFearSquadOrderInfo UNoFearSquadSubsystem::GetSquadOrderInfo(const APawn* Pawn
 	{
 		Info.bHasEnemyLocation = GetSquadEnemyLocation(Pawn, Info.Enemy, Info.EnemyLocation);
 	}
+	if (Squad->Tactic == ENoFearSquadTactic::Rescue && Squad->RescuePortal.IsValid())
+	{
+		Info.FacingLocation = Squad->RescuePortal->GetActorLocation();
+		Info.bHasFacing = true;
+	}
 	return Info;
+}
+
+APawn* UNoFearSquadSubsystem::GetSquadRescueTarget(const APawn* Pawn) const
+{
+	const FSquad* Squad = FindSquadOf(Pawn);
+	return Squad && Squad->Tactic == ENoFearSquadTactic::Rescue ? Squad->RescueTarget.Get() : nullptr;
+}
+
+APawn* UNoFearSquadSubsystem::GetSquadRescuer(const APawn* Pawn) const
+{
+	const FSquad* Squad = FindSquadOf(Pawn);
+	return Squad && Squad->Tactic == ENoFearSquadTactic::Rescue ? Squad->Rescuer.Get() : nullptr;
 }
 
 ENoFearSquadTactic UNoFearSquadSubsystem::GetSquadTactic(const APawn* Pawn) const
@@ -2476,6 +3114,12 @@ float UNoFearSquadSubsystem::GetSquadMorale(const APawn* Pawn) const
 {
 	const FSquad* Squad = FindSquadOf(Pawn);
 	return Squad ? Squad->Morale : -1.f;
+}
+
+bool UNoFearSquadSubsystem::IsSquadSteady(const APawn* Pawn) const
+{
+	const FSquad* Squad = FindSquadOf(Pawn);
+	return Squad && Squad->bSteady;
 }
 
 void UNoFearSquadSubsystem::SetSquadMorale(const APawn* Pawn, float NewMorale)
@@ -2521,6 +3165,15 @@ bool UNoFearSquadSubsystem::GetSquadLeash(const APawn* Pawn, FVector& OutAnchor,
 	{
 		OutAnchor = Squad->FallbackAnchor;
 		OutRadius = 0.f;
+		return true;
+	}
+	if (Squad->Tactic == ENoFearSquadTactic::Rescue && Squad->RescueTarget.IsValid())
+	{
+		// Прикрытие стоит за краем ауры — поводок шире на её радиус.
+		const ANoFearPortal* RescuePortal = Cast<ANoFearPortal>(Squad->RescuePortal.Get());
+		const UNoFearPortalSubsystem* Portals = UNoFearPortalSubsystem::Get(this);
+		OutAnchor = Squad->RescueTarget->GetActorLocation();
+		OutRadius = RescueLeashRadius + (RescuePortal && Portals ? Portals->GetAuraRadius(RescuePortal) : 0.f);
 		return true;
 	}
 	if (Squad->bHoldingLine)
@@ -2627,6 +3280,9 @@ FText UNoFearSquadSubsystem::GetOrderText(ENoFearSquadOrder Order)
 	case ENoFearSquadOrder::Heal: return NSLOCTEXT("NoFear", "OrderHeal", "перевязка");
 	case ENoFearSquadOrder::Regroup: return NSLOCTEXT("NoFear", "OrderRegroup", "сбор");
 	case ENoFearSquadOrder::Assist: return NSLOCTEXT("NoFear", "OrderAssist", "к соседям");
+	case ENoFearSquadOrder::Free: return NSLOCTEXT("NoFear", "OrderFree", "освобождает");
+	case ENoFearSquadOrder::Calm: return NSLOCTEXT("NoFear", "OrderCalm", "успокаивает");
+	case ENoFearSquadOrder::CoverRescue: return NSLOCTEXT("NoFear", "OrderCoverRescue", "прикрывает спасение");
 	default: return FText::GetEmpty();
 	}
 }
@@ -2643,6 +3299,7 @@ FText UNoFearSquadSubsystem::GetTacticText(ENoFearSquadTactic Tactic)
 	case ENoFearSquadTactic::Defend: return NSLOCTEXT("NoFear", "TacticDefend", "Оборона");
 	case ENoFearSquadTactic::Fallback: return NSLOCTEXT("NoFear", "TacticFallback", "Отход");
 	case ENoFearSquadTactic::Regroup: return NSLOCTEXT("NoFear", "TacticRegroup", "Сбор");
+	case ENoFearSquadTactic::Rescue: return NSLOCTEXT("NoFear", "TacticRescue", "Спасение");
 	default: return FText::GetEmpty();
 	}
 }

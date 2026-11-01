@@ -141,7 +141,18 @@ float UNoFearFearComponent::AddFearFrom(float Amount, float Cap, FVector InSourc
 	{
 		Cap = FMath::Min(Cap, GetFearTuning(this).CombatFearCap);
 	}
+	if (UNoFearFearSubsystem::IsFrightening(SourceTeam) && IsSteady())
+	{
+		// Свои рядом: страшно, но не до ужаса — монстр выше потолка строя страх не держит.
+		Cap = FMath::Min(Cap, SteadyCap);
+		bDirect = bDirect && Fear < SteadyCap;
+	}
 	return AddFear(Amount, Cap, InSourceLocation, bDirect);
+}
+
+bool UNoFearFearComponent::IsSteady() const
+{
+	return GetNow() < SteadyUntil;
 }
 
 void UNoFearFearComponent::Soothe(float Amount)

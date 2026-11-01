@@ -85,6 +85,21 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Portal")
 	APawn* GetRescueTarget(const ANoFearAIController* Guardian) const;
 
+	/**
+	 * Отряд посылает бойца Bot вывести проводника Target из транса (bCalm = false) или успокоить паникующего Target (bCalm = true).
+	 * Ведёт бойца подсистема (как стража); враг ближе AbortDistance — бросает (без паузы, отряд решит сам). false — нельзя.
+	 */
+	bool StartSquadRescue(ANoFearAIController* Bot, APawn* Target, bool bCalm, float AbortDistance);
+
+	/** Снять бойца со спасения (отряд передумал). */
+	void StopSquadRescue(ANoFearAIController* Bot);
+
+	/** Target уже кто-то спасает (страж, боец отряда или герой), кроме Except. */
+	bool IsRescueTaken(const APawn* Target, const ANoFearAIController* Except = nullptr) const;
+
+	/** Все проводники в трансе. */
+	TArray<APawn*> GetFeeders() const;
+
 	/** Actor сейчас освобождает проводника: герой держит E или страж выводит из транса. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Portal")
 	bool IsFreeingFeeder(const AActor* Actor) const;
@@ -172,6 +187,11 @@ private:
 		double StartTime = 0.0;
 		double NextMoveTime = 0.0;
 		bool bInReach = false;
+		/** Послал отряд: без паузы после срыва (отряд решает сам). */
+		bool bSquad = false;
+		/** Успокоить паникующего, а не вывести из транса. */
+		bool bCalm = false;
+		float AbortDistance = 0.f;
 	};
 
 	struct FHeroFreeState

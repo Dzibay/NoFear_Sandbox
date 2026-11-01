@@ -31,7 +31,12 @@ enum class ENoFearSquadTactic : uint8
 	/** Отход перекатами: часть прикрывает, часть отходит к рубежу, потом меняются. */
 	Fallback,
 	/** Сбор после боя у командира: перевязка, потом — по постам. */
-	Regroup
+	Regroup,
+	/**
+	 * Спасение у портала (только союзники): отряд зачищает монстров у проводника, потом один боец выводит его из транса
+	 * (или успокаивает паникующего мирного), остальные прикрывают. Монстров больше, чем бойцов, — не идут.
+	 */
+	Rescue
 };
 
 /** Приказ бойцу. Слово приказа видно в панели над головой рядом со знаком роли. */
@@ -64,7 +69,13 @@ enum class ENoFearSquadOrder : uint8
 	/** Сбор у командира после боя. */
 	Regroup,
 	/** Помощь соседнему отряду. */
-	Assist
+	Assist,
+	/** Вывести проводника из транса (ведёт подсистема порталов). */
+	Free,
+	/** Успокоить паникующего мирного у портала (ведёт подсистема порталов). */
+	Calm,
+	/** Прикрыть спасающего: укрытие рядом с проводником, лицом к порталу. */
+	CoverRescue
 };
 
 /** Приказ бойца целиком (для контроллера, тестов и Blueprint). */
@@ -97,6 +108,13 @@ struct NOFEAR_API FNoFearSquadOrderInfo
 
 	UPROPERTY(BlueprintReadOnly, Category = "NoFear|Squad")
 	bool bHasEnemyLocation = false;
+
+	/** Куда смотреть без цели (прикрывающие спасение — на портал). */
+	UPROPERTY(BlueprintReadOnly, Category = "NoFear|Squad")
+	FVector FacingLocation = FVector::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly, Category = "NoFear|Squad")
+	bool bHasFacing = false;
 
 	/** Когда отдан (время мира, с). */
 	UPROPERTY(BlueprintReadOnly, Category = "NoFear|Squad")
@@ -422,6 +440,74 @@ struct FNoFearSquadTuning
 	/** Первая граната не раньше, чем через столько после контакта, с. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Grenade", meta = (ClampMin = "0"))
 	float FirstSquadGrenadeDelay = 5.f;
+
+	// --- Спасение у портала (только союзники) ---
+
+	/** Отряды союзников выводят проводников из транса и успокаивают паникующих у порталов. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Rescue")
+	bool bPortalRescue = true;
+
+	/** Цель спасения не дальше этого от центра отряда, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Rescue", meta = (ClampMin = "0"))
+	float RescueSearchRadius = 3000.f;
+
+	/** Монстры ближе этого к цели (и враги, которых видит отряд, у цели или у отряда) — угроза, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Rescue", meta = (ClampMin = "0"))
+	float RescueThreatRadius = 1500.f;
+
+	/** Спасающий идёт, только когда в этом радиусе от цели нет монстров (зачищено), см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Rescue", meta = (ClampMin = "0"))
+	float RescueClearRadius = 900.f;
+
+	/** Колосс в счёте угрозы — за столько монстров. Угроза больше числа бойцов — не идти. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Rescue", meta = (ClampMin = "1"))
+	float RescueTankWeight = 3.f;
+
+	/** Монстр ближе этого к спасающему — бросить и отбиваться (вернётся, когда снова чисто), см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Rescue", meta = (ClampMin = "0"))
+	float RescueAbortDistance = 600.f;
+
+	/** Прикрывающие встают вокруг цели на таком расстоянии (по бокам, лицом к порталу), если цель вне ауры портала, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Rescue", meta = (ClampMin = "100"))
+	float RescueGuardRadius = 450.f;
+
+	/** Цель в ауре портала — прикрывающие стоят дугой на столько за краем ауры (в ауре страх ломает), см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Rescue", meta = (ClampMin = "0"))
+	float RescueAuraMargin = 150.f;
+
+	/** Слом бойца отряда дошёл до этой доли — спасение бросить, отряд отходит и не спасает RescueRetryTime. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Rescue", meta = (ClampMin = "0", ClampMax = "1"))
+	float RescueBreakAbort = 0.2f;
+
+	/** Поводок отряда вокруг цели, пока идёт спасение, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Rescue", meta = (ClampMin = "300"))
+	float RescueLeashRadius = 1500.f;
+
+	/** Спасающий дважды не дошёл до цели — не браться за неё столько, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Rescue", meta = (ClampMin = "0"))
+	float RescueRetryTime = 15.f;
+
+	// --- Сплочённость (только союзники) ---
+
+	/** Бойцы союзного отряда держат строй: свои рядом и монстров не больше, чем бойцов, — монстры не доводят до слома. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Steady")
+	bool bSquadSteady = true;
+
+	/** Страх от монстров у держащего строй не выше этого (ниже порога слома). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Steady", meta = (ClampMin = "0", ClampMax = "100"))
+	float SteadyFearCap = 90.f;
+
+	/** Страх выше потолка строя спадает с такой скоростью, в секунду. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Steady", meta = (ClampMin = "0"))
+	float SteadySootheRate = 15.f;
+
+	/** Свой ближе этого — боец держит строй, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Steady", meta = (ClampMin = "0"))
+	float SteadyMateRadius = 1500.f;
+
+	/** Монстры ближе этого к центру отряда — в счёте (колосс за RescueTankWeight). Больше, чем бойцов, — строй не держится, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Steady", meta = (ClampMin = "0"))
+	float SteadyThreatRadius = 2500.f;
 };
 
 /**
@@ -516,6 +602,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Squad")
 	float GetSquadMorale(const APawn* Pawn) const;
 
+	/** Отряд бойца держит строй (союзники рядом сильнее монстров — не ломаются). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Squad")
+	bool IsSquadSteady(const APawn* Pawn) const;
+
 	/** Задать мораль отряда Pawn (тесты, скриптовые сцены: «отряд сломлен»). */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Squad")
 	void SetSquadMorale(const APawn* Pawn, float NewMorale);
@@ -555,13 +645,22 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Squad")
 	void AbortBandage(APawn* Medic, APawn* Patient);
 
+	/** Кого спасает отряд Pawn (проводник или паникующий мирный). nullptr — никого. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Squad")
+	APawn* GetSquadRescueTarget(const APawn* Pawn) const;
+
+	/** Кто из отряда Pawn сейчас выводит или успокаивает цель спасения. nullptr — никто (зачищают или спасения нет). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Squad")
+	APawn* GetSquadRescuer(const APawn* Pawn) const;
+
 	/** Кто идёт перевязывать Patient (приказ отряда). nullptr — никто. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Squad")
 	APawn* GetMedicFor(const APawn* Patient) const;
 
 	/**
 	 * Поводок бойца в отряде вместо своего: дом отряда (центр постов) и SquadLeashRadius; рубеж после отхода;
-	 * при отходе — без поводка (OutRadius 0); помогающий соседям — вокруг них. false — не в собранном отряде.
+	 * при отходе — без поводка (OutRadius 0); помогающий соседям — вокруг них; при спасении — вокруг цели (RescueLeashRadius).
+	 * false — не в собранном отряде.
 	 */
 	bool GetSquadLeash(const APawn* Pawn, FVector& OutAnchor, float& OutRadius) const;
 
@@ -702,6 +801,30 @@ private:
 		double AssistStartTime = -1.0e9;
 		bool bAssistArrived = false;
 		double NextHelpCallTime = 0.0;
+
+		// Спасение у портала.
+		TWeakObjectPtr<APawn> RescueTarget;
+		/** Цель — паникующий мирный (успокоить), а не проводник (вывести из транса). */
+		bool bRescueCalm = false;
+		TWeakObjectPtr<AActor> RescuePortal;
+		TWeakObjectPtr<APawn> Rescuer;
+		/** Ближайший к цели монстр — по нему работает прикрытие. */
+		TWeakObjectPtr<AActor> RescueEnemy;
+		/** У цели нет монстров (спасающий может идти). */
+		bool bRescueClear = false;
+		float RescueThreat = 0.f;
+		double NextRescueThinkTime = 0.0;
+		int32 RescueFails = 0;
+		/** Кого не брать до этого времени (не дошли дважды). */
+		TMap<TWeakObjectPtr<APawn>, double> RescueSkips;
+		/** Боец начал ломаться у портала — не спасать до этого времени. */
+		double RescueBlockedUntil = 0.0;
+
+		/** Держит строй (UpdateSteady). */
+		bool bSteady = false;
+		/** Монстров у отряда больше, чем бойцов (союзники) — отходить, а не ломаться на месте. */
+		bool bOutmatched = false;
+		double LastSteadyShoutTime = -1.0e9;
 	};
 
 	const FSquad* FindSquadOf(const APawn* Pawn, const FMember** OutMember = nullptr) const;
@@ -719,11 +842,23 @@ private:
 	void UpdateEngagement(FSquad& Squad, double Now);
 	/** Мораль сама тянется к «спокойной» по числу своих против врагов. */
 	void UpdateMorale(FSquad& Squad, float DeltaTime);
+	void UpdateSteady(FSquad& Squad, double Now, float DeltaTime);
 	void UpdateTactic(FSquad& Squad, double Now);
 	void SetTactic(FSquad& Squad, ENoFearSquadTactic Tactic, double Now);
 	void BeginBounding(FSquad& Squad, double Now);
 	void BeginFallback(FSquad& Squad, double Now, const FText& ShoutText);
 	void BeginRegroup(FSquad& Squad, double Now);
+	/** Спасение у портала: выбор цели, риск, зачистка, спасающий. true — отряд занят спасением (тактику дальше не думать). */
+	bool UpdateRescue(FSquad& Squad, double Now);
+	void EndSquadRescue(FSquad& Squad, double Now, const TCHAR* Reason);
+	/** Кого спасать: ближайший доступный проводник, иначе паникующий мирный у портала. */
+	APawn* ChooseRescueTarget(const FSquad& Squad, const FVector& Centroid, int32 Alive, double Now, bool& bOutCalm, AActor*& OutPortal) const;
+	/**
+	 * Угроза у цели: монстры в RescueThreatRadius (колосс — RescueTankWeight) и недавно виденные отрядом враги рядом.
+	 * OutClearWeight — сколько из них в ClearRadius, OutNearest — ближайший к цели.
+	 */
+	float GetRescueThreat(const FSquad& Squad, const FVector& Target, const FVector& Centroid, double Now, float ClearRadius,
+		float& OutClearWeight, AActor*& OutNearest) const;
 	bool TryBeginFlank(FSquad& Squad, double Now);
 	/** Враг уязвим для натиска (перезаряжается, ранен, прижат). Пусто — нет. */
 	FString GetRushReason(const FSquad& Squad, double Now) const;

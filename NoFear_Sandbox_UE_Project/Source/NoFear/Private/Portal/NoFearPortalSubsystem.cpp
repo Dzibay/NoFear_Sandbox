@@ -5,6 +5,7 @@
 #include "AI/NoFearAIController.h"
 #include "AI/NoFearBotSubsystem.h"
 #include "AI/NoFearMonsterAIController.h"
+#include "AI/NoFearSquadSubsystem.h"
 #include "Core/NoFearBraceletComponent.h"
 #include "Core/NoFearCharacter.h"
 #include "Core/NoFearFearComponent.h"
@@ -152,6 +153,25 @@ namespace
 		static const TArray<FText> Lines = {
 			NSLOCTEXT("NoFearPortal", "Rescued1", "Очнись! Уходим!"),
 			NSLOCTEXT("NoFearPortal", "Rescued2", "Есть! Он с нами!"),
+		};
+		return Lines;
+	}
+
+	const TArray<FText>& CalmLines()
+	{
+		static const TArray<FText> Lines = {
+			NSLOCTEXT("NoFearPortal", "Calm1", "Тихо, тихо, я рядом!"),
+			NSLOCTEXT("NoFearPortal", "Calm2", "Не смотри туда! Смотри на меня!"),
+			NSLOCTEXT("NoFearPortal", "Calm3", "Дыши. Мы тебя прикроем."),
+		};
+		return Lines;
+	}
+
+	const TArray<FText>& CalmedLines()
+	{
+		static const TArray<FText> Lines = {
+			NSLOCTEXT("NoFearPortal", "Calmed1", "Вот так. Держись за нами."),
+			NSLOCTEXT("NoFearPortal", "Calmed2", "Всё, он в порядке!"),
 		};
 		return Lines;
 	}
@@ -447,6 +467,86 @@ APawn* UNoFearPortalSubsystem::GetRescueTarget(const ANoFearAIController* Guardi
 {
 	const FRescueState* State = Guardian ? Rescues.Find(TWeakObjectPtr<ANoFearAIController>(const_cast<ANoFearAIController*>(Guardian))) : nullptr;
 	return State ? State->Feeder.Get() : nullptr;
+}
+
+bool UNoFearPortalSubsystem::StartSquadRescue(ANoFearAIController* Bot, APawn* Target, bool bCalm, float AbortDistance)
+{
+	APawn* Rescuer = Bot ? Bot->GetPawn() : nullptr;
+	const UWorld* World = GetWorld();
+	if (!Rescuer || !Target || !World || UNoFearHealthComponent::IsActorIncapacitated(Rescuer) || IsFeeder(Rescuer)
+		|| IsRescueTaken(Target, Bot) || (bCalm ? IsFeeder(Target) : !IsFeeder(Target)))
+	{
+		return false;
+	}
+	if (FRescueState* Existing = Rescues.Find(Bot))
+	{
+		if (Existing->Feeder.Get() == Target && Existing->bCalm == bCalm)
+		{
+			Existing->AbortDistance = AbortDistance;
+			return true;
+		}
+		EndRescue(Bot, false);
+	}
+	if (Bot->IsPortalControlled())
+	{
+		return false;
+	}
+	RescueCooldowns.Remove(Bot);
+	FRescueState& State = Rescues.Add(Bot);
+	State.Feeder = Target;
+	State.StartTime = World->GetTimeSeconds();
+	State.bSquad = true;
+	State.bCalm = bCalm;
+	State.AbortDistance = AbortDistance;
+	Bot->SetPortalControl(true);
+	Bot->Shout(PickLine(bCalm ? CalmLines() : RescueLines()), 2.f);
+	UE_LOG(LogNoFearAI, Log, TEXT("Portal: отряд посылает %s %s %s"), *Rescuer->GetName(), bCalm ? TEXT("успокоить") : TEXT("вывести"), *Target->GetName());
+	return true;
+}
+
+void UNoFearPortalSubsystem::StopSquadRescue(ANoFearAIController* Bot)
+{
+	const FRescueState* State = Bot ? Rescues.Find(Bot) : nullptr;
+	if (State && State->bSquad)
+	{
+		EndRescue(Bot, false);
+	}
+}
+
+bool UNoFearPortalSubsystem::IsRescueTaken(const APawn* Target, const ANoFearAIController* Except) const
+{
+	if (!Target)
+	{
+		return false;
+	}
+	for (const TPair<TWeakObjectPtr<ANoFearAIController>, FRescueState>& Pair : Rescues)
+	{
+		if (Pair.Key.IsValid() && Pair.Key.Get() != Except && Pair.Value.Feeder.Get() == Target)
+		{
+			return true;
+		}
+	}
+	for (const TPair<TWeakObjectPtr<APlayerController>, FHeroFreeState>& Pair : HeroFreeing)
+	{
+		if (Pair.Key.IsValid() && Pair.Value.Feeder.Get() == Target)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+TArray<APawn*> UNoFearPortalSubsystem::GetFeeders() const
+{
+	TArray<APawn*> Result;
+	for (const TPair<TWeakObjectPtr<APawn>, FFeederState>& Pair : Feeders)
+	{
+		if (APawn* Feeder = Pair.Key.Get())
+		{
+			Result.Add(Feeder);
+		}
+	}
+	return Result;
 }
 
 bool UNoFearPortalSubsystem::IsFreeingFeeder(const AActor* Actor) const
@@ -1765,6 +1865,16 @@ void UNoFearPortalSubsystem::UpdateHeroFreeing(float DeltaTime, double Now)
 
 // --- Стражи ---
 
+namespace
+{
+	/** Боец отряда, которого отряд ещё не подхватил (только появился): сам не бежит — им распорядится командир. */
+	bool IsAwaitingSquad(const APawn* Pawn, const UNoFearSquadSubsystem* Squads)
+	{
+		const ANoFearCharacter* Character = Cast<ANoFearCharacter>(Pawn);
+		return Squads && Character && !Character->Squad.IsNone() && Squads->GetSquadMembers(Pawn).IsEmpty();
+	}
+}
+
 void UNoFearPortalSubsystem::AssignRescuers(double Now)
 {
 	if (Now < NextRescueAssignTime)
@@ -1784,10 +1894,19 @@ void UNoFearPortalSubsystem::AssignRescuers(double Now)
 	{
 		return;
 	}
+	// Бойцы собранных отрядов в одиночку не ходят: их посылает командир, когда у проводника зачищено.
+	const UNoFearSquadSubsystem* Squads = UNoFearSquadSubsystem::Get(this);
 
 	// Одного проводника выводит один страж.
 	TSet<const APawn*> Taken;
 	for (const TPair<TWeakObjectPtr<ANoFearAIController>, FRescueState>& Pair : Rescues)
+	{
+		if (const APawn* Feeder = Pair.Value.Feeder.Get())
+		{
+			Taken.Add(Feeder);
+		}
+	}
+	for (const TPair<TWeakObjectPtr<APlayerController>, FHeroFreeState>& Pair : HeroFreeing)
 	{
 		if (const APawn* Feeder = Pair.Value.Feeder.Get())
 		{
@@ -1799,6 +1918,7 @@ void UNoFearPortalSubsystem::AssignRescuers(double Now)
 	{
 		APawn* Guardian = Bot ? Bot->GetPawn() : nullptr;
 		if (!Guardian || UNoFearTeamLibrary::GetTeam(Guardian) != ENoFearTeam::Ally || Rescues.Contains(Bot) || RescueCooldowns.Contains(Bot)
+			|| (Squads && Squads->IsInFormedSquad(Guardian)) || IsAwaitingSquad(Guardian, Squads)
 			|| IsFeeder(Guardian) || Bot->IsPortalControlled() || UNoFearHealthComponent::IsActorIncapacitated(Guardian)
 			|| HasCombatTarget(Bot, GuardianCombatDistance))
 		{
@@ -1838,8 +1958,10 @@ void UNoFearPortalSubsystem::AssignRescuers(double Now)
 
 void UNoFearPortalSubsystem::UpdateRescues(float DeltaTime, double Now)
 {
+	const UNoFearFearSubsystem* FearSubsystem = UNoFearFearSubsystem::Get(this);
 	TArray<TPair<ANoFearAIController*, bool>> ToEnd;
 	TArray<TPair<APawn*, ANoFearAIController*>> Working;
+	TArray<TPair<APawn*, ANoFearAIController*>> Calming;
 	TArray<TWeakObjectPtr<ANoFearAIController>> Stale;
 	for (TPair<TWeakObjectPtr<ANoFearAIController>, FRescueState>& Pair : Rescues)
 	{
@@ -1852,20 +1974,26 @@ void UNoFearPortalSubsystem::UpdateRescues(float DeltaTime, double Now)
 		FRescueState& State = Pair.Value;
 		APawn* Guardian = Bot->GetPawn();
 		APawn* Feeder = State.Feeder.Get();
-		if (!Guardian || !IsFeeder(Feeder) || UNoFearHealthComponent::IsActorIncapacitated(Guardian))
+		// Успокаивают живого паникующего (не проводника), пока страх не спал; выводят — того, кто ещё в трансе.
+		const bool bTargetOk = State.bCalm
+			? Feeder && !IsFeeder(Feeder) && !UNoFearHealthComponent::IsActorIncapacitated(Feeder)
+				&& UNoFearFearComponent::GetActorFear(Feeder) > (FearSubsystem ? FearSubsystem->CalmTargetFear : 15.f)
+			: IsFeeder(Feeder);
+		if (!Guardian || !bTargetOk || UNoFearHealthComponent::IsActorIncapacitated(Guardian))
 		{
 			ToEnd.Add({Bot, false});
 			continue;
 		}
-		// Враг подошёл — сначала отбиться; вернётся позже.
-		if (HasCombatTarget(Bot, GuardianCombatDistance))
+		// Враг подошёл — сначала отбиться; вернётся позже (бойца отряда вернёт командир, когда снова чисто).
+		if (HasCombatTarget(Bot, State.bSquad ? State.AbortDistance : GuardianCombatDistance))
 		{
-			ToEnd.Add({Bot, true});
+			ToEnd.Add({Bot, !State.bSquad});
 			continue;
 		}
 
 		const float Distance = FVector::Dist2D(Guardian->GetActorLocation(), Feeder->GetActorLocation());
-		const float Reach = State.bInReach ? GuardianReach * RescueReachHysteresis : GuardianReach;
+		const float BaseReach = State.bCalm && FearSubsystem ? FMath::Min(GuardianReach * 1.5f, FearSubsystem->CalmDistance * 0.8f) : GuardianReach;
+		const float Reach = State.bInReach ? BaseReach * RescueReachHysteresis : BaseReach;
 		if (Distance <= Reach)
 		{
 			if (!State.bInReach)
@@ -1874,7 +2002,7 @@ void UNoFearPortalSubsystem::UpdateRescues(float DeltaTime, double Now)
 				State.bInReach = true;
 			}
 			Bot->SetFocus(Feeder);
-			Working.Add({Feeder, Bot});
+			(State.bCalm ? Calming : Working).Add({Feeder, Bot});
 			continue;
 		}
 		State.bInReach = false;
@@ -1885,7 +2013,7 @@ void UNoFearPortalSubsystem::UpdateRescues(float DeltaTime, double Now)
 		}
 		if (!Bot->IsEvadingGrenade() && Now >= State.NextMoveTime && Bot->GetMoveStatus() == EPathFollowingStatus::Idle)
 		{
-			Bot->MoveToActor(Feeder, GuardianReach * 0.6f);
+			Bot->MoveToActor(Feeder, BaseReach * 0.6f);
 			State.NextMoveTime = Now + RescueRepathInterval;
 		}
 	}
@@ -1903,6 +2031,27 @@ void UNoFearPortalSubsystem::UpdateRescues(float DeltaTime, double Now)
 		if (ApplyFreeing(Work.Key, DeltaTime / FMath::Max(GuardianFreeTime, 0.1f), Work.Value->GetPawn()))
 		{
 			Work.Value->Shout(PickLine(RescuedLines()), 2.f);
+		}
+	}
+	// Успокаивают как герой: страх спадает со скоростью CalmRate до CalmTargetFear, срыв в транс откатывается.
+	for (const TPair<APawn*, ANoFearAIController*>& Work : Calming)
+	{
+		UNoFearFearComponent* Fear = UNoFearFearComponent::FindFear(Work.Key);
+		if (!Fear || !FearSubsystem)
+		{
+			EndRescue(Work.Value, false);
+			continue;
+		}
+		Fear->Comfort(FearSubsystem->CalmRate * DeltaTime);
+		if (FBreakState* Break = BreakStates.Find(Work.Key))
+		{
+			Break->Progress = FMath::Max(0.f, Break->Progress - DeltaTime / FMath::Max(GuardianFreeTime, 0.1f));
+		}
+		if (Fear->GetFear() <= FearSubsystem->CalmTargetFear)
+		{
+			BreakStates.Remove(Work.Key);
+			Work.Value->Shout(PickLine(CalmedLines()), 2.f);
+			EndRescue(Work.Value, false);
 		}
 	}
 }

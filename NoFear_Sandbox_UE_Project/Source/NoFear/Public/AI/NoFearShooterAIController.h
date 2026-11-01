@@ -292,6 +292,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
 	bool IsRetreating() const { return bRetreating; }
 
+	/** Сейчас смотрит на портал, прикрывая спасение (приказ CoverRescue без цели). */
+	bool IsRescueFacing() const { return bRescueFacing; }
+
 	/** Прикрывает отходящего своего. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
 	bool IsCoveringFire() const;
@@ -359,6 +362,8 @@ protected:
 
 	/** Раз в обновление: проверить укрытие, найти новое, начать отход. */
 	void UpdateCover();
+	/** Прикрывающий спасение без цели — лицом к порталу. */
+	void UpdateRescueFacing();
 	/** Найти и занять укрытие. bRetreat — отход раненого. */
 	bool SearchCover(bool bRetreat);
 	/** Параметры поиска укрытия от Threat по настройкам бойца (приказы потом меняют их). */
@@ -388,6 +393,7 @@ protected:
 	FNoFearSquadOrderInfo SquadOrder;
 	int32 HandledOrderSerial = -1;
 	bool bOrderStuck = false;
+	bool bRescueFacing = false;
 	/** Где стоять, ожидая санитара без укрытия (запомнено, когда санитар подошёл). */
 	bool bHoldingForMedic = false;
 	FVector MedicWaitLocation = FVector::ZeroVector;

@@ -97,6 +97,7 @@ namespace
 		case ENoFearSquadOrder::Rush:
 		case ENoFearSquadOrder::FallBack:
 		case ENoFearSquadOrder::Reinforce:
+		case ENoFearSquadOrder::CoverRescue:
 			return true;
 		default:
 			return false;
@@ -153,15 +154,16 @@ bool ANoFearShooterAIController::ExecuteSquadOrder()
 	}
 	if (!bUseCover)
 	{
-		return Order == ENoFearSquadOrder::FallBack || Order == ENoFearSquadOrder::Rush || Order == ENoFearSquadOrder::Reinforce;
+		return Order == ENoFearSquadOrder::FallBack || Order == ENoFearSquadOrder::Rush || Order == ENoFearSquadOrder::Reinforce
+			|| Order == ENoFearSquadOrder::CoverRescue;
 	}
 
 	AActor* Threat = nullptr;
 	FVector ThreatLocation;
 	if (!GetOrderThreat(Threat, ThreatLocation))
 	{
-		// Не от кого прятаться: отход и подмога — в открытую (GetOrderMoveGoal), остальное выполнить нельзя.
-		if (Order == ENoFearSquadOrder::FallBack)
+		// Не от кого прятаться: отход, подмога и прикрытие спасения — в открытую (GetOrderMoveGoal), остальное выполнить нельзя.
+		if (Order == ENoFearSquadOrder::FallBack || Order == ENoFearSquadOrder::CoverRescue)
 		{
 			ReleaseCover();
 			return true;
@@ -247,6 +249,26 @@ bool ANoFearShooterAIController::ExecuteSquadOrder()
 		return true;
 	}
 
+	case ENoFearSquadOrder::CoverRescue:
+	{
+		// Прикрытие спасения: укрытие у своего места рядом с целью; нет — на место в открытую.
+		if (!SquadOrder.bHasLocation)
+		{
+			return false;
+		}
+		Search.bUseSearchOrigin = true;
+		Search.SearchOrigin = SquadOrder.Location;
+		Search.SearchRadius = ReinforceSearchRadius;
+		Search.MaxThreatDistance = FMath::Max(Search.MaxThreatDistance, FVector::Dist2D(SquadOrder.Location, ThreatLocation) + 500.f);
+		Search.GoalLocation = SquadOrder.Location;
+		Search.GoalWeight = 0.5f;
+		if (!ApplyCoverSearch(Search))
+		{
+			ReleaseCover();
+		}
+		return true;
+	}
+
 	default:
 		return true;
 	}
@@ -307,6 +329,13 @@ bool ANoFearShooterAIController::GetOrderMoveGoal(FVector& OutGoal) const
 		}
 		OutGoal = MateLocation + FromMate.GetSafeNormal2D() * 350.f;
 		return true;
+	}
+	case ENoFearSquadOrder::CoverRescue:
+	{
+		// На своё место у цели спасения, пока не в бою и без укрытия.
+		const APawn* MyPawn = GetPawn();
+		OutGoal = SquadOrder.Location;
+		return SquadOrder.bHasLocation && !GetCurrentTarget() && !HasCover() && MyPawn && FVector::Dist2D(MyPawn->GetActorLocation(), OutGoal) > 120.f;
 	}
 	default:
 		return false;
@@ -438,6 +467,7 @@ void ANoFearShooterAIController::UpdateBot()
 	{
 		MaintainWeapon();
 		UpdateSquadOrder();
+		UpdateRescueFacing();
 		UpdateCover();
 		if (IsSuppressing())
 		{
@@ -703,6 +733,27 @@ bool ANoFearShooterAIController::ApplyContactCoverSearch(const FNoFearCoverSearc
 	Near.MaxThreatDistance = Current + 150.f;
 	Near.MinThreatDistance = FMath::Max(Search.MinThreatDistance, Current - ContactCoverAdvance);
 	return ApplyCoverSearch(Near);
+}
+
+void ANoFearShooterAIController::UpdateRescueFacing()
+{
+	// Прикрывающий спасение на своём месте без цели смотрит на портал, откуда полезут монстры.
+	const APawn* MyPawn = GetPawn();
+	const bool bFace = MyPawn && !IsPortalControlled() && !GetCurrentTarget() && SquadOrder.Order == ENoFearSquadOrder::CoverRescue
+		&& SquadOrder.bHasFacing && SquadOrder.bHasLocation && FVector::Dist2D(MyPawn->GetActorLocation(), SquadOrder.Location) <= 200.f;
+	if (bFace)
+	{
+		SetFocalPoint(SquadOrder.FacingLocation, EAIFocusPriority::Gameplay);
+		bRescueFacing = true;
+	}
+	else if (bRescueFacing)
+	{
+		bRescueFacing = false;
+		if (!IsPortalControlled() && !GetCurrentTarget())
+		{
+			ClearFocus(EAIFocusPriority::Gameplay);
+		}
+	}
 }
 
 void ANoFearShooterAIController::UpdateCover()

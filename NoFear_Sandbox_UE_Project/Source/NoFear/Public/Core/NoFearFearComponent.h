@@ -105,6 +105,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Fear")
 	bool IsSpreading() const;
 
+	/** Держит строй до Until (свои рядом, отряд сильнее монстров): страх от монстров не выше Cap и не держит ужас. */
+	void SetSteady(float Cap, double Until) { SteadyCap = Cap; SteadyUntil = Until; }
+
+	/** Держит строй — монстры не доводят до ужаса (слома). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Fear")
+	bool IsSteady() const;
+
 	/** Свой множитель прироста поверх множителя команды (смельчак — меньше 1, трус — больше). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fear", meta = (ClampMin = "0"))
 	float GainMultiplier = 1.f;
@@ -133,5 +140,7 @@ private:
 	double LastGainTime = -1.0e9;
 	double LastDirectGainTime = -1.0e9;
 	double LastComfortTime = -1.0e9;
+	float SteadyCap = 100.f;
+	double SteadyUntil = -1.0e9;
 	ENoFearFearLevel Level = ENoFearFearLevel::Calm;
 };
