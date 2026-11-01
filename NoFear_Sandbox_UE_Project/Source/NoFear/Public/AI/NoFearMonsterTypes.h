@@ -38,7 +38,9 @@ enum class ENoFearWeakCondition : uint8
 	/** Броня сорвана (колосс). */
 	ArmorBroken,
 	/** Замах крика (шептун). */
-	Scream
+	Scream,
+	/** Включается вручную: UNoFearVulnerabilityComponent::SetZoneOpen (пластины колосса). */
+	Manual
 };
 
 /** Слабое место (или броня, если множитель меньше 1). */
@@ -75,6 +77,14 @@ struct NOFEAR_API FNoFearWeakZone
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weak Zone")
 	FName AttackName;
 
+	/** Зона открыта, пока условие НЕ выполнено (броня, которая перестаёт работать). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weak Zone")
+	bool bInvert = false;
+
+	/** Костевая зона: зоны по стороне на это попадание не умножаются (сорванная пластина поверх брони). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weak Zone")
+	bool bIgnoresSideZones = false;
+
 	/** Светиться, пока зона открыта (сфера на первой кости). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weak Zone")
 	bool bGlow = false;
@@ -85,6 +95,30 @@ struct NOFEAR_API FNoFearWeakZone
 	/** Радиус светящейся сферы, см. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weak Zone", meta = (ClampMin = "1"))
 	float GlowRadius = 9.f;
+};
+
+/** Пластина брони: сбивается только взрывом спереди. Сорванная открывает зону PlateZone. */
+USTRUCT(BlueprintType)
+struct NOFEAR_API FNoFearArmorPlate
+{
+	GENERATED_BODY()
+
+	/** Зона (Manual), которую открывает сорванная пластина. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Plate")
+	FName PlateZone;
+
+	/** Направление пластины относительно взгляда монстра в градусах (0 — прямо, минус — влево). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Plate")
+	float AngleDeg = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Plate", meta = (ClampMin = "1"))
+	float MaxDurability = 60.f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Plate")
+	float Durability = 60.f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Plate")
+	bool bStripped = false;
 };
 
 /** Метка возможности на человеке: один вид монстров ставит, другие охотятся (раздел 3.3). */

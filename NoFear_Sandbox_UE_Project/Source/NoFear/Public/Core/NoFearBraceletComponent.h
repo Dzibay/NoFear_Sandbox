@@ -330,6 +330,10 @@ public:
 	void ReceiveDanger(ENoFearDangerType Type, AActor* Source, FVector ThreatLocation);
 
 	/** Герой успокоил мирного. */
+	/** Испуг героя от рёва монстра: Amount, но не выше Cap. Возвращает, на сколько вырос страх. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Bracelet")
+	float ReceiveMonsterRoar(float Amount, float Cap, FVector Location, AActor* Source);
+
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Bracelet")
 	void NotifyCalmedCivilian();
 

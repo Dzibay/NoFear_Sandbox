@@ -81,6 +81,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage", meta = (ClampMin = "0"))
 	float KnockDownTime = 1.2f;
 
+	/** Ломает укрытия: актёры с тегом NoFearBreakable исчезают, физические предметы отлетают (таран, Smash). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage")
+	bool bBreaksCover = false;
+
+	/** Импульс, который получают физические предметы на пути, см/с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage", meta = (ClampMin = "0", EditCondition = "bBreaksCover"))
+	float CoverImpulse = 800.f;
+
+	/** Сколько укрытий сломано этой атакой за всё время (для тестов). */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Damage")
+	int32 BrokenCoverCount = 0;
+
 	// --- Тайминги ---
 
 	/** Замах до удара, сек: монстр разворачивается к цели, игрок успевает среагировать. */
@@ -151,6 +163,12 @@ public:
 
 	/** Задел Victim: урон и отбрасывание. */
 	virtual void ApplyHit(UNoFearMeleeComponent* Melee, AActor* Victim, const FHitResult& Hit);
+
+	/** Под ударом оказался предмет (не персонаж); вызывается при bBreaksCover. */
+	virtual void BreakCover(UNoFearMeleeComponent* Melee, AActor* Prop, UPrimitiveComponent* Component);
+
+	/** Тег актёров, которые ломает bBreaksCover. */
+	static const FName BreakableTag;
 
 	/** Окно удара закончилось, началось восстановление. */
 	virtual void BeginRecovery(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target) {}
@@ -269,9 +287,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Charge", meta = (ClampMin = "0"))
 	float WallCheckDistance = 40.f;
 
-	/** Оглушение после удара о стену, сек. */
+	/** Оглушение после удара о стену, сек. Броня спереди не работает всё это время. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Charge", meta = (ClampMin = "0"))
-	float StunTime = 1.f;
+	float StunTime = 2.5f;
+
+	/** Восстановление, если таран попал в цель или в стену, сек. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Charge", meta = (ClampMin = "0"))
+	float HitRecoveryTime = 0.6f;
+
+	/** Восстановление, если таран прошёл мимо и стены не было: разворот, сек. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Charge", meta = (ClampMin = "0"))
+	float MissRecoveryTime = 0.8f;
 
 	/** Сколько раз врезался в стену (для тестов). */
 	UPROPERTY(Transient, BlueprintReadOnly, Category = "Charge")
@@ -279,7 +305,88 @@ public:
 
 	virtual void BeginStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target) override;
 	virtual bool TickStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target, float DeltaTime) override;
+	virtual void BeginRecovery(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target) override;
+
+	/** Сколько таранов закончились промахом (ни цели, ни стены). Для тестов. */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Charge")
+	int32 MissCount = 0;
 
 private:
 	FVector ChargeDirection = FVector::ForwardVector;
+	bool bWallHitThisCharge = false;
+};
+
+/**
+ * Хват и бросок (колосс): цель вплотную, замах, держит HoldTime, потом бросает на ThrowPersonRange в другого человека
+ * (в пределах ThrowPersonAngle от взгляда) или в ближайшую стену. Урон Damage при броске, ImpactDamage при ударе
+ * о стену или человека; сбиты с ног оба на KnockDownTime.
+ */
+UCLASS(meta = (DisplayName = "Grab"))
+class NOFEAR_API UNoFearMonsterAttack_Grab : public UNoFearMonsterAttack
+{
+	GENERATED_BODY()
+
+public:
+	UNoFearMonsterAttack_Grab();
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grab", meta = (ClampMin = "0"))
+	float HoldTime = 0.6f;
+
+	/** Где держит: столько см перед телом. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grab", meta = (ClampMin = "0"))
+	float HoldDistance = 110.f;
+
+	/** Дальность броска в стену, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grab", meta = (ClampMin = "0"))
+	float ThrowRange = 1500.f;
+
+	/** Бросает в человека, если он ближе этого, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grab", meta = (ClampMin = "0"))
+	float ThrowPersonRange = 1800.f;
+
+	/** ... и в пределах стольких градусов от взгляда. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grab", meta = (ClampMin = "0", ClampMax = "180"))
+	float ThrowPersonAngle = 45.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grab", meta = (ClampMin = "0"))
+	float ThrowUpSpeed = 450.f;
+
+	/** Наибольшая горизонтальная скорость броска, см/с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grab", meta = (ClampMin = "0"))
+	float ThrowMaxSpeed = 1500.f;
+
+	/** Урон при ударе брошенного о стену или человека (ему и задетому). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grab", meta = (ClampMin = "0"))
+	float ImpactDamage = 15.f;
+
+	/** Сколько бросков было (для тестов). */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Grab")
+	int32 ThrowCount = 0;
+
+	/** Последний бросок целил в человека (иначе в стену). */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Grab")
+	bool bLastThrowAtPerson = false;
+
+	/** Последний бросок закончился ударом о стену или человека. */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Grab")
+	bool bLastThrowImpacted = false;
+
+	/** Кого задел последний брошенный (человек на пути). */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Grab")
+	TWeakObjectPtr<AActor> LastImpactVictim;
+
+	virtual bool CanUse(const UNoFearMeleeComponent* Melee, const AActor* Target) const override;
+	virtual void BeginStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target) override;
+	virtual bool TickStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target, float DeltaTime) override;
+	virtual void EndAttack(UNoFearMeleeComponent* Melee, ACharacter* Owner) override;
+
+private:
+	void Release(ACharacter* Victim);
+	void Throw(UNoFearMeleeComponent* Melee, ACharacter* Owner);
+	void ImpactVictim(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Other);
+
+	TWeakObjectPtr<ACharacter> Held;
+	bool bThrown = false;
+	float ThrownSpeed = 0.f;
+	double ThrowTime = 0.0;
 };

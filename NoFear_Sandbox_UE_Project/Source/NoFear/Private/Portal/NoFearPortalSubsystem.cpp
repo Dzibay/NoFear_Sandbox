@@ -4,6 +4,7 @@
 
 #include "AI/NoFearAIController.h"
 #include "AI/NoFearBotSubsystem.h"
+#include "AI/NoFearMonsterAIController.h"
 #include "Core/NoFearBraceletComponent.h"
 #include "Core/NoFearCharacter.h"
 #include "Core/NoFearFearComponent.h"
@@ -446,6 +447,29 @@ APawn* UNoFearPortalSubsystem::GetRescueTarget(const ANoFearAIController* Guardi
 {
 	const FRescueState* State = Guardian ? Rescues.Find(TWeakObjectPtr<ANoFearAIController>(const_cast<ANoFearAIController*>(Guardian))) : nullptr;
 	return State ? State->Feeder.Get() : nullptr;
+}
+
+bool UNoFearPortalSubsystem::IsFreeingFeeder(const AActor* Actor) const
+{
+	if (!Actor)
+	{
+		return false;
+	}
+	for (const TPair<TWeakObjectPtr<APlayerController>, FHeroFreeState>& Pair : HeroFreeing)
+	{
+		if (Pair.Key.IsValid() && Pair.Key->GetPawn() == Actor && Pair.Value.Feeder.IsValid())
+		{
+			return true;
+		}
+	}
+	for (const TPair<TWeakObjectPtr<ANoFearAIController>, FRescueState>& Pair : Rescues)
+	{
+		if (Pair.Key.IsValid() && Pair.Key->GetPawn() == Actor && Pair.Value.Feeder.IsValid())
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 ANoFearPortal* UNoFearPortalSubsystem::GetMonsterPortal(const APawn* Monster) const
@@ -1181,7 +1205,7 @@ int32 UNoFearPortalSubsystem::CountAllMonsters() const
 
 void UNoFearPortalSubsystem::UpdateMonsters(double Now)
 {
-	// Убитые больше не числятся за порталом; живые бродят на поводке, который растёт с порталом.
+	// Убитые больше не числятся за порталом; часть живых стережёт проводников, остальные охотятся.
 	for (const TWeakObjectPtr<ANoFearPortal>& Weak : Portals)
 	{
 		ANoFearPortal* Portal = Weak.Get();
@@ -1190,13 +1214,9 @@ void UNoFearPortalSubsystem::UpdateMonsters(double Now)
 			continue;
 		}
 		Portal->Monsters.RemoveAll([](const TWeakObjectPtr<APawn>& Monster) { return !IsAlive(Monster.Get()); });
-		const float Leash = MonsterLeashRadius + MonsterLeashPerSize * Portal->Size;
-		for (const TWeakObjectPtr<APawn>& Monster : Portal->Monsters)
+		if (!Portal->bClosing)
 		{
-			if (ANoFearAIController* Bot = GetBot(Monster.Get()))
-			{
-				Bot->LeashRadius = Leash;
-			}
+			UpdateGuards(Portal);
 		}
 	}
 
@@ -1234,6 +1254,162 @@ void UNoFearPortalSubsystem::UpdateMonsters(double Now)
 			SpawnWave(Portal, Count, Now);
 		}
 		Portal->NextSpawnTime = Now + Interval * FMath::FRandRange(0.85f, 1.15f);
+	}
+}
+
+void UNoFearPortalSubsystem::UpdateGuards(ANoFearPortal* Portal)
+{
+	const FVector Center = Portal->GetActorLocation();
+	const float HunterLeash = MonsterLeashRadius + MonsterLeashPerSize * Portal->Size;
+
+	TArray<ANoFearMonsterAIController*> Guards;
+	TArray<ANoFearMonsterAIController*> Candidates;
+	for (const TWeakObjectPtr<APawn>& Monster : Portal->Monsters)
+	{
+		ANoFearMonsterAIController* Bot = Monster.IsValid() ? Cast<ANoFearMonsterAIController>(Monster->GetController()) : nullptr;
+		if (!Bot)
+		{
+			continue;
+		}
+		if (Bot->IsPortalGuard())
+		{
+			Guards.Add(Bot);
+		}
+		else if (Bot->IsRingFighter())
+		{
+			// Стражем становится боец ближнего боя (не прыгун и не плевун), ближайший к порталу.
+			Candidates.Add(Bot);
+		}
+	}
+
+	// Хотя бы один монстр всегда охотится; без проводников стеречь некого.
+	int32 Wanted = Portal->Stage == ENoFearPortalStage::Large ? LargeGuards
+		: (Portal->Stage == ENoFearPortalStage::Medium ? MediumGuards : SmallGuards);
+	Wanted = Portal->Feeders.IsEmpty() ? 0 : FMath::Clamp(Wanted, 0, Portal->Monsters.Num() - 1);
+	while (Guards.Num() > Wanted)
+	{
+		Guards.Pop()->ClearPortalGuard();
+	}
+	if (Guards.Num() < Wanted && !Candidates.IsEmpty())
+	{
+		Candidates.Sort([&Center](const ANoFearMonsterAIController& A, const ANoFearMonsterAIController& B)
+		{
+			return FVector::DistSquared2D(A.GetPawn()->GetActorLocation(), Center) < FVector::DistSquared2D(B.GetPawn()->GetActorLocation(), Center);
+		});
+		for (int32 Index = 0; Index < Candidates.Num() && Guards.Num() < Wanted; ++Index)
+		{
+			Guards.Add(Candidates[Index]);
+		}
+	}
+
+	// Посты — на линиях от портала к проводникам, чуть дальше них: страж стоит спиной к проводнику.
+	TArray<float> FeederYaws;
+	float FeederDistance = Portal->GetCoreRadius();
+	for (const TWeakObjectPtr<APawn>& Feeder : Portal->Feeders)
+	{
+		if (Feeder.IsValid())
+		{
+			const FVector Offset = Feeder->GetActorLocation() - Center;
+			FeederYaws.Add(Offset.Rotation().Yaw);
+			FeederDistance = FMath::Max(FeederDistance, static_cast<float>(Offset.Size2D()));
+		}
+	}
+	// Проводник, который ещё бредёт к порталу издалека, не уводит стражу за собой.
+	const float PostRadius = FMath::Min(FeederDistance, Portal->GetCoreRadius() + GuardMaxFeederDistance) + GuardStandOff;
+	const UNavigationSystemV1* Nav = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
+	for (int32 Index = 0; Index < Guards.Num(); ++Index)
+	{
+		float Yaw = 360.f * Index / Guards.Num();
+		if (!FeederYaws.IsEmpty())
+		{
+			// Стражей больше, чем проводников, — лишние встают веером рядом.
+			const int32 Round = Index / FeederYaws.Num();
+			Yaw = FeederYaws[Index % FeederYaws.Num()] + (Round % 2 ? -30.f : 30.f) * ((Round + 1) / 2);
+		}
+		FVector Post = Center + FRotator(0.f, Yaw, 0.f).Vector() * PostRadius;
+		FNavLocation NavLocation;
+		if (Nav && Nav->ProjectPointToNavigation(Post, NavLocation, NavExtent))
+		{
+			Post = NavLocation.Location;
+		}
+		Guards[Index]->SetPortalGuard(Center, Post, PostRadius + GuardReach);
+		Guards[Index]->LeashRadius = PostRadius + GuardReach;
+	}
+
+	// Охотники уходят далеко и гонят людей к порталу: свободный охотник сам ищет того, кого можно сломать,
+	// а не ждёт, пока услышит. Двое на одного — только когда людей меньше, чем охотников.
+	TArray<APawn*> Prey;
+	GatherPeople(Prey);
+	Prey.RemoveAll([this, &Center, HunterLeash](const APawn* Person)
+	{
+		return !CanBreak(Person) || FVector::DistSquared2D(Person->GetActorLocation(), Center) > FMath::Square(HunterLeash);
+	});
+	TMap<const APawn*, int32> Hunted;
+	for (const TWeakObjectPtr<APawn>& Monster : Portal->Monsters)
+	{
+		ANoFearAIController* Bot = GetBot(Monster.Get());
+		const ANoFearMonsterAIController* MonsterBot = Cast<ANoFearMonsterAIController>(Bot);
+		if (!Bot || (MonsterBot && MonsterBot->IsPortalGuard()))
+		{
+			continue;
+		}
+		Bot->LeashRadius = HunterLeash;
+		if (const APawn* Target = Cast<APawn>(Bot->GetCurrentTarget()))
+		{
+			++Hunted.FindOrAdd(Target);
+		}
+	}
+	for (const TWeakObjectPtr<APawn>& Monster : Portal->Monsters)
+	{
+		ANoFearMonsterAIController* MonsterBot = Monster.IsValid() ? Cast<ANoFearMonsterAIController>(Monster->GetController()) : nullptr;
+		if (!MonsterBot || MonsterBot->IsPortalGuard() || !MonsterBot->bScareCivilians || MonsterBot->GetCurrentTarget()
+			|| MonsterBot->IsPortalControlled())
+		{
+			continue;
+		}
+		APawn* Best = nullptr;
+		float BestScore = TNumericLimits<float>::Max();
+		for (APawn* Person : Prey)
+		{
+			const float Score = FVector::Dist2D(Person->GetActorLocation(), Monster->GetActorLocation()) + 2000.f * Hunted.FindRef(Person);
+			if (Score < BestScore)
+			{
+				BestScore = Score;
+				Best = Person;
+			}
+		}
+		if (Best)
+		{
+			++Hunted.FindOrAdd(Best);
+			MonsterBot->ReceiveAlarm(Best, Best->GetActorLocation());
+		}
+	}
+
+	// Кто освобождает проводника этого портала — на того страж и бросается.
+	TArray<APawn*> Freers;
+	for (const TPair<TWeakObjectPtr<APlayerController>, FHeroFreeState>& Pair : HeroFreeing)
+	{
+		if (Pair.Key.IsValid() && Pair.Key->GetPawn() && Portal->Feeders.Contains(Pair.Value.Feeder))
+		{
+			Freers.Add(Pair.Key->GetPawn());
+		}
+	}
+	for (const TPair<TWeakObjectPtr<ANoFearAIController>, FRescueState>& Pair : Rescues)
+	{
+		if (Pair.Key.IsValid() && Pair.Key->GetPawn() && Portal->Feeders.Contains(Pair.Value.Feeder))
+		{
+			Freers.Add(Pair.Key->GetPawn());
+		}
+	}
+	for (APawn* Freer : Freers)
+	{
+		for (ANoFearMonsterAIController* Guard : Guards)
+		{
+			if (!Guard->GetCurrentTarget())
+			{
+				Guard->ReceiveAlarm(Freer, Freer->GetActorLocation());
+			}
+		}
 	}
 }
 
@@ -1319,9 +1495,13 @@ APawn* UNoFearPortalSubsystem::SpawnMonster(ANoFearPortal* Portal, UClass* InMon
 	}
 	if (ANoFearAIController* Bot = GetBot(Monster))
 	{
-		// Дом — портал: бродит и дерётся рядом с ним.
+		// Дом — портал: охотится вокруг него, гонит и пугает людей, чтобы те ломались и питали его.
 		Bot->SetHomeLocation(Center);
 		Bot->LeashRadius = MonsterLeashRadius + MonsterLeashPerSize * Portal->Size;
+		if (ANoFearMonsterAIController* MonsterBot = Cast<ANoFearMonsterAIController>(Bot))
+		{
+			MonsterBot->bScareCivilians = true;
+		}
 	}
 	Portal->Monsters.Add(Monster);
 	return Monster;
@@ -1349,6 +1529,10 @@ void UNoFearPortalSubsystem::BeginClosing(ANoFearPortal* Portal, double Now)
 		ANoFearAIController* Bot = GetBot(Monster);
 		if (Bot && IsAlive(Monster))
 		{
+			if (ANoFearMonsterAIController* MonsterBot = Cast<ANoFearMonsterAIController>(Bot))
+			{
+				MonsterBot->ClearPortalGuard();
+			}
 			Bot->SetPortalControl(true, true);
 			Bot->MoveToLocation(Center, RecallReach * 0.5f);
 		}

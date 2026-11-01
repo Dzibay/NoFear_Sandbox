@@ -85,6 +85,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Portal")
 	APawn* GetRescueTarget(const ANoFearAIController* Guardian) const;
 
+	/** Actor сейчас освобождает проводника: герой держит E или страж выводит из транса. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Portal")
+	bool IsFreeingFeeder(const AActor* Actor) const;
+
 	/** Монстр вышел из портала: его портал или nullptr. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Portal")
 	ANoFearPortal* GetMonsterPortal(const APawn* Monster) const;
@@ -184,6 +188,8 @@ private:
 	void UpdateGrowth(float DeltaTime, double Now);
 	void UpdateAura(float DeltaTime);
 	void UpdateMonsters(double Now);
+	/** Расставить стражу портала у проводников, остальным — охотничий поводок. */
+	void UpdateGuards(ANoFearPortal* Portal);
 	void UpdateClosing(double Now);
 	void UpdateHeroFreeing(float DeltaTime, double Now);
 	void UpdateRescues(float DeltaTime, double Now);

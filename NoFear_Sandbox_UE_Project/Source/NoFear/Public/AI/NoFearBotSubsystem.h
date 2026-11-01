@@ -126,7 +126,7 @@ public:
 
 	/** Сколько жетонов атаки на одну цель. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|AI", meta = (ClampMin = "1"))
-	int32 MaxAttackersPerTarget = 2;
+	int32 MaxAttackersPerTarget = 3;
 
 	/**
 	 * Держатель, который не ударил за столько секунд, теряет жетон, если его ждут другие (застрял, не может дойти

@@ -134,9 +134,10 @@ float UNoFearHealthComponent::ProcessDamage(float Damage, const FDamageEvent& Da
 	}
 
 	// Слабые места, броня и окна уязвимости монстра.
-	if (const UNoFearVulnerabilityComponent* Vulnerability = Owner->FindComponentByClass<UNoFearVulnerabilityComponent>())
+	if (UNoFearVulnerabilityComponent* Vulnerability = Owner->FindComponentByClass<UNoFearVulnerabilityComponent>())
 	{
-		Multiplier = Vulnerability->ModifyDamageMultiplier(Info, DamageEvent.IsOfType(FPointDamageEvent::ClassID), Multiplier);
+		Multiplier = Vulnerability->ModifyDamageMultiplier(Info, DamageEvent.IsOfType(FPointDamageEvent::ClassID),
+			DamageEvent.IsOfType(FRadialDamageEvent::ClassID), Damage, Multiplier);
 	}
 
 	// Упавшего добивают: здоровья уже нет, урон сокращает время до смерти.

@@ -18,7 +18,8 @@ public class NoFear : ModuleRules
 			"Niagara",
 			"PhysicsCore",
 			"RenderCore",
-			"DeveloperSettings"
+			"DeveloperSettings",
+			"EngineCameras"
 		});
 	}
 }

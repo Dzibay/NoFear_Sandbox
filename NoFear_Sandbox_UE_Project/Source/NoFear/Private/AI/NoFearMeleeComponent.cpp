@@ -396,4 +396,30 @@ void UNoFearMeleeComponent::SweepHits()
 		Attack->ApplyHit(this, Victim, Hit);
 		OnAttackHit.Broadcast(Victim, Attack->Damage * DamageScale);
 	}
+
+	if (Attack->bBreaksCover)
+	{
+		// Укрытия и предметы под ударом: ломаются или отлетают.
+		TArray<FOverlapResult> Props;
+		FCollisionObjectQueryParams PropObjects;
+		PropObjects.AddObjectTypesToQuery(ECC_WorldStatic);
+		PropObjects.AddObjectTypesToQuery(ECC_WorldDynamic);
+		PropObjects.AddObjectTypesToQuery(ECC_PhysicsBody);
+		World->OverlapMultiByObjectType(Props, Center, FQuat::Identity, PropObjects, FCollisionShape::MakeSphere(Attack->HitRadius), Params);
+		for (const FOverlapResult& Overlap : Props)
+		{
+			AActor* Prop = Overlap.GetActor();
+			if (!Prop || Prop == Owner || HitActors.Contains(Prop) || Cast<APawn>(Prop))
+			{
+				continue;
+			}
+			const bool bBreakable = Prop->ActorHasTag(UNoFearMonsterAttack::BreakableTag)
+				|| (Overlap.GetComponent() && Overlap.GetComponent()->IsSimulatingPhysics());
+			if (bBreakable)
+			{
+				HitActors.Add(Prop);
+				Attack->BreakCover(this, Prop, Overlap.GetComponent());
+			}
+		}
+	}
 }

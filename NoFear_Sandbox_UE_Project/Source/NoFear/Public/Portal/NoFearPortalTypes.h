@@ -187,9 +187,9 @@ struct FNoFearPortalTuning
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Portal|Monsters", meta = (ClampMin = "0"))
 	float FirstSpawnDelay = 4.f;
 
-	/** Монстр портала бродит не дальше этого от него: MonsterLeashRadius + MonsterLeashPerSize × размер, см. */
+	/** Охотник портала (не стража) уходит от него не дальше MonsterLeashRadius + MonsterLeashPerSize × размер, см. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Portal|Monsters", meta = (ClampMin = "0"))
-	float MonsterLeashRadius = 1200.f;
+	float MonsterLeashRadius = 3500.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Portal|Monsters", meta = (ClampMin = "0"))
 	float MonsterLeashPerSize = 10.f;
@@ -201,6 +201,31 @@ struct FNoFearPortalTuning
 	/** Ближе этого к порталу монстр уходит в него. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Portal|Monsters", meta = (ClampMin = "0"))
 	float RecallReach = 220.f;
+
+	/**
+	 * Стража портала: столько монстров (малый / средний / большой) стоят у проводников спиной к ним и бросаются
+	 * на тех, кто подходит освобождать. Хотя бы один монстр всегда уходит на охоту.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Portal|Monsters", meta = (ClampMin = "0"))
+	int32 SmallGuards = 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Portal|Monsters", meta = (ClampMin = "0"))
+	int32 MediumGuards = 2;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Portal|Monsters", meta = (ClampMin = "0"))
+	int32 LargeGuards = 3;
+
+	/** Пост стража — на столько дальше самого дальнего проводника, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Portal|Monsters", meta = (ClampMin = "0"))
+	float GuardStandOff = 250.f;
+
+	/** Посты считаются по проводникам не дальше этого от края провала (дальние ещё бредут к порталу), см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Portal|Monsters", meta = (ClampMin = "0"))
+	float GuardMaxFeederDistance = 600.f;
+
+	/** Страж бросается на тех, кто ближе к порталу, чем его пост + столько, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Portal|Monsters", meta = (ClampMin = "0"))
+	float GuardReach = 900.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Portal|Monsters")
 	TSoftClassPtr<APawn> MonsterClass = TSoftClassPtr<APawn>(FSoftObjectPath(TEXT("/Game/Blueprints/Bots/CBP_Bot_Monster.CBP_Bot_Monster_C")));

@@ -9,6 +9,7 @@
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "Core/NoFearCharacter.h"
+#include "Core/NoFearFearComponent.h"
 #include "Core/NoFearHealthComponent.h"
 #include "Core/NoFearTeam.h"
 #include "NavigationSystem.h"
@@ -38,6 +39,13 @@ namespace
 	/** Как часто пересчитывать точку, вокруг которой бродить, сек. */
 	constexpr double RoamCenterInterval = 1.0;
 	const FVector RoamProjectExtent(300.f, 300.f, 500.f);
+
+	/** Страж ближе этого к посту — стоит на нём и смотрит наружу, см. */
+	constexpr float GuardPostTolerance = 150.f;
+	/** Страж бьёт обидчика, отошедшего от портала не дальше Radius + столько, см. */
+	constexpr float GuardGrudgeSlack = 600.f;
+	/** Прибавка к оценке цели стража: тот, кто освобождает проводника. */
+	constexpr float GuardFreerBonus = 3.f;
 }
 
 ANoFearMonsterAIController::ANoFearMonsterAIController(const FObjectInitializer& ObjectInitializer)
@@ -230,9 +238,94 @@ void ANoFearMonsterAIController::UpdateBot()
 
 	Super::UpdateBot();
 
+	UpdateScare();
 	UpdateAttackToken();
-	// Жетон мог смениться после того, как база записала блэкборд.
+	// Жетон и точка испуга могли смениться после того, как база записала блэкборд.
 	SetBlackboardBool(FNoFearBotKeys::HasAttackToken, bHasAttackToken);
+	if (bScaring)
+	{
+		WriteBlackboard();
+	}
+	UpdateGuardFacing();
+}
+
+void ANoFearMonsterAIController::UpdateScare()
+{
+	APawn* MyPawn = GetPawn();
+	AActor* Target = CurrentTarget.Get();
+	bScaring = bScareCivilians && MyPawn && Target && !IsAggro() && !HasGrudgeAgainst(Target)
+		&& UNoFearOpportunitySubsystem::GetTargetCategory(Target) == ENoFearTargetCategory::Civilian;
+	if (!bScaring)
+	{
+		return;
+	}
+	// Наскок: рык в лицо, человек пугается напрямую (такой испуг ломает и передаётся соседям).
+	const double Now = GetNow();
+	if (Now >= NextScareTime && FVector::DistSquared2D(MyPawn->GetActorLocation(), Target->GetActorLocation()) <= FMath::Square(ScareReach))
+	{
+		if (UNoFearFearComponent* Fear = UNoFearFearComponent::FindFear(Target))
+		{
+			Fear->AddFearFrom(ScareFear, 100.f, MyPawn->GetActorLocation(), MyPawn, true);
+		}
+		if (const ANoFearCharacter* MyCharacter = Cast<ANoFearCharacter>(MyPawn))
+		{
+			if (UNoFearPoseComponent* Pose = MyCharacter->GetPoseComponent())
+			{
+				Pose->PlayPose(ENoFearPose::Lunge, 0.25f, 0.4f);
+			}
+		}
+		NextScareTime = Now + ScareInterval;
+		++ScareCount;
+	}
+}
+
+void ANoFearMonsterAIController::UpdateGuardFacing()
+{
+	const APawn* MyPawn = GetPawn();
+	if (!bPortalGuard || !MyPawn || CurrentTarget.IsValid()
+		|| FVector::DistSquared2D(MyPawn->GetActorLocation(), GuardPost) > FMath::Square(GuardPostTolerance))
+	{
+		return;
+	}
+	const FVector Outward = (GuardPost - GuardCenter).GetSafeNormal2D();
+	SetFocalPoint(GuardPost + Outward * 1000.f + FVector(0.f, 0.f, 60.f));
+}
+
+bool ANoFearMonsterAIController::CanJoinPack() const
+{
+	return !IsAggro() && !bPortalGuard;
+}
+
+void ANoFearMonsterAIController::SetPortalGuard(const FVector& Center, const FVector& Post, float Radius)
+{
+	bPortalGuard = true;
+	GuardCenter = Center;
+	GuardPost = Post;
+	GuardRadius = Radius;
+}
+
+void ANoFearMonsterAIController::ClearPortalGuard()
+{
+	if (bPortalGuard)
+	{
+		bPortalGuard = false;
+		ClearFocus(EAIFocusPriority::Gameplay);
+	}
+}
+
+bool ANoFearMonsterAIController::AcquireToken(AActor* Target)
+{
+	UNoFearBotSubsystem* Subsystem = UNoFearBotSubsystem::Get(this);
+	if (!Subsystem)
+	{
+		return true;
+	}
+	if (!Subsystem->RequestAttackToken(GetPawn(), Target))
+	{
+		return false;
+	}
+	TokenTarget = Target;
+	return true;
 }
 
 void ANoFearMonsterAIController::UpdateGrudges()
@@ -284,7 +377,6 @@ void ANoFearMonsterAIController::ReleaseToken()
 
 void ANoFearMonsterAIController::UpdateAttackToken()
 {
-	APawn* MyPawn = GetPawn();
 	AActor* Target = CurrentTarget.Get();
 
 	if (TokenTarget.IsValid() && TokenTarget.Get() != Target)
@@ -303,6 +395,14 @@ void ANoFearMonsterAIController::UpdateAttackToken()
 		bHasAttackToken = true;
 		return;
 	}
+	// Человека гонит и пугает, а не бьёт.
+	if (bScaring)
+	{
+		ReleaseToken();
+		bHasAttackToken = false;
+		bSelfDefense = false;
+		return;
+	}
 
 	// Добивание: сбитого с ног рядом бьёт без очереди и без волны стаи.
 	if (bFinishKnockedDown && GetTargetDistance2D() <= FinishDistance
@@ -313,48 +413,57 @@ void ANoFearMonsterAIController::UpdateAttackToken()
 	}
 
 	// В стае очередь решает стая: бьют только окружив цель, своей волной. Кого цель бьёт рядом — отвечает без очереди.
+	// Ближний бой и в волне, и в самообороне — по жетону: на одну цель вплотную не больше MaxAttackersPerTarget.
 	FNoFearPackMemberView View;
 	if (GetPackView(View) && View.PackSize >= 2 && (View.Target == Target || View.State == ENoFearPackState::Scatter))
 	{
-		ReleaseToken();
 		const FNoFearKnownActor* Knowledge = KnownActors.Find(Target);
 		const bool bHitByTarget = Knowledge && GetNow() - Knowledge->LastAttackedTime <= SelfDefenseTime;
 		const float DefenseDistance = SelfDefenseDistance + (bSelfDefense ? SelfDefenseHysteresis : 0.f);
 		bSelfDefense = bHitByTarget && GetTargetDistance2D() <= DefenseDistance;
+		bool bWantsMelee = false;
 		switch (View.State)
 		{
 		case ENoFearPackState::Scatter:
-			bHasAttackToken = false;
 			break;
 		case ENoFearPackState::Encircle:
 		case ENoFearPackState::Attack:
-			// Плевун в кольцо не встаёт: окружают — плюётся.
-			bHasAttackToken = !bUseAttackTokens || View.bAttackTurn || bSelfDefense;
+			if (!IsRingFighter())
+			{
+				// Прыгун и плевун в кольцо не встают и жетон не занимают: бьют, когда сами решат.
+				ReleaseToken();
+				bHasAttackToken = bSelfDefense || WantsFreeAttack(Target);
+				return;
+			}
+			bWantsMelee = View.bAttackTurn || bSelfDefense;
 			break;
 		default:
-			bHasAttackToken = bSelfDefense;
+			bWantsMelee = bSelfDefense;
 			break;
+		}
+		bHasAttackToken = bWantsMelee && AcquireToken(Target);
+		if (!bHasAttackToken)
+		{
+			ReleaseToken();
 		}
 		return;
 	}
 
-	// Одиночка (или бьёт не цель стаи): жетоны, не больше двоих на цель.
+	// Одиночка (или бьёт не цель стаи): боец кольца — по жетону, прыгун и плевун — сами по себе.
 	bSelfDefense = false;
-	UNoFearBotSubsystem* Subsystem = UNoFearBotSubsystem::Get(this);
-	if (!bUseAttackTokens || !Subsystem)
+	if (!IsRingFighter())
 	{
-		bHasAttackToken = true;
+		ReleaseToken();
+		bHasAttackToken = WantsFreeAttack(Target);
 		return;
 	}
-	bHasAttackToken = Subsystem->RequestAttackToken(MyPawn, Target);
-	if (bHasAttackToken)
-	{
-		TokenTarget = Target;
-	}
+	bHasAttackToken = AcquireToken(Target);
 }
 
 void ANoFearMonsterAIController::HandleAttackFinished(AActor* Target)
 {
+	OnMeleeAttackFinished(Target);
+
 	if (IsAggro())
 	{
 		// Выдох: после серии ударов подряд стоит и тяжело дышит — окно уязвимости, атак нет.
@@ -384,16 +493,21 @@ void ANoFearMonsterAIController::HandleAttackFinished(AActor* Target)
 		{
 			PackSubsystem->NotifyAttackFinished(this);
 		}
-		// Ударил в свою очередь — назад на место в кольце; защищается — бьёт дальше.
-		if (View.State == ENoFearPackState::Attack && bUseAttackTokens && !bSelfDefense)
+		// Ударил в свою очередь — назад на место в кольце, жетон — тому, кто ждёт; защищается — бьёт дальше.
+		if (View.State == ENoFearPackState::Attack && IsRingFighter() && !bSelfDefense)
 		{
+			if (UNoFearBotSubsystem* Subsystem = TokenTarget.IsValid() ? UNoFearBotSubsystem::Get(this) : nullptr)
+			{
+				Subsystem->ReleaseAttackToken(GetPawn(), TokenTarget.Get(), true);
+			}
+			TokenTarget.Reset();
 			bHasAttackToken = false;
 			SetBlackboardBool(FNoFearBotKeys::HasAttackToken, false);
 		}
 		return;
 	}
 
-	if (!bUseAttackTokens || !TokenTarget.IsValid())
+	if (!IsRingFighter() || !TokenTarget.IsValid())
 	{
 		return;
 	}
@@ -424,6 +538,22 @@ bool ANoFearMonsterAIController::IsValidTarget(const AActor* Candidate) const
 {
 	// Проводник питает портал — его монстры не трогают.
 	if (UNoFearPortalSubsystem::IsActorFeeder(Candidate))
+	{
+		return false;
+	}
+	// Страж портала не уходит с поста: бьёт тех, кто подошёл к порталу, и обидчика, пока тот рядом.
+	if (bPortalGuard && Candidate)
+	{
+		const float Distance = FVector::Dist2D(Candidate->GetActorLocation(), GuardCenter);
+		if (Distance > GuardRadius + (HasGrudgeAgainst(Candidate) ? GuardGrudgeSlack : 0.f))
+		{
+			return false;
+		}
+	}
+	// Охотник портала гонит мирных только в своих угодьях — за поводком отпускает (обидчика гонит дальше).
+	if (bScareCivilians && Candidate && LeashRadius > 0.f && !HasGrudgeAgainst(Candidate)
+		&& UNoFearOpportunitySubsystem::GetTargetCategory(Candidate) == ENoFearTargetCategory::Civilian
+		&& FVector::DistSquared2D(Candidate->GetActorLocation(), GetHomeLocation()) > FMath::Square(LeashRadius))
 	{
 		return false;
 	}
@@ -473,6 +603,15 @@ float ANoFearMonsterAIController::ScoreTarget(const AActor* Candidate, const FNo
 	if (GetPackView(View) && View.Target == Candidate)
 	{
 		Score += PackTargetBonus;
+	}
+	// Страж первым бьёт того, кто освобождает проводника.
+	if (bPortalGuard)
+	{
+		const UNoFearPortalSubsystem* Portals = UNoFearPortalSubsystem::Get(this);
+		if (Portals && Portals->IsFreeingFeeder(Candidate))
+		{
+			Score += GuardFreerBonus;
+		}
 	}
 	return Score;
 }
@@ -561,8 +700,45 @@ bool ANoFearMonsterAIController::GetPackView(FNoFearPackMemberView& OutView) con
 	return PackSubsystem && PackSubsystem->GetMemberView(this, OutView);
 }
 
+void ANoFearMonsterAIController::SetShadeGoal(FVector Goal, float Duration)
+{
+	ShadeGoal = Goal;
+	ShadeUntil = Duration > 0.f ? GetNow() + Duration : 0.0;
+}
+
+bool ANoFearMonsterAIController::HasShadeGoal() const
+{
+	return GetNow() < ShadeUntil;
+}
+
+bool ANoFearMonsterAIController::IsRoarReady() const
+{
+	return GetNow() >= NextRoarTime;
+}
+
 bool ANoFearMonsterAIController::GetPackGoal(FVector& OutGoal) const
 {
+	// Колосс прикрывает: место в его тени важнее места в строю.
+	if (HasShadeGoal() && !IsScattering())
+	{
+		OutGoal = ShadeGoal;
+		return true;
+	}
+	// Пугает человека — подходит к нему вплотную.
+	const APawn* MyPawn = GetPawn();
+	const AActor* Target = CurrentTarget.Get();
+	if (bScaring && MyPawn && Target)
+	{
+		const FVector Away = (MyPawn->GetActorLocation() - Target->GetActorLocation()).GetSafeNormal2D();
+		OutGoal = Target->GetActorLocation() + Away * ScareDistance;
+		return true;
+	}
+	// Страж без цели — на посту.
+	if (bPortalGuard && !Target)
+	{
+		OutGoal = GuardPost;
+		return true;
+	}
 	FNoFearPackMemberView View;
 	if (!GetPackView(View) || !View.bHasGoal || View.State == ENoFearPackState::Scatter)
 	{
@@ -640,6 +816,13 @@ bool ANoFearMonsterAIController::ShouldWalk() const
 
 void ANoFearMonsterAIController::UpdateMovementStance()
 {
+	if (bScaring)
+	{
+		// Гонит человека бегом, рядом — наступает шагом.
+		const bool bClose = GetTargetDistance2D() <= ScareDistance + 150.f;
+		SetMovementFlags(bClose, false, bClose, !bClose);
+		return;
+	}
 	if (IsScattering())
 	{
 		// Разбегается со всех ног, не оглядываясь.
@@ -719,9 +902,10 @@ void ANoFearMonsterAIController::WriteBlackboard()
 	{
 		BlackboardComp->ClearValue(FNoFearBotKeys::FleeLocation);
 	}
-	if (bInPack && !bScattering && View.bHasGoal)
+	FVector PackGoal;
+	if (!bScattering && GetPackGoal(PackGoal))
 	{
-		BlackboardComp->SetValueAsVector(FNoFearBotKeys::PackGoal, View.Goal);
+		BlackboardComp->SetValueAsVector(FNoFearBotKeys::PackGoal, PackGoal);
 	}
 	else
 	{

@@ -140,7 +140,7 @@ void UNoFearPackSubsystem::UpdateMembership(double Now)
 		{
 			const ANoFearMonsterAIController* Bot = Member.Bot.Get();
 			const APawn* Pawn = Member.Pawn.Get();
-			return !Bot || !IsAlive(Pawn) || Bot->GetPawn() != Pawn || Bot->IsAggro()
+			return !Bot || !IsAlive(Pawn) || Bot->GetPawn() != Pawn || !Bot->CanJoinPack()
 				|| GetBodyPackName(Pawn) != Pack.Name || UNoFearTeamLibrary::GetTeam(Pawn) != Pack.Team;
 		});
 
@@ -178,7 +178,7 @@ void UNoFearPackSubsystem::UpdateMembership(double Now)
 	{
 		ANoFearMonsterAIController* Bot = Cast<ANoFearMonsterAIController>(AnyBot);
 		APawn* Pawn = Bot ? Bot->GetPawn() : nullptr;
-		if (!IsAlive(Pawn) || Bot->IsAggro() || Assigned.Contains(Bot))
+		if (!IsAlive(Pawn) || !Bot->CanJoinPack() || Assigned.Contains(Bot))
 		{
 			continue;
 		}
@@ -577,9 +577,9 @@ void UNoFearPackSubsystem::BeginScatter(FPack& Pack, const FVector& From, double
 bool UNoFearPackSubsystem::IsRingMember(const FPack& Pack, const FMember& Member) const
 {
 	const ANoFearMonsterAIController* Bot = Member.Bot.Get();
-	if (!Bot || !Bot->bUseAttackTokens)
+	if (!Bot || !Bot->IsRingFighter())
 	{
-		// Плевун бьёт издалека и в кольцо не встаёт.
+		// Прыгун и плевун в кольцо не встают: у них свои точки (GetStandoffPoint).
 		return false;
 	}
 	const AActor* BotTarget = Bot->GetCurrentTarget();
@@ -665,8 +665,8 @@ void UNoFearPackSubsystem::AssignSlots(FPack& Pack)
 		Pack.Members[Bearings[Rank].MemberIndex].Slot = (Rank + BestShift) % Bearings.Num();
 	}
 
-	// Волны по 2 (с пятерых — по 3); места одной волны разнесены по кругу: бьют с разных сторон.
-	const int32 WaveSize = Ring.Num() >= 5 ? 3 : 2;
+	// Волны по 2 (с четырёх — по 3, это и предел жетонов на цель); места одной волны разнесены по кругу: бьют с разных сторон.
+	const int32 WaveSize = Ring.Num() >= 4 ? 3 : 2;
 	Pack.WaveCount = FMath::Max(1, FMath::DivideAndRoundUp(Ring.Num(), WaveSize));
 	Pack.Wave %= Pack.WaveCount;
 }
@@ -830,11 +830,22 @@ void UNoFearPackSubsystem::ComputeGoals(FPack& Pack, double Now)
 	// Окружение и атака: каждый — на своё место в кольце; место дальше FlankStepAngle — в обход, по дуге снаружи.
 	const FVector Center = Pack.TargetLocation;
 	const float Step = 360.f / FMath::Max(Pack.SlotCount, 1);
+	const FVector PackSide = AngleToDirection(Pack.SlotBaseAngle);
 	for (FMember& Member : Pack.Members)
 	{
 		const ANoFearMonsterAIController* Bot = Member.Bot.Get();
-		if (!Bot || Member.Slot == INDEX_NONE)
+		if (!Bot)
 		{
+			continue;
+		}
+		if (Member.Slot == INDEX_NONE)
+		{
+			// Вне кольца: прыгун заходит во фланг и за спину, плевун стоит за кольцом.
+			FVector Point;
+			if (!Bot->IsRingFighter() && Bot->GetCurrentTarget() == Pack.Target.Get() && Bot->GetStandoffPoint(Center, PackSide, Point))
+			{
+				Member.bHasGoal = ProjectGoal(Point, Member.Goal);
+			}
 			continue;
 		}
 		const float Radius = Bot->GetRingRadius();

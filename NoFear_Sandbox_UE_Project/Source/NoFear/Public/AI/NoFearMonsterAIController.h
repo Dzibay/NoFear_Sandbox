@@ -18,11 +18,14 @@ class UNoFearMonsterAttack;
  *   в него попала, хоть издалека), за долю секунды узнаёт вся стая и бежит к ней цепью.
  * - Нападение: вожак подводит стаю к цели и ждёт отставших, стая расходится кольцом вокруг цели (на дальние места —
  *   в обход) и бьёт волнами по 2–3 с разных сторон; остальные держат кольцо и отрезают отход. Подошедшего вплотную
- *   бьёт и без очереди.
+ *   бьёт и без очереди. В кольце и очереди только бойцы ближнего боя (IsRingFighter): прыгуны кружат по краю и
+ *   прыгают, когда цель отвлеклась, плевуны держат дистанцию за кольцом (GetStandoffPoint) — в лимит жетонов не входят.
  * - Погиб вожак — стая разбегается от угрозы, потом новый вожак рыком собирает её снова.
  * - Охотится на слух: видит хуже стрелков, зато слышит дальше и на шум бежит, а не идёт. Обидчика помнит
  *   (GrudgeTime) и гонит хоть через всю карту.
- * - Монстр без стаи бьёт по жетонам атаки UNoFearBotSubsystem: одновременно двое на цель, остальные кружат.
+ * - Монстр без стаи бьёт по жетонам атаки UNoFearBotSubsystem: одновременно до трёх бойцов на цель, остальные кружат.
+ * - Монстр портала (bScareCivilians) гонит и пугает мирных, чтобы те сломались и питали портал, а бьёт только
+ *   сопротивляющихся. Стража портала (SetPortalGuard) стоит у проводников спиной к ним и бросается на освобождающих.
  * - Агрессивный монстр (команда AggroMonster): одиночка без стаи и очереди за жетоном, бьёт ближайшего,
  *   легко переключается и бьёт чаще.
  * Дерево: BT_NoFear_Monster.
@@ -74,7 +77,7 @@ public:
 
 	/** Рыкнуть сейчас: поза, шум и тревога стае о текущей цели. */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Monster")
-	void Roar();
+	virtual void Roar();
 
 	/** Монстр помнит обиду на Actor (тот нападал на него). */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
@@ -91,7 +94,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI")
 	bool bAddMeleeComponentIfMissing = true;
 
-	/** Бить по очереди: в стае — волнами и встаёт в кольцо, без стаи — по жетонам (не больше двоих на цель). */
+	/** Бить по очереди: в стае — волнами и встаёт в кольцо, без стаи — по жетонам (не больше MaxAttackersPerTarget на цель). false — сам по себе (прыгун, плевун). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster")
 	bool bUseAttackTokens = true;
 
@@ -205,6 +208,19 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
 	FName GetKindName() const;
 
+	/**
+	 * Занять место в тени союзника (колосс держит щит): пока не вышло время, идёт в эту точку вместо места в стае.
+	 * Duration <= 0 снимает.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Monster")
+	void SetShadeGoal(FVector Goal, float Duration);
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
+	bool HasShadeGoal() const;
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
+	FVector GetShadeGoal() const { return ShadeGoal; }
+
 	/** Сейчас «выдыхает» (агрессивный после серии ударов). */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
 	bool IsExhaling() const;
@@ -213,7 +229,72 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
 	float GetTargetScore(AActor* Candidate) const;
 
+	/**
+	 * Боец кольца: встаёт в кольцо стаи и бьёт своей волной, в ближнем бою — по жетону (не больше
+	 * UNoFearBotSubsystem::MaxAttackersPerTarget на цель). Прыгун и плевун бьют сами по себе — вне кольца и лимита.
+	 */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
+	virtual bool IsRingFighter() const { return bUseAttackTokens; }
+
+	/**
+	 * Своя точка у цели, пока стая окружает её, а монстр не стоит в кольце: прыгун — у фланга или за спиной цели,
+	 * плевун — за кольцом со стороны стаи. PackSide — направление от цели к стае. false — точки нет.
+	 */
+	virtual bool GetStandoffPoint(const FVector& TargetLocation, const FVector& PackSide, FVector& OutPoint) const { return false; }
+
+	/** Может быть в стае: не агрессивный и не страж портала. */
+	bool CanJoinPack() const;
+
+	// --- Портал ---
+
+	/**
+	 * Сделать стражем портала (UNoFearPortalSubsystem): стоит на Post лицом наружу, спиной к проводникам, и бьёт только
+	 * тех, кто подошёл к Center ближе Radius (первым — того, кто освобождает проводника). В стаю не встаёт.
+	 */
+	void SetPortalGuard(const FVector& Center, const FVector& Post, float Radius);
+	void ClearPortalGuard();
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Portal")
+	bool IsPortalGuard() const { return bPortalGuard; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Portal")
+	FVector GetGuardPost() const { return GuardPost; }
+
+	/** Людей (категория Civilian) не бьёт, а гонит и пугает, пока не сломаются; бьёт только обидчика. Ставит портал. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Monster|Portal")
+	bool bScareCivilians = false;
+
+	/** Пугая, подходит к человеку на это расстояние, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Portal", meta = (ClampMin = "0"))
+	float ScareDistance = 220.f;
+
+	/** Пугает, когда человек ближе этого, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Portal", meta = (ClampMin = "0"))
+	float ScareReach = 450.f;
+
+	/** Сколько страха за один наскок (прямой испуг, до 100). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Portal", meta = (ClampMin = "0"))
+	float ScareFear = 35.f;
+
+	/** Наскок не чаще, чем раз в столько секунд. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Portal", meta = (ClampMin = "0.1"))
+	float ScareInterval = 1.f;
+
+	/** Сейчас гонит и пугает человека, а не бьёт. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Portal")
+	bool IsScaring() const { return bScaring; }
+
+	/** Сколько раз пугал наскоком с появления. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Portal")
+	int32 GetScareCount() const { return ScareCount; }
+
 protected:
+	/** Боец вне кольца (IsRingFighter() == false): бить сейчас? Прыгун ждёт, когда цель отвлечётся. */
+	virtual bool WantsFreeAttack(AActor* Target) { return true; }
+
+	/** Атака закончилась (любая, до решений о жетоне). */
+	virtual void OnMeleeAttackFinished(AActor* Target) {}
+
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnUnPossess() override;
 	virtual void UpdateBot() override;
@@ -227,6 +308,9 @@ protected:
 
 	/** Настроить компонент ближнего боя тела под вид монстра: набор атак AttackSet и т. п. */
 	virtual void ConfigureMelee(UNoFearMeleeComponent* Melee);
+
+	/** Рёв доступен: с прошлого прошло RoarCooldown. */
+	bool IsRoarReady() const;
 
 	/** Кружит вокруг цели без жетона (или стоит на своём месте в кольце стаи). */
 	bool IsCircling() const;
@@ -263,6 +347,8 @@ private:
 	bool bSelfDefense = false;
 
 	bool bRoaring = false;
+	FVector ShadeGoal = FVector::ZeroVector;
+	double ShadeUntil = 0.0;
 	int32 RoarCount = 0;
 	double NextRoarTime = 0.0;
 	FTimerHandle RoarTimer;
@@ -275,4 +361,20 @@ private:
 	/** Удары агрессивного подряд и когда кончился последний (для выдоха). */
 	int32 ChainedAttacks = 0;
 	double LastAttackFinishTime = -1.0e9;
+
+	/** Взять жетон ближнего боя на цель (без подсистемы — можно). */
+	bool AcquireToken(AActor* Target);
+	/** Пугать, а не бить: цель — человек без обиды, монстр портальный. */
+	void UpdateScare();
+	/** Страж на посту без цели смотрит наружу. */
+	void UpdateGuardFacing();
+
+	bool bPortalGuard = false;
+	FVector GuardCenter = FVector::ZeroVector;
+	FVector GuardPost = FVector::ZeroVector;
+	float GuardRadius = 0.f;
+
+	bool bScaring = false;
+	double NextScareTime = 0.0;
+	int32 ScareCount = 0;
 };

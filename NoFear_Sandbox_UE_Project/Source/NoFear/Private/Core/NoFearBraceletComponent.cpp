@@ -536,6 +536,11 @@ void UNoFearBraceletComponent::UpdateCompanion(APawn* Pawn, float DeltaTime)
 	bCompanionWasDowned = bDowned;
 }
 
+float UNoFearBraceletComponent::ReceiveMonsterRoar(float Amount, float Cap, FVector Location, AActor* Source)
+{
+	return AddHeroFear(NoFearBracelet::Monster, Amount, Cap, Location, Source);
+}
+
 void UNoFearBraceletComponent::ReceiveDanger(ENoFearDangerType Type, AActor* Source, FVector ThreatLocation)
 {
 	APawn* Pawn = GetHeroPawn();
