@@ -1,6 +1,7 @@
 #include "AI/NoFearSpitProjectile.h"
 
 #include "AI/NoFearAcidPuddle.h"
+#include "AI/NoFearOpportunitySubsystem.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Core/NoFearHealthComponent.h"
@@ -90,6 +91,8 @@ void ANoFearSpitProjectile::HandleHit(UPrimitiveComponent* HitComponent, AActor*
 	{
 		const FVector Direction = ProjectileMovement->Velocity.GetSafeNormal();
 		UGameplayStatics::ApplyPointDamage(OtherActor, DirectDamage, Direction, Hit, Shooter ? Shooter->GetController() : nullptr, this, DamageType);
+		// Прямое попадание облепляет слизью: метка для ловчего.
+		UNoFearOpportunitySubsystem::AddTag(OtherActor, ENoFearOpportunity::Slimed, SlimeTime);
 	}
 	if (ImpactSound)
 	{

@@ -27,6 +27,14 @@ bool UNoFearMeleeComponent::IsOwnerAlive() const
 	return GetOwner() && !UNoFearHealthComponent::IsActorDead(GetOwner());
 }
 
+void UNoFearMeleeComponent::BlockAttacksFor(float Seconds)
+{
+	if (const UWorld* World = GetWorld())
+	{
+		NextAttackTime = FMath::Max(NextAttackTime, World->GetTimeSeconds() + Seconds);
+	}
+}
+
 bool UNoFearMeleeComponent::CanAttack() const
 {
 	if (Phase != EPhase::Idle || !IsOwnerAlive() || GetWorld()->GetTimeSeconds() < NextAttackTime || UNoFearPoseComponent::IsActorStaggered(GetOwner()))

@@ -1,6 +1,7 @@
 #include "Core/NoFearHealthComponent.h"
 
 #include "AI/NoFearCombatSubsystem.h"
+#include "AI/NoFearVulnerabilityComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Core/NoFearPlayerController.h"
 #include "Core/NoFearTeam.h"
@@ -130,6 +131,12 @@ float UNoFearHealthComponent::ProcessDamage(float Damage, const FDamageEvent& Da
 			Info.SourceLocation = DamageCauser->GetActorLocation();
 			Info.bHasSource = true;
 		}
+	}
+
+	// Слабые места, броня и окна уязвимости монстра.
+	if (const UNoFearVulnerabilityComponent* Vulnerability = Owner->FindComponentByClass<UNoFearVulnerabilityComponent>())
+	{
+		Multiplier = Vulnerability->ModifyDamageMultiplier(Info, DamageEvent.IsOfType(FPointDamageEvent::ClassID), Multiplier);
 	}
 
 	// Упавшего добивают: здоровья уже нет, урон сокращает время до смерти.

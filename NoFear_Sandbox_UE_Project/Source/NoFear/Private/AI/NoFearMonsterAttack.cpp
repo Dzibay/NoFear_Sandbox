@@ -1,6 +1,7 @@
 #include "AI/NoFearMonsterAttack.h"
 
 #include "AI/NoFearMeleeComponent.h"
+#include "AI/NoFearOpportunitySubsystem.h"
 #include "AI/NoFearSpitProjectile.h"
 #include "AIController.h"
 #include "Animation/NoFearPoseComponent.h"
@@ -69,6 +70,11 @@ void UNoFearMonsterAttack::ApplyHit(UNoFearMeleeComponent* Melee, AActor* Victim
 		if (ACharacter* VictimCharacter = Cast<ACharacter>(Victim))
 		{
 			VictimCharacter->LaunchCharacter(Direction.GetSafeNormal2D() * KnockbackSpeed + FVector::UpVector * KnockbackUpSpeed, true, true);
+		}
+		// Сильный отброс сбивает с ног: метка для добивания (загонщики, ловчий, плевун).
+		if (KnockbackSpeed >= KnockDownMinSpeed)
+		{
+			UNoFearOpportunitySubsystem::AddTag(Victim, ENoFearOpportunity::KnockedDown, KnockDownTime);
 		}
 	}
 	if (HitSound)

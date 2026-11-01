@@ -31,6 +31,18 @@ ANoFearJumperAIController::ANoFearJumperAIController(const FObjectInitializer& O
 	Swipe->WindupTime = 0.25f;
 	Swipe->RecoveryTime = 0.25f;
 	AttackSet.Add(Swipe);
+
+	// Ловчий: голова ×1.5 (от загонщика); любит облитых слизью, отставших и сбитых.
+	KindName = TEXT("Jumper");
+	TargetWeights.Hero = 0.8f;
+	TargetWeights.Companion = 0.8f;
+	TargetWeights.Soldier = 0.8f;
+	TargetWeights.Civilian = 0.4f;
+	OpportunityBonuses.Reset();
+	OpportunityBonuses.Add(ENoFearOpportunity::KnockedDown, 1.f);
+	OpportunityBonuses.Add(ENoFearOpportunity::Slimed, 1.f);
+	OpportunityBonuses.Add(ENoFearOpportunity::Isolated, 1.f);
+	OpportunityBonuses.Add(ENoFearOpportunity::Marked, 1.5f);
 }
 
 void ANoFearJumperAIController::UpdateBot()
@@ -158,6 +170,34 @@ ANoFearSpitterAIController::ANoFearSpitterAIController(const FObjectInitializer&
 	Swipe->Damage = 8.f;
 	Swipe->Cooldown = 1.5f;
 	AttackSet.Add(Swipe);
+
+	// Плевун: кислотный мешок на горле ×2, в замахе плевка ×3 и светится; голова ×1.5.
+	KindName = TEXT("Spitter");
+	FNoFearWeakZone SacOpen;
+	SacOpen.Name = TEXT("SacOpen");
+	SacOpen.Bones = { TEXT("neck_01") };
+	SacOpen.DamageMultiplier = 3.f;
+	SacOpen.Condition = ENoFearWeakCondition::Windup;
+	SacOpen.AttackName = TEXT("Spit");
+	SacOpen.bGlow = true;
+	SacOpen.GlowColor = FLinearColor(0.3f, 1.f, 0.1f);
+	SacOpen.GlowRadius = 11.f;
+	FNoFearWeakZone Sac;
+	Sac.Name = TEXT("Sac");
+	Sac.Bones = { TEXT("neck_01") };
+	Sac.DamageMultiplier = 2.f;
+	// Порядок важен: открытый мешок проверяется раньше обычного.
+	WeakZones.Insert(Sac, 0);
+	WeakZones.Insert(SacOpen, 0);
+
+	TargetWeights.Hero = 0.6f;
+	TargetWeights.Companion = 0.6f;
+	TargetWeights.Soldier = 0.8f;
+	TargetWeights.Civilian = 0.5f;
+	OpportunityBonuses.Reset();
+	OpportunityBonuses.Add(ENoFearOpportunity::KnockedDown, 1.f);
+	OpportunityBonuses.Add(ENoFearOpportunity::Pinned, 0.6f);
+	OpportunityBonuses.Add(ENoFearOpportunity::Marked, 1.5f);
 }
 
 void ANoFearSpitterAIController::ConfigureMelee(UNoFearMeleeComponent* Melee)
@@ -234,4 +274,16 @@ ANoFearTankAIController::ANoFearTankAIController(const FObjectInitializer& Objec
 
 	UNoFearMonsterAttack_Charge* Charge = CreateDefaultSubobject<UNoFearMonsterAttack_Charge>(TEXT("Charge"));
 	AttackSet.Add(Charge);
+
+	// Колосс: броня и пластины — этап М2, пока без слабых мест (окна общие). Любит солдат и тех, кто в кислоте.
+	KindName = TEXT("Tank");
+	WeakZones.Reset();
+	TargetWeights.Hero = 0.8f;
+	TargetWeights.Companion = 0.6f;
+	TargetWeights.Soldier = 1.f;
+	TargetWeights.Civilian = 0.2f;
+	bFinishKnockedDown = false;
+	OpportunityBonuses.Reset();
+	OpportunityBonuses.Add(ENoFearOpportunity::InAcid, 0.5f);
+	OpportunityBonuses.Add(ENoFearOpportunity::Marked, 1.5f);
 }

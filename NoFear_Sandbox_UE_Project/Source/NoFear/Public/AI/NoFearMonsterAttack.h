@@ -74,6 +74,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage", meta = (ClampMin = "0"))
 	float KnockbackUpSpeed = 0.f;
 
+	/** Отброс от этой скорости сбивает с ног: метка KnockedDown на KnockDownTime сек. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage", meta = (ClampMin = "0"))
+	float KnockDownMinSpeed = 600.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage", meta = (ClampMin = "0"))
+	float KnockDownTime = 1.2f;
+
 	// --- Тайминги ---
 
 	/** Замах до удара, сек: монстр разворачивается к цели, игрок успевает среагировать. */

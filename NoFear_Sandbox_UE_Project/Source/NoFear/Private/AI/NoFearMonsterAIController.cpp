@@ -3,6 +3,8 @@
 #include "AI/NoFearBotSubsystem.h"
 #include "AI/NoFearMeleeComponent.h"
 #include "AI/NoFearMonsterAttack.h"
+#include "AI/NoFearOpportunitySubsystem.h"
+#include "AI/NoFearVulnerabilityComponent.h"
 #include "Animation/NoFearPoseComponent.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
@@ -63,6 +65,44 @@ ANoFearMonsterAIController::ANoFearMonsterAIController(const FObjectInitializer&
 
 	static ConstructorHelpers::FObjectFinderOptional<UBehaviorTree> Tree(TEXT("/Game/AI/BT_NoFear_Monster.BT_NoFear_Monster"));
 	BehaviorTree = Tree.Get();
+
+	// Загонщик (и бешеный): голова ×1.5; окно после удара — у компонента уязвимости.
+	FNoFearWeakZone Head;
+	Head.Name = TEXT("Head");
+	Head.Bones = { TEXT("head") };
+	Head.DamageMultiplier = 1.5f;
+	WeakZones.Add(Head);
+
+	OpportunityBonuses.Add(ENoFearOpportunity::KnockedDown, 1.f);
+	OpportunityBonuses.Add(ENoFearOpportunity::Blinded, 0.8f);
+	OpportunityBonuses.Add(ENoFearOpportunity::Marked, 1.5f);
+
+	AggroTargetWeights.Hero = 0.5f;
+	AggroTargetWeights.Companion = 0.5f;
+	AggroTargetWeights.Soldier = 0.5f;
+	AggroTargetWeights.Civilian = 0.5f;
+	AggroTargetWeights.Monster = 0.5f;
+}
+
+FName ANoFearMonsterAIController::GetKindName() const
+{
+	return IsAggro() ? FName(TEXT("Rabid")) : KindName;
+}
+
+bool ANoFearMonsterAIController::IsExhaling() const
+{
+	const UNoFearVulnerabilityComponent* Vulnerability = UNoFearVulnerabilityComponent::Find(GetPawn());
+	return Vulnerability && Vulnerability->IsWindowOpen(ENoFearWeakCondition::Exhale);
+}
+
+float ANoFearMonsterAIController::GetTargetScore(AActor* Candidate) const
+{
+	if (!Candidate || !GetPawn())
+	{
+		return 0.f;
+	}
+	const FNoFearKnownActor* Knowledge = KnownActors.Find(Candidate);
+	return ScoreTarget(Candidate, Knowledge ? *Knowledge : FNoFearKnownActor());
 }
 
 UNoFearMeleeComponent* ANoFearMonsterAIController::GetMeleeComponent() const
@@ -101,6 +141,24 @@ void ANoFearMonsterAIController::OnPossess(APawn* InPawn)
 		Melee->OnAttackFinished.AddUniqueDynamic(this, &ANoFearMonsterAIController::HandleAttackFinished);
 		ConfigureMelee(Melee);
 		ConfiguredMelee = Melee;
+	}
+
+	// Слабые места и окна вида.
+	ChainedAttacks = 0;
+	LastAttackFinishTime = -1.0e9;
+	if (InPawn)
+	{
+		UNoFearVulnerabilityComponent* Vulnerability = InPawn->FindComponentByClass<UNoFearVulnerabilityComponent>();
+		if (!Vulnerability && bAddVulnerabilityIfMissing)
+		{
+			Vulnerability = NewObject<UNoFearVulnerabilityComponent>(InPawn, TEXT("VulnerabilityComponent"));
+			Vulnerability->Zones = WeakZones;
+			Vulnerability->RegisterComponent();
+		}
+		else if (Vulnerability)
+		{
+			Vulnerability->SetZones(WeakZones);
+		}
 	}
 }
 
@@ -246,6 +304,14 @@ void ANoFearMonsterAIController::UpdateAttackToken()
 		return;
 	}
 
+	// Добивание: сбитого с ног рядом бьёт без очереди и без волны стаи.
+	if (bFinishKnockedDown && GetTargetDistance2D() <= FinishDistance
+		&& UNoFearOpportunitySubsystem::HasTag(Target, ENoFearOpportunity::KnockedDown))
+	{
+		bHasAttackToken = true;
+		return;
+	}
+
 	// В стае очередь решает стая: бьют только окружив цель, своей волной. Кого цель бьёт рядом — отвечает без очереди.
 	FNoFearPackMemberView View;
 	if (GetPackView(View) && View.PackSize >= 2 && (View.Target == Target || View.State == ENoFearPackState::Scatter))
@@ -291,6 +357,23 @@ void ANoFearMonsterAIController::HandleAttackFinished(AActor* Target)
 {
 	if (IsAggro())
 	{
+		// Выдох: после серии ударов подряд стоит и тяжело дышит — окно уязвимости, атак нет.
+		const double Now = GetNow();
+		ChainedAttacks = Now - LastAttackFinishTime <= ExhaleChainGap ? ChainedAttacks + 1 : 1;
+		LastAttackFinishTime = Now;
+		if (ExhaleAfterAttacks > 0 && ChainedAttacks >= ExhaleAfterAttacks)
+		{
+			ChainedAttacks = 0;
+			if (UNoFearVulnerabilityComponent* Vulnerability = UNoFearVulnerabilityComponent::Find(GetPawn()))
+			{
+				Vulnerability->OpenWindow(ENoFearWeakCondition::Exhale, ExhaleTime);
+			}
+			if (UNoFearMeleeComponent* Melee = GetMeleeComponent())
+			{
+				Melee->BlockAttacksFor(ExhaleTime);
+			}
+			StopMovement();
+		}
 		return;
 	}
 
@@ -374,10 +457,14 @@ float ANoFearMonsterAIController::ScoreTarget(const AActor* Candidate, const FNo
 		{
 			Score += AggroTargetStickiness;
 		}
+		Score += AggroTargetWeights.Get(UNoFearOpportunitySubsystem::GetTargetCategory(Candidate));
 		return Score;
 	}
 
 	float Score = Super::ScoreTarget(Candidate, Knowledge);
+	// Вкусы вида и метки возможностей (сбит с ног, слизь, помечен...).
+	Score += TargetWeights.Get(UNoFearOpportunitySubsystem::GetTargetCategory(Candidate));
+	Score += UNoFearOpportunitySubsystem::GetOpportunityBonus(Candidate, OpportunityBonuses);
 	if (HasGrudgeAgainst(Candidate))
 	{
 		Score += GrudgeScoreBonus;

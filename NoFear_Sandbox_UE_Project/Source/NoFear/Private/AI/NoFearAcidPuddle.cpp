@@ -1,5 +1,6 @@
 #include "AI/NoFearAcidPuddle.h"
 
+#include "AI/NoFearOpportunitySubsystem.h"
 #include "Components/StaticMeshComponent.h"
 #include "Core/NoFearHealthComponent.h"
 #include "Core/NoFearTeam.h"
@@ -119,5 +120,7 @@ void ANoFearAcidPuddle::DealDamage()
 		Damaged.Add(Victim);
 		UGameplayStatics::ApplyDamage(Victim, DamagePerTick, Shooter ? Shooter->GetController() : nullptr, this, DamageType);
 		TotalDamageDealt += DamagePerTick;
+		// Метка держится, пока жертва стоит в луже (обновляется каждый тик урона).
+		UNoFearOpportunitySubsystem::AddTag(Victim, ENoFearOpportunity::InAcid, TickInterval + 0.2f);
 	}
 }

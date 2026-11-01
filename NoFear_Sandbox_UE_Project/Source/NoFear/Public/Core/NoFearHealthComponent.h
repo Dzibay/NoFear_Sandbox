@@ -58,6 +58,14 @@ struct NOFEAR_API FNoFearDamageInfo
 
 	UPROPERTY(BlueprintReadOnly, Category = "Damage")
 	TSubclassOf<UDamageType> DamageType;
+
+	/** Сработавшее слабое место монстра (UNoFearVulnerabilityComponent). None — мимо зон. */
+	UPROPERTY(BlueprintReadOnly, Category = "Damage")
+	FName WeakZone;
+
+	/** Множитель накопления оглушения от зоны (этап 15). */
+	UPROPERTY(BlueprintReadOnly, Category = "Damage")
+	float StaggerMultiplier = 1.f;
 };
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FNoFearHealthChangedSignature, UNoFearHealthComponent*, Component, float, NewHealth, float, Delta);

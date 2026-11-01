@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "AI/NoFearAIController.h"
+#include "AI/NoFearMonsterTypes.h"
 #include "AI/NoFearPackSubsystem.h"
 #include "NoFearMonsterAIController.generated.h"
 
@@ -156,6 +157,62 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Aggro", meta = (ClampMin = "0"))
 	float AggroTargetStickiness = 0.1f;
 
+	/** Веса целей агрессивного: бьёт кого угодно, монстров тоже. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Aggro")
+	FNoFearTargetWeights AggroTargetWeights;
+
+	/** «Выдох»: после стольких ударов подряд агрессивный стоит и тяжело дышит (окно Exhale). 0 — без выдоха. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Aggro", meta = (ClampMin = "0"))
+	int32 ExhaleAfterAttacks = 3;
+
+	/** Сколько длится выдох, сек: окно открыто, атак нет. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Aggro", meta = (ClampMin = "0"))
+	float ExhaleTime = 1.5f;
+
+	/** Удары считаются «подряд», если между концом одного и концом следующего не больше этого, сек. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Aggro", meta = (ClampMin = "0"))
+	float ExhaleChainGap = 2.5f;
+
+	// --- Данные вида (Docs/Monsters_Design.md) ---
+
+	/** Имя вида для отладки и тестов. У агрессивного всегда Rabid. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Kind")
+	FName KindName = TEXT("Hunter");
+
+	/** Слабые места и броня тела. Ставятся в UNoFearVulnerabilityComponent при вселении. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Kind")
+	TArray<FNoFearWeakZone> WeakZones;
+
+	/** Если у тела нет UNoFearVulnerabilityComponent, добавить его (окна уязвимости есть у всех монстров). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Kind")
+	bool bAddVulnerabilityIfMissing = true;
+
+	/** Веса категорий целей: прибавляются к оценке. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Kind")
+	FNoFearTargetWeights TargetWeights;
+
+	/** На какие метки возможностей охотится вид: метка -> прибавка к оценке цели. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Kind")
+	TMap<ENoFearOpportunity, float> OpportunityBonuses;
+
+	/** Сбитого с ног ближе FinishDistance бьёт без очереди за жетоном (добивание). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Kind")
+	bool bFinishKnockedDown = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Kind", meta = (ClampMin = "0"))
+	float FinishDistance = 800.f;
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
+	FName GetKindName() const;
+
+	/** Сейчас «выдыхает» (агрессивный после серии ударов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
+	bool IsExhaling() const;
+
+	/** Оценка цели (для тестов): то же, что при выборе цели. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
+	float GetTargetScore(AActor* Candidate) const;
+
 protected:
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnUnPossess() override;
@@ -214,4 +271,8 @@ private:
 	double NextRoamTurnTime = 0.0;
 	FVector RoamCenter = FVector::ZeroVector;
 	double NextRoamCenterTime = 0.0;
+
+	/** Удары агрессивного подряд и когда кончился последний (для выдоха). */
+	int32 ChainedAttacks = 0;
+	double LastAttackFinishTime = -1.0e9;
 };

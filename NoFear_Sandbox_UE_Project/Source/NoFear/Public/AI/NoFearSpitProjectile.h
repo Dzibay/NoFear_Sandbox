@@ -34,6 +34,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spit", meta = (ClampMin = "0"))
 	float DirectDamage = 10.f;
 
+	/** Сколько секунд висит метка «слизь» после прямого попадания. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spit", meta = (ClampMin = "0"))
+	float SlimeTime = 4.f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spit")
 	TSubclassOf<UDamageType> DamageType;
 

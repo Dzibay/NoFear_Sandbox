@@ -43,6 +43,18 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Melee")
 	bool IsAttacking() const { return Phase != EPhase::Idle; }
 
+	/** Идёт замах (окно «замах» для слабых мест). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Melee")
+	bool IsInWindup() const { return Phase == EPhase::Windup; }
+
+	/** Идёт восстановление после удара (окно уязвимости). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Melee")
+	bool IsInRecovery() const { return Phase == EPhase::Recovery; }
+
+	/** Не начинать атак ближайшие Seconds секунд (выдох бешеного). */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Melee")
+	void BlockAttacksFor(float Seconds);
+
 	/** Цель на дистанции хотя бы одной атаки (перезарядку не учитывает). */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Melee")
 	bool IsInAttackRange(const AActor* Target) const;
