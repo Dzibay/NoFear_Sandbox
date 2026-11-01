@@ -27,7 +27,7 @@ public:
 
 	// --- Настройки ---
 
-	/** Оружие, которое выдаётся при старте. */
+	/** Оружие, которое выдаётся при старте. Герою с кейсом не выдаётся: его стволы — это стволы из кейса. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapons")
 	TArray<TObjectPtr<UNoFearWeaponData>> StartingWeapons;
 
@@ -102,6 +102,20 @@ public:
 	/** Выдать оружие. Если такое уже есть — добавить патроны в запас. */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Weapon")
 	ANoFearWeapon* AddWeapon(UNoFearWeaponData* WeaponData);
+
+	/**
+	 * Новый ствол отдельным актором, даже если такой уже есть: в кейсе героя два пистолета — два ствола.
+	 * MagazineAmmo — патроны в магазине, -1 — полный.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Weapon")
+	ANoFearWeapon* AddWeaponInstance(UNoFearWeaponData* WeaponData, int32 MagazineAmmo = -1);
+
+	/** Забрать ствол совсем (выброшен из кейса): из рук — сразу, без анимации. Актор уничтожается. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Weapon")
+	void RemoveWeapon(ANoFearWeapon* Weapon);
+
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Weapon")
+	void RemoveAllWeapons();
 
 	/**
 	 * Достать оружие с этим номером. Текущее сначала убирается с анимацией; если во время убирания

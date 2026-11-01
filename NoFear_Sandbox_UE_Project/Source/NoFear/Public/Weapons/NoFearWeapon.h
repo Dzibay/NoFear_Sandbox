@@ -5,6 +5,8 @@
 #include "NoFearWeapon.generated.h"
 
 class ACharacter;
+class UNoFearInventoryComponent;
+class UNoFearItemData;
 class UNoFearWeaponData;
 class USkeletalMeshComponent;
 struct FNoFearImpactEffect;
@@ -74,9 +76,24 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Weapon")
 	void SetAiming(bool bNewAiming);
 
-	/** Добавить патроны в запас (подбор). Возвращает, сколько реально взято. */
+	/**
+	 * Добавить патроны в запас (подбор). Возвращает, сколько реально взято.
+	 * Ствол из кейса кладёт их в кейс, а что не влезло — под ноги: взято всё.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Weapon")
 	int32 AddReserveAmmo(int32 Amount);
+
+	/**
+	 * Ствол из кейса героя: запас — это патроны AmmoItem в кейсе, перезарядка берёт их оттуда.
+	 * Собственный запас ствола тогда не используется.
+	 */
+	void SetAmmoSource(UNoFearInventoryComponent* InSource, UNoFearItemData* InAmmoItem);
+
+	/** Патроны в магазине (ствол из кейса помнит их, пока лежит в кейсе или на земле). */
+	void SetMagazineAmmo(int32 Amount);
+
+	/** Разослать OnAmmoChanged заново: в кейсе изменилось число патронов. */
+	void RefreshAmmo() { BroadcastAmmo(); }
 
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
 	UNoFearWeaponData* GetWeaponData() const { return Data; }
@@ -87,8 +104,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
 	int32 GetMagazineAmmo() const { return MagazineAmmo; }
 
+	/** Запас патронов: свой у ботов, патроны в кейсе у героя. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
-	int32 GetReserveAmmo() const { return ReserveAmmo; }
+	int32 GetReserveAmmo() const;
 
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
 	bool IsAiming() const { return bAiming; }
@@ -184,6 +202,12 @@ private:
 	int32 MagazineAmmo = 0;
 	int32 ReserveAmmo = 0;
 	bool bAiming = false;
+
+	// Запас из кейса (SetAmmoSource).
+	bool bAmmoFromCase = false;
+	TWeakObjectPtr<UNoFearInventoryComponent> AmmoSource;
+	UPROPERTY(Transient)
+	TObjectPtr<UNoFearItemData> AmmoItem;
 
 	// Запрос на огонь
 	bool bTriggerHeld = false;

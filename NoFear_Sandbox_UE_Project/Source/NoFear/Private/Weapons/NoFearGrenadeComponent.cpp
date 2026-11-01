@@ -5,6 +5,8 @@
 #include "Components/StaticMeshComponent.h"
 #include "Core/NoFearCharacter.h"
 #include "EnhancedInputComponent.h"
+#include "Inventory/NoFearInventoryComponent.h"
+#include "Inventory/NoFearItemData.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
@@ -45,6 +47,7 @@ UNoFearGrenadeComponent::UNoFearGrenadeComponent()
 	GrenadeData = DefaultData.Get();
 	static ConstructorHelpers::FObjectFinderOptional<UInputAction> DefaultAction(TEXT("/Game/Input/IA_Grenade.IA_Grenade"));
 	GrenadeAction = DefaultAction.Get();
+	GrenadeItem = TSoftObjectPtr<UNoFearItemData>(FSoftObjectPath(TEXT("/Game/Items/DA_Item_Grenade.DA_Item_Grenade")));
 }
 
 void UNoFearGrenadeComponent::BeginPlay()
@@ -71,15 +74,56 @@ void UNoFearGrenadeComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Super::EndPlay(EndPlayReason);
 }
 
+UNoFearItemData* UNoFearGrenadeComponent::GetGrenadeItem() const
+{
+	if (!LoadedGrenadeItem && !GrenadeItem.IsNull())
+	{
+		LoadedGrenadeItem = GrenadeItem.LoadSynchronous();
+	}
+	return LoadedGrenadeItem;
+}
+
+int32 UNoFearGrenadeComponent::GetGrenadeCount() const
+{
+	if (const UNoFearInventoryComponent* Case = UNoFearInventoryComponent::FindCase(GetOwner()))
+	{
+		return Case->CountItem(GetGrenadeItem());
+	}
+	return GrenadeCount;
+}
+
 void UNoFearGrenadeComponent::SetGrenadeCount(int32 NewCount)
 {
+	if (UNoFearInventoryComponent* Case = UNoFearInventoryComponent::FindCase(GetOwner()))
+	{
+		const int32 Delta = FMath::Max(NewCount, 0) - GetGrenadeCount();
+		if (Delta > 0)
+		{
+			Case->AddItem(GetGrenadeItem(), Delta);
+		}
+		else if (Delta < 0)
+		{
+			Case->RemoveItem(GetGrenadeItem(), -Delta);
+		}
+		return;
+	}
 	bCountSet = true;
 	GrenadeCount = FMath::Clamp(NewCount, 0, MaxGrenades);
 }
 
 void UNoFearGrenadeComponent::AddGrenades(int32 Amount)
 {
-	SetGrenadeCount(GrenadeCount + Amount);
+	SetGrenadeCount(GetGrenadeCount() + Amount);
+}
+
+void UNoFearGrenadeComponent::ConsumeGrenade()
+{
+	if (UNoFearInventoryComponent* Case = UNoFearInventoryComponent::FindCase(GetOwner()))
+	{
+		Case->RemoveItem(GetGrenadeItem(), 1);
+		return;
+	}
+	GrenadeCount = FMath::Max(GrenadeCount - 1, 0);
 }
 
 float UNoFearGrenadeComponent::GetRadius() const
@@ -90,7 +134,7 @@ float UNoFearGrenadeComponent::GetRadius() const
 bool UNoFearGrenadeComponent::CanThrow() const
 {
 	// Раненый лёжа гранату не бросает.
-	if (bOwnerDead || bAiming || bThrowing || GrenadeCount <= 0 || !GrenadeData || !GrenadeClass || UNoFearHealthComponent::IsActorIncapacitated(GetOwner()))
+	if (bOwnerDead || bAiming || bThrowing || GetGrenadeCount() <= 0 || !GrenadeData || !GrenadeClass || UNoFearHealthComponent::IsActorIncapacitated(GetOwner()))
 	{
 		return false;
 	}
@@ -362,7 +406,7 @@ void UNoFearGrenadeComponent::SpawnGrenade(FVector Start, FVector Velocity)
 	SetHeldVisible(false);
 	APawn* Pawn = Cast<APawn>(GetOwner());
 	UWorld* World = GetWorld();
-	if (!Pawn || !World || !GrenadeClass || GrenadeCount <= 0)
+	if (!Pawn || !World || !GrenadeClass || GetGrenadeCount() <= 0)
 	{
 		return;
 	}
@@ -375,7 +419,7 @@ void UNoFearGrenadeComponent::SpawnGrenade(FVector Start, FVector Velocity)
 	Grenade->Data = GrenadeData;
 	UGameplayStatics::FinishSpawningActor(Grenade, SpawnTransform);
 	Grenade->Launch(Velocity);
-	--GrenadeCount;
+	ConsumeGrenade();
 	LastGrenade = Grenade;
 	OnGrenadeThrown.Broadcast(this, Grenade);
 }

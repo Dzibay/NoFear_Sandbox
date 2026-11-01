@@ -8,6 +8,7 @@ class ANoFearGrenade;
 class UInputAction;
 class UInputComponent;
 class UNoFearGrenadeData;
+class UNoFearItemData;
 class UStaticMeshComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNoFearGrenadeThrownSignature, UNoFearGrenadeComponent*, Component, ANoFearGrenade*, Grenade);
@@ -18,6 +19,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNoFearGrenadeThrownSignature, UNoF
  * Игрок: зажал G (GrenadeAction) — оружие прячется, поза Grenade из GASP и замах (поза Throw), HUD рисует дугу и
  * круг поражения; отпустил — бросок по взгляду. Боты бросают через ThrowGrenadeAt. Запас задаётся на BeginPlay
  * (StartingGrenades), поэтому новое тело после респауна снова с полным запасом.
+ * У героя с кейсом (UNoFearInventoryComponent) запас — это предметы GrenadeItem в кейсе, StartingGrenades не нужен.
  */
 UCLASS(ClassGroup = (NoFear), meta = (BlueprintSpawnableComponent))
 class NOFEAR_API UNoFearGrenadeComponent : public UActorComponent
@@ -35,6 +37,10 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grenade", meta = (ClampMin = "0"))
 	int32 MaxGrenades = 3;
+
+	/** Предмет кейса, который бросает G у героя с кейсом. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grenade")
+	TSoftObjectPtr<UNoFearItemData> GrenadeItem;
 
 	/** Сколько гранат на старте. Боты получают свой запас от контроллера (ANoFearAIController::BotGrenades). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grenade", meta = (ClampMin = "0"))
@@ -72,8 +78,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grenade|Bot", meta = (ClampMin = "0"))
 	float BotLandingTolerance = 220.f;
 
+	/** Сколько гранат: свой запас у ботов, гранаты в кейсе у героя. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Grenade")
-	int32 GetGrenadeCount() const { return GrenadeCount; }
+	int32 GetGrenadeCount() const;
 
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Grenade")
 	void SetGrenadeCount(int32 NewCount);
@@ -151,6 +158,9 @@ private:
 	void SetHeldVisible(bool bVisible);
 	void SpawnGrenade(FVector Start, FVector Velocity);
 	void SpawnAimedGrenade();
+	/** Списать брошенную гранату: из кейса или из своего запаса. */
+	void ConsumeGrenade();
+	UNoFearItemData* GetGrenadeItem() const;
 	void FinishThrow();
 	void EndBusy();
 
@@ -163,6 +173,8 @@ private:
 	FVector BotStart = FVector::ZeroVector;
 	FVector BotVelocity = FVector::ZeroVector;
 	int32 GrenadeCount = 0;
+	UPROPERTY(Transient)
+	mutable TObjectPtr<UNoFearItemData> LoadedGrenadeItem;
 	/** Запас уже задан (SetGrenadeCount до BeginPlay — контроллер бота при захвате). */
 	bool bCountSet = false;
 	bool bAiming = false;

@@ -648,6 +648,8 @@ private:
 	/** Порталы страха: NoFearHUDPortal.cpp. */
 	void DrawPortals();
 	void DrawPortalFreeProgress();
+	/** Кейс героя: NoFearHUDInventory.cpp. */
+	void DrawInventory();
 	/** Дуга кольца From..To, разбитая на куски не больше 15°, чтобы оставалась гладкой. */
 	void DrawArc(const FVector2D& Center, float Inner, float Outer, float From, float To, const FLinearColor& Color);
 	void DrawOrderWheel();

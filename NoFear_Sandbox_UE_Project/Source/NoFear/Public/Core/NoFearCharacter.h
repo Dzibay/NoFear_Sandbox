@@ -11,6 +11,7 @@ class UAnimInstance;
 class UMaterialInterface;
 class UNoFearFearComponent;
 class UNoFearGrenadeComponent;
+class UNoFearInventoryComponent;
 class UNoFearPoseComponent;
 class UNoFearWeaponComponent;
 
@@ -99,6 +100,10 @@ public:
 	/** Шкала страха (этап 11). */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Fear")
 	UNoFearFearComponent* GetFearComponent() const { return FearComponent; }
+
+	/** Кейс героя (Docs/Inventory_Design.md). Включается, только когда персонажем управляет игрок. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory")
+	UNoFearInventoryComponent* GetInventoryComponent() const { return InventoryComponent; }
 
 	/**
 	 * Пост-процесс AnimBP с узлом NoFear Pose (генерирует NoFear.GeneratePoseAnimBP: копия пост-процесса манекена с узлом поз).
@@ -219,6 +224,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "NoFear|Fear")
 	TObjectPtr<UNoFearFearComponent> FearComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "NoFear|Inventory")
+	TObjectPtr<UNoFearInventoryComponent> InventoryComponent;
 
 private:
 	void ApplyPoseAnimBlueprint();

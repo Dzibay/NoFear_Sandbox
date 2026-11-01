@@ -8,9 +8,31 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/PlayerController.h"
 #include "InputActionValue.h"
+#include "Inventory/NoFearInventoryComponent.h"
 #include "TimerManager.h"
 #include "Weapons/NoFearWeapon.h"
 #include "Weapons/NoFearWeaponData.h"
+
+namespace
+{
+	/**
+	 * Значение позы в перечислении по имени. У Blueprint-перечислений внутренние имена вида NewEnumerator3,
+	 * поэтому сравниваем и с отображаемым, без пробелов: в данных ствола Pistol1H, в Enum_OverlayState «Pistol 1H».
+	 */
+	int64 FindOverlayValue(const UEnum* Enum, FName StateName)
+	{
+		const FString Wanted = StateName.ToString().Replace(TEXT(" "), TEXT(""));
+		for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+		{
+			if (Enum->GetNameStringByIndex(Index).Replace(TEXT(" "), TEXT("")).Equals(Wanted, ESearchCase::IgnoreCase)
+				|| Enum->GetDisplayNameTextByIndex(Index).ToString().Replace(TEXT(" "), TEXT("")).Equals(Wanted, ESearchCase::IgnoreCase))
+			{
+				return Enum->GetValueByIndex(Index);
+			}
+		}
+		return INDEX_NONE;
+	}
+}
 
 UNoFearWeaponComponent::UNoFearWeaponComponent()
 {
@@ -39,18 +61,23 @@ void UNoFearWeaponComponent::BeginPlay()
 		SetComponentTickEnabled(false);
 	}
 
-	for (UNoFearWeaponData* WeaponData : StartingWeapons)
+	// Стволами героя ведает кейс: он выдаёт и берёт в руки свои, в том числе до этого BeginPlay.
+	const bool bCaseWeapons = UNoFearInventoryComponent::WillManageWeapons(GetOwner());
+	if (!bCaseWeapons)
 	{
-		AddWeapon(WeaponData);
+		for (UNoFearWeaponData* WeaponData : StartingWeapons)
+		{
+			AddWeapon(WeaponData);
+		}
 	}
 
-	if (bEquipOnStart && Weapons.Num() > 0)
-	{
-		EquipWeapon(0);
-	}
-	else
+	if (Weapons.Num() == 0)
 	{
 		SetOverlayState(UnarmedOverlayState);
+	}
+	else if (bEquipOnStart && !bCaseWeapons)
+	{
+		EquipWeapon(0);
 	}
 }
 
@@ -94,10 +121,14 @@ ANoFearWeapon* UNoFearWeaponComponent::AddWeapon(UNoFearWeaponData* WeaponData)
 			return Existing;
 		}
 	}
+	return AddWeaponInstance(WeaponData);
+}
 
+ANoFearWeapon* UNoFearWeaponComponent::AddWeaponInstance(UNoFearWeaponData* WeaponData, int32 MagazineAmmo)
+{
 	ACharacter* Character = Cast<ACharacter>(GetOwner());
 	UWorld* World = GetWorld();
-	if (!Character || !World)
+	if (!WeaponData || !Character || !World)
 	{
 		return nullptr;
 	}
@@ -115,8 +146,88 @@ ANoFearWeapon* UNoFearWeaponComponent::AddWeapon(UNoFearWeaponData* WeaponData)
 	}
 
 	Weapon->Initialize(WeaponData, Character);
+	if (MagazineAmmo >= 0)
+	{
+		Weapon->SetMagazineAmmo(MagazineAmmo);
+	}
 	Weapons.Add(Weapon);
 	return Weapon;
+}
+
+void UNoFearWeaponComponent::RemoveWeapon(ANoFearWeapon* Weapon)
+{
+	const int32 Index = Weapons.IndexOfByKey(Weapon);
+	if (Index == INDEX_NONE)
+	{
+		return;
+	}
+
+	const bool bWasCurrent = Index == CurrentIndex;
+	// Ствол в руках ещё убирался, а игрок уже заказал другой: достанем его, когда этот исчезнет.
+	int32 ResumeIndex = INDEX_NONE;
+	if (bWasCurrent)
+	{
+		if (bSwitching)
+		{
+			ResumeIndex = PendingIndex;
+		}
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(SwitchTimer);
+		}
+		bSwitching = false;
+		PendingIndex = INDEX_NONE;
+		Weapon->Holster();
+		CurrentIndex = INDEX_NONE;
+	}
+	else if (bSwitching && PendingIndex == Index)
+	{
+		PendingIndex = INDEX_NONE;
+	}
+
+	Weapons.RemoveAt(Index);
+	auto Reindex = [Index](int32& Value)
+	{
+		if (Value == Index)
+		{
+			Value = INDEX_NONE;
+		}
+		else if (Value > Index)
+		{
+			--Value;
+		}
+	};
+	Reindex(CurrentIndex);
+	Reindex(PendingIndex);
+	Reindex(ResumeIndex);
+	Reindex(LastEquippedIndex);
+	if (LastEquippedIndex == INDEX_NONE)
+	{
+		LastEquippedIndex = 0;
+	}
+
+	if (bWasCurrent)
+	{
+		// Во время броска гранаты позу держит граната; безоружная встанет, когда руки освободятся.
+		if (!bHandsBusy)
+		{
+			SetOverlayState(UnarmedOverlayState);
+		}
+		OnWeaponChanged.Broadcast(nullptr, Weapon);
+		if (ResumeIndex != INDEX_NONE)
+		{
+			RequestWeapon(ResumeIndex);
+		}
+	}
+	Weapon->Destroy();
+}
+
+void UNoFearWeaponComponent::RemoveAllWeapons()
+{
+	while (Weapons.Num() > 0)
+	{
+		RemoveWeapon(Weapons.Last());
+	}
 }
 
 void UNoFearWeaponComponent::EquipWeapon(int32 Index)
@@ -502,17 +613,10 @@ void UNoFearWeaponComponent::EnforceOverlayState()
 		return;
 	}
 
-	const FString Wanted = DesiredOverlayState.ToString();
-	for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+	const int64 Wanted = FindOverlayValue(Enum, DesiredOverlayState);
+	if (Wanted != INDEX_NONE && Wanted != Current)
 	{
-		if (Enum->GetNameStringByIndex(Index) == Wanted || Enum->GetDisplayNameTextByIndex(Index).ToString() == Wanted)
-		{
-			if (Enum->GetValueByIndex(Index) != Current)
-			{
-				SetOverlayState(DesiredOverlayState);
-			}
-			return;
-		}
+		SetOverlayState(DesiredOverlayState);
 	}
 }
 
@@ -620,20 +724,10 @@ void UNoFearWeaponComponent::SetOverlayState(FName StateName) const
 		return;
 	}
 
-	// У Blueprint-перечислений внутренние имена вида NewEnumerator3, поэтому сравниваем и с отображаемым.
-	const FString Wanted = StateName.ToString();
-	int64 Value = INDEX_NONE;
-	for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
-	{
-		if (Enum->GetNameStringByIndex(Index) == Wanted || Enum->GetDisplayNameTextByIndex(Index).ToString() == Wanted)
-		{
-			Value = Enum->GetValueByIndex(Index);
-			break;
-		}
-	}
+	const int64 Value = FindOverlayValue(Enum, StateName);
 	if (Value == INDEX_NONE)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("NoFearWeaponComponent: в %s нет позы '%s'"), *Enum->GetName(), *Wanted);
+		UE_LOG(LogTemp, Warning, TEXT("NoFearWeaponComponent: в %s нет позы '%s'"), *Enum->GetName(), *StateName.ToString());
 		return;
 	}
 	DesiredOverlayState = StateName;

@@ -31,6 +31,12 @@ def cmd(c):
     unreal.SystemLibrary.execute_console_command(w, c, pc)
 
 
+# Герой начинает с минимумом в кейсе (Docs/Inventory_Design.md), а сценариям нужны все стволы и гранаты.
+# Сценарий, которому нужен стартовый минимум, ставит KIT = False до exec этого файла.
+if globals().get('KIT', True):
+    cmd('NoFear.Inv.Kit')
+
+
 def V(x, y, z=0.0):
     return unreal.Vector(x * 100.0, y * 100.0, z * 100.0)
 

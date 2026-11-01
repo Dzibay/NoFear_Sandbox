@@ -359,6 +359,7 @@ void ANoFearHUD::DrawHUD()
 		{
 			DrawWeaponSlots();
 		}
+		DrawInventory();
 		DrawReviveProgress();
 		DrawCalmProgress();
 		if (bShowPortals)

@@ -7,6 +7,7 @@
 #include "Camera/PlayerCameraManager.h"
 #include "Core/NoFearBraceletComponent.h"
 #include "Core/NoFearHealthComponent.h"
+#include "Inventory/NoFearInventoryComponent.h"
 #include "Components/DecalComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Curves/CurveFloat.h"
@@ -851,7 +852,7 @@ void ANoFearWeapon::SetAiming(bool bNewAiming)
 
 bool ANoFearWeapon::Reload()
 {
-	if (!Data || State != ENoFearWeaponState::Idle || MagazineAmmo >= Data->MagazineSize || ReserveAmmo <= 0)
+	if (!Data || State != ENoFearWeaponState::Idle || MagazineAmmo >= Data->MagazineSize || GetReserveAmmo() <= 0)
 	{
 		return false;
 	}
@@ -896,9 +897,17 @@ void ANoFearWeapon::FinishReload()
 	}
 
 	const int32 Needed = Data->MagazineSize - MagazineAmmo;
-	const int32 Taken = FMath::Min(Needed, ReserveAmmo);
-	MagazineAmmo += Taken;
-	ReserveAmmo -= Taken;
+	if (bAmmoFromCase)
+	{
+		UNoFearInventoryComponent* Source = AmmoSource.Get();
+		MagazineAmmo += Source && AmmoItem ? Source->RemoveItem(AmmoItem, Needed) : 0;
+	}
+	else
+	{
+		const int32 Taken = FMath::Min(Needed, ReserveAmmo);
+		MagazineAmmo += Taken;
+		ReserveAmmo -= Taken;
+	}
 	BroadcastAmmo();
 
 	SetState(ENoFearWeaponState::Idle);
@@ -911,6 +920,16 @@ int32 ANoFearWeapon::AddReserveAmmo(int32 Amount)
 	if (!Data || Amount <= 0)
 	{
 		return 0;
+	}
+	if (bAmmoFromCase)
+	{
+		UNoFearInventoryComponent* Source = AmmoSource.Get();
+		if (!Source || !AmmoItem)
+		{
+			return 0;
+		}
+		Source->AddItemOrDrop(AmmoItem, Amount);
+		return Amount;
 	}
 	const int32 Taken = FMath::Min(Amount, Data->MaxReserveAmmo - ReserveAmmo);
 	if (Taken > 0)
@@ -934,9 +953,37 @@ void ANoFearWeapon::SetState(ENoFearWeaponState NewState)
 	}
 }
 
+void ANoFearWeapon::SetAmmoSource(UNoFearInventoryComponent* InSource, UNoFearItemData* InAmmoItem)
+{
+	bAmmoFromCase = InSource != nullptr;
+	AmmoSource = InSource;
+	AmmoItem = InAmmoItem;
+	if (bAmmoFromCase && !AmmoItem)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("NoFearWeapon: у ствола %s из кейса не задан AmmoItem — перезаряжаться нечем"), *GetNameSafe(Data));
+	}
+	BroadcastAmmo();
+}
+
+void ANoFearWeapon::SetMagazineAmmo(int32 Amount)
+{
+	MagazineAmmo = FMath::Clamp(Amount, 0, Data ? Data->MagazineSize : Amount);
+	BroadcastAmmo();
+}
+
+int32 ANoFearWeapon::GetReserveAmmo() const
+{
+	if (bAmmoFromCase)
+	{
+		const UNoFearInventoryComponent* Source = AmmoSource.Get();
+		return Source && AmmoItem ? Source->CountItem(AmmoItem) : 0;
+	}
+	return ReserveAmmo;
+}
+
 void ANoFearWeapon::BroadcastAmmo()
 {
-	OnAmmoChanged.Broadcast(MagazineAmmo, ReserveAmmo);
+	OnAmmoChanged.Broadcast(MagazineAmmo, GetReserveAmmo());
 }
 
 FVector ANoFearWeapon::GetMuzzleLocation() const

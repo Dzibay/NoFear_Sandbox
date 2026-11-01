@@ -16,6 +16,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
+#include "Inventory/NoFearInventoryComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Perception/AIPerceptionComponent.h"
@@ -31,6 +32,7 @@ ANoFearCharacter::ANoFearCharacter()
 	HealthComponent = CreateDefaultSubobject<UNoFearHealthComponent>(TEXT("HealthComponent"));
 	PoseComponent = CreateDefaultSubobject<UNoFearPoseComponent>(TEXT("PoseComponent"));
 	FearComponent = CreateDefaultSubobject<UNoFearFearComponent>(TEXT("FearComponent"));
+	InventoryComponent = CreateDefaultSubobject<UNoFearInventoryComponent>(TEXT("InventoryComponent"));
 	PoseAnimBlueprint = TSoftClassPtr<UAnimInstance>(FSoftObjectPath(TEXT("/Game/Blueprints/ABP_NoFearPose.ABP_NoFearPose_C")));
 
 	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> MaskedMaterial(
@@ -438,6 +440,10 @@ void ANoFearCharacter::NotifyControllerChanged()
 	if (WeaponComponent)
 	{
 		WeaponComponent->HandleControllerChanged();
+	}
+	if (InventoryComponent)
+	{
+		InventoryComponent->HandleControllerChanged();
 	}
 }
 
