@@ -318,9 +318,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Tank")
 	int32 GetShieldedAllyCount() const { return ShieldedAllyCount; }
 
-	/** Включить ярость сейчас (отладка, будущий триггер шептуна). */
+	/** Включить ярость сейчас: Duration > 0 — на столько секунд (смерть шептуна), иначе навсегда. */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Tank")
-	void StartRage();
+	void StartRage(float Duration = 0.f);
 
 	virtual void Roar() override;
 
@@ -359,4 +359,297 @@ private:
 	float BaseChargeCooldown = 0.f;
 	float BaseChargeMinRange = 0.f;
 	float BaseMaxWalkSpeed = 0.f;
+	/** Ярость на время (смерть шептуна); 0 — навсегда (здоровье). */
+	double RageUntil = 0.0;
+};
+
+class UAudioComponent;
+class USoundBase;
+class UNoFearHealthComponent;
+struct FNoFearDamageInfo;
+
+/**
+ * Шептун (раздел 4.6 Docs/Monsters_Design.md): слабый, сам не дерётся — пугает людей, ослабляет их и усиливает своих.
+ * - Держится в KeepMinDistance–KeepMaxDistance от ближайшего вооружённого человека, за колоссом, если тот рядом.
+ * - Аура: люди в AuraRadius (сквозь стены) получают страх, герой — через браслет (источник «Шёпот»). Слышен шёпот.
+ * - Крик-волна раз в ScreamInterval: замах ScreamWindup (голова светится и получает ×3), потом страх в ScreamRadius и
+ *   паника мирных. Урон не меньше ScreamInterruptDamage за замах срывает крик и оглушает шептуна.
+ * - Метка жертвы раз в MarkInterval: самый напуганный человек в MarkRange, канал MarkChannelTime с лучом. Метка
+ *   (ENoFearOpportunity::Marked) висит MarkDuration: страх помеченного не спадает и растёт, монстры бьют его первым.
+ *   Канал срывает урон не меньше MarkInterruptFraction здоровья или потеря видимости.
+ * - Видения: боты-люди в ауре со страхом от VisionMinFear время от времени стреляют в пустоту (UNoFearCombatComponent::SeePhantom).
+ * - Бафф: монстры в BuffRadius быстрее, сильнее, чаще бьют (ApplyWhisperBuff).
+ * - Охрана: ранили или человек ближе GuardTriggerRadius — два ближайших загонщика или ловчих идут на обидчика,
+ *   колосс закрывает линию огня, сам шептун уходит фазовым шагом.
+ * - Смерть: всё пропадает сразу, колоссы рядом впадают в ярость.
+ * Тело: CBP_Bot_Whisperer.
+ */
+UCLASS(Blueprintable)
+class NOFEAR_API ANoFearWhispererAIController : public ANoFearMonsterAIController
+{
+	GENERATED_BODY()
+
+public:
+	ANoFearWhispererAIController(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+
+	// --- Место ---
+
+	/** Держится в этом коридоре расстояний от ближайшего вооружённого человека, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Position", meta = (ClampMin = "0"))
+	float KeepMinDistance = 1500.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Position", meta = (ClampMin = "0"))
+	float KeepMaxDistance = 2200.f;
+
+	/** Колосс ближе этого — шептун встаёт в его тень, столько см позади него от стрелков. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Position", meta = (ClampMin = "0"))
+	float TankShadeRange = 1500.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Position", meta = (ClampMin = "0"))
+	float TankShadeDistance = 250.f;
+
+	// --- Аура ---
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Aura", meta = (ClampMin = "0"))
+	float AuraRadius = 1200.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Aura", meta = (ClampMin = "0"))
+	float AuraFearPerSecond = 3.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Aura", meta = (ClampMin = "0", ClampMax = "100"))
+	float AuraFearCap = 85.f;
+
+	/** Шёпот (зацикливается), громче ближе к шептуну. Пусто — без звука. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Aura")
+	TSoftObjectPtr<USoundBase> WhisperSound;
+
+	// --- Крик-волна ---
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Scream", meta = (ClampMin = "0"))
+	float ScreamInterval = 14.f;
+
+	/** Замах: шептун стоит, голова светится и уязвима. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Scream", meta = (ClampMin = "0.1"))
+	float ScreamWindup = 1.5f;
+
+	/** Кричит, только если цель ближе этого, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Scream", meta = (ClampMin = "0"))
+	float ScreamTargetRange = 2500.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Scream", meta = (ClampMin = "0"))
+	float ScreamRadius = 1800.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Scream", meta = (ClampMin = "0"))
+	float ScreamFear = 22.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Scream", meta = (ClampMin = "0", ClampMax = "100"))
+	float ScreamFearCap = 95.f;
+
+	/** Столько урона за замах срывает крик. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Scream", meta = (ClampMin = "0"))
+	float ScreamInterruptDamage = 15.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Scream", meta = (ClampMin = "0"))
+	float ScreamStunTime = 1.5f;
+
+	// --- Метка ---
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Mark", meta = (ClampMin = "0"))
+	float MarkInterval = 20.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Mark", meta = (ClampMin = "0"))
+	float MarkRange = 2500.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Mark", meta = (ClampMin = "0.1"))
+	float MarkChannelTime = 3.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Mark", meta = (ClampMin = "0"))
+	float MarkDuration = 20.f;
+
+	/** Страх помеченного растёт на столько в секунду (и не спадает). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Mark", meta = (ClampMin = "0"))
+	float MarkFearPerSecond = 1.f;
+
+	/** Урон за канал от этой доли здоровья срывает метку. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Mark", meta = (ClampMin = "0", ClampMax = "1"))
+	float MarkInterruptFraction = 0.2f;
+
+	// --- Видения ---
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Visions", meta = (ClampMin = "0", ClampMax = "100"))
+	float VisionMinFear = 60.f;
+
+	/** Видение у одного из ботов раз в столько секунд (случайно в пределах). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Visions")
+	FVector2D VisionInterval = FVector2D(6.f, 10.f);
+
+	/** Ложный монстр в стольких см от бота. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Visions")
+	FVector2D VisionDistance = FVector2D(800.f, 1500.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Visions")
+	FVector2D VisionDuration = FVector2D(2.f, 3.f);
+
+	// --- Бафф ---
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Buff", meta = (ClampMin = "0"))
+	float BuffRadius = 1200.f;
+
+	// --- Охрана ---
+
+	/** Человек ближе этого — охрана поднимается, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Guard", meta = (ClampMin = "0"))
+	float GuardTriggerRadius = 900.f;
+
+	/** Сколько ближайших загонщиков и ловчих идут на обидчика и на сколько секунд. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Guard", meta = (ClampMin = "0"))
+	int32 GuardDefenders = 2;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Guard", meta = (ClampMin = "0"))
+	float GuardTime = 10.f;
+
+	/** Охрана поднимается не чаще, чем раз в столько секунд. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Guard", meta = (ClampMin = "0"))
+	float GuardCooldown = 2.f;
+
+	/** Колосс ближе этого идёт закрывать линию огня, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Guard", meta = (ClampMin = "0"))
+	float TankCoverRange = 2000.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Guard", meta = (ClampMin = "0"))
+	float PhaseStepDistance = 500.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Guard", meta = (ClampMin = "0"))
+	float PhaseStepCooldown = 8.f;
+
+	// --- Смерть ---
+
+	/** Колоссы ближе этого впадают в ярость на DeathRageTime секунд, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Death", meta = (ClampMin = "0"))
+	float DeathRageRange = 2000.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Death", meta = (ClampMin = "0"))
+	float DeathRageTime = 20.f;
+
+	// --- Состояние (для тестов) ---
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	bool IsScreamWindup() const { return bScreamWindup; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	int32 GetScreamCount() const { return ScreamCount; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	int32 GetScreamInterruptCount() const { return ScreamInterruptCount; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	AActor* GetMarkTarget() const;
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	bool IsChannelingMark() const { return bChanneling; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	int32 GetMarkCount() const { return MarkCount; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	int32 GetMarkInterruptCount() const { return MarkInterruptCount; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	int32 GetVisionCount() const { return VisionCount; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	int32 GetPhaseStepCount() const { return PhaseStepCount; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	int32 GetGuardCount() const { return GuardCount; }
+
+	/** Сколько монстров под баффом на последнем пересчёте. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	int32 GetBuffedCount() const { return BuffedCount; }
+
+	/** Начать канал метки на Victim сейчас (отладка и тесты). */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Whisperer")
+	bool StartMark(AActor* Victim);
+
+	/** Фазовый шаг прочь от From (отладка и тесты). */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Whisperer")
+	bool PhaseStep(FVector From);
+
+	/** Поднять охрану против Offender (отладка и тесты). */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Whisperer")
+	void RaiseGuard(AActor* Offender);
+
+	/** Видение у бота сейчас (отладка и тесты). */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Whisperer")
+	bool SendVision(APawn* Victim);
+
+	/** Замах крика вместо рыка. */
+	virtual void Roar() override;
+	virtual bool IsRingFighter() const override { return false; }
+
+protected:
+	virtual void OnPossess(APawn* InPawn) override;
+	virtual void OnUnPossess() override;
+	virtual void UpdateBot() override;
+	virtual bool WantsFreeAttack(AActor* Target) override;
+
+private:
+	UFUNCTION()
+	void HandleDamaged(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info);
+
+	UFUNCTION()
+	void HandleDeath(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info);
+
+	UFUNCTION()
+	void HandleWhisperFinished();
+
+	void UpdateAura(float DeltaTime);
+	void UpdateBuff();
+	void UpdateVisions();
+	void UpdateMark(float DeltaTime);
+	void UpdateGuardTrigger();
+	void UpdatePosition();
+	void FinishScream();
+	void CancelScream();
+	void CancelMark();
+	/** Всё, что держит шептун, пропадает: смерть или уход тела. */
+	void ClearEffects();
+	/** Ближайший живой враждебный человек (вооружённый, если bArmed) и расстояние до него. */
+	APawn* FindNearestHuman(bool bArmed, float& OutDistance) const;
+	bool CanSee(const AActor* Other) const;
+	void Stun(const FVector& From);
+
+	TWeakObjectPtr<UAudioComponent> WhisperAudio;
+	TWeakObjectPtr<UNoFearHealthComponent> BoundHealth;
+
+	bool bScreamWindup = false;
+	float ScreamDamage = 0.f;
+	double NextScreamTime = 0.0;
+	FTimerHandle ScreamTimer;
+	int32 ScreamCount = 0;
+	int32 ScreamInterruptCount = 0;
+
+	TWeakObjectPtr<AActor> MarkVictim;
+	TWeakObjectPtr<AActor> ChannelVictim;
+	bool bChanneling = false;
+	double ChannelEndTime = 0.0;
+	double MarkUntil = 0.0;
+	double NextMarkTime = 0.0;
+	float ChannelDamage = 0.f;
+	/** Ниже этого страх помеченного не опускается (растёт на MarkFearPerSecond). */
+	float MarkFearFloor = 0.f;
+	int32 MarkCount = 0;
+	int32 MarkInterruptCount = 0;
+
+	double NextVisionTime = 0.0;
+	int32 VisionCount = 0;
+	TArray<TWeakObjectPtr<APawn>> VisionVictims;
+
+	double NextGuardTime = 0.0;
+	double NextPhaseStepTime = 0.0;
+	int32 GuardCount = 0;
+	int32 PhaseStepCount = 0;
+	int32 BuffedCount = 0;
+
+	double LastUpdateTime = -1.0;
 };

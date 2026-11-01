@@ -112,6 +112,29 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Suppression")
 	FVector GetLastShotOrigin() const { return LastShotOrigin; }
 
+	// --- Видения (шептун) ---
+
+	/**
+	 * Ложный монстр в Point: Duration секунд бот стоит, смотрит туда и стреляет в пустоту — тратит патроны и шумит.
+	 * Дерево бота на это время на паузе.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Combat|Phantom")
+	void SeePhantom(FVector Point, float Duration);
+
+	/** Видение пропало (кончилось время, шептун погиб). */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Combat|Phantom")
+	void ClearPhantom();
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Combat|Phantom")
+	bool IsSeeingPhantom() const { return PhantomUntil > 0.0; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Combat|Phantom")
+	FVector GetPhantomPoint() const { return PhantomPoint; }
+
+	/** Сколько видений было с появления (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Combat|Phantom")
+	int32 GetPhantomCount() const { return PhantomCount; }
+
 	UPROPERTY(BlueprintAssignable, Category = "NoFear|Combat")
 	FNoFearTargetChangedSignature OnTargetChanged;
 
@@ -268,6 +291,7 @@ private:
 	void StartAcquisition();
 	void UpdateLineOfSight();
 	void UpdateSuppression(float DeltaTime);
+	void UpdatePhantom();
 	void RefreshSuppressedState();
 	void WriteBlackboard();
 
@@ -293,4 +317,10 @@ private:
 	double AimStartTime = 0.0;
 	double ReadyToFireTime = 0.0;
 	double LastSuppressionTime = -1.0e9;
+
+	FVector PhantomPoint = FVector::ZeroVector;
+	double PhantomUntil = 0.0;
+	double NextPhantomTrigger = 0.0;
+	bool bPhantomTriggerHeld = false;
+	int32 PhantomCount = 0;
 };

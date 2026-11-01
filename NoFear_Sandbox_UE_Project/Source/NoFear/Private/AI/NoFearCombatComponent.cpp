@@ -2,7 +2,14 @@
 #include "Core/NoFearPerf.h"
 
 #include "AI/NoFearCombatSubsystem.h"
+#include "AI/NoFearAIController.h"
+#include "AIController.h"
 #include "Animation/NoFearPoseComponent.h"
+#include "BrainComponent.h"
+#include "Core/NoFearCharacter.h"
+#include "Weapons/NoFearWeapon.h"
+#include "Weapons/NoFearWeaponComponent.h"
+#include "Weapons/NoFearWeaponData.h"
 #include "Core/NoFearFearComponent.h"
 #include "Core/NoFearFearSubsystem.h"
 #include "Core/NoFearHealthComponent.h"
@@ -127,7 +134,123 @@ void UNoFearCombatComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 
 	UpdateLineOfSight();
 	UpdateSuppression(DeltaTime);
+	UpdatePhantom();
 	WriteBlackboard();
+}
+
+// --- Видения ---
+
+void UNoFearCombatComponent::SeePhantom(FVector Point, float Duration)
+{
+	APawn* Pawn = Cast<APawn>(GetOwner());
+	AAIController* Controller = Pawn ? Cast<AAIController>(Pawn->GetController()) : nullptr;
+	if (!Controller || Duration <= 0.f || UNoFearHealthComponent::IsActorIncapacitated(Pawn))
+	{
+		return;
+	}
+	// Дерево уже держат пошатывание, граната или портал — им не до видений.
+	UBrainComponent* Brain = Controller->BrainComponent;
+	if (!IsSeeingPhantom())
+	{
+		if (Brain && Brain->IsPaused())
+		{
+			return;
+		}
+		if (Brain)
+		{
+			Brain->PauseLogic(TEXT("Phantom"));
+		}
+	}
+	PhantomPoint = Point;
+	PhantomUntil = GetNow() + Duration;
+	NextPhantomTrigger = 0.0;
+	++PhantomCount;
+	Controller->StopMovement();
+	Controller->SetFocalPoint(Point, EAIFocusPriority::Gameplay);
+}
+
+void UNoFearCombatComponent::ClearPhantom()
+{
+	if (!IsSeeingPhantom())
+	{
+		return;
+	}
+	PhantomUntil = 0.0;
+	APawn* Pawn = Cast<APawn>(GetOwner());
+	if (const ANoFearCharacter* Character = Cast<ANoFearCharacter>(Pawn))
+	{
+		if (UNoFearWeaponComponent* Weapons = Character->GetWeaponComponent())
+		{
+			Weapons->StopFire();
+		}
+	}
+	bPhantomTriggerHeld = false;
+	AAIController* Controller = Pawn ? Cast<AAIController>(Pawn->GetController()) : nullptr;
+	if (!Controller)
+	{
+		return;
+	}
+	// Паузу перехватили граната или портал — фокус и дерево теперь их.
+	const ANoFearAIController* Bot = Cast<ANoFearAIController>(Controller);
+	if (Bot && (Bot->IsEvadingGrenade() || Bot->IsPortalControlled()))
+	{
+		return;
+	}
+	Controller->ClearFocus(EAIFocusPriority::Gameplay);
+	if (Controller->BrainComponent && Controller->BrainComponent->IsPaused() && !UNoFearHealthComponent::IsActorIncapacitated(Pawn))
+	{
+		Controller->BrainComponent->ResumeLogic(TEXT("Phantom over"));
+	}
+}
+
+void UNoFearCombatComponent::UpdatePhantom()
+{
+	if (!IsSeeingPhantom())
+	{
+		return;
+	}
+	const ANoFearCharacter* Character = Cast<ANoFearCharacter>(GetOwner());
+	const double Now = GetNow();
+	const ANoFearAIController* Bot = Character ? Cast<ANoFearAIController>(Character->GetController()) : nullptr;
+	if (!Character || Now >= PhantomUntil || UNoFearHealthComponent::IsActorIncapacitated(Character)
+		|| (Bot && (Bot->IsEvadingGrenade() || Bot->IsPortalControlled())))
+	{
+		ClearPhantom();
+		return;
+	}
+	UNoFearWeaponComponent* Weapons = Character->GetWeaponComponent();
+	ANoFearWeapon* Weapon = Weapons ? Weapons->GetCurrentWeapon() : nullptr;
+	if (!Weapon || !Weapon->GetWeaponData() || Weapon->GetWeaponState() != ENoFearWeaponState::Idle)
+	{
+		return;
+	}
+	if (Weapon->GetMagazineAmmo() <= 0)
+	{
+		Weapons->StopFire();
+		bPhantomTriggerHeld = false;
+		Weapons->Reload();
+		return;
+	}
+	// Ствол сначала доворачивается на пустое место.
+	const FVector ToPoint = (PhantomPoint - Character->GetActorLocation()).GetSafeNormal2D();
+	if (FVector::DotProduct(Character->GetBaseAimRotation().Vector().GetSafeNormal2D(), ToPoint) < 0.9f)
+	{
+		return;
+	}
+	if (Weapon->GetWeaponData()->FireMode == ENoFearFireMode::Auto)
+	{
+		if (!bPhantomTriggerHeld)
+		{
+			Weapons->StartFire();
+			bPhantomTriggerHeld = true;
+		}
+	}
+	else if (Now >= NextPhantomTrigger)
+	{
+		Weapons->StartFire();
+		Weapons->StopFire();
+		NextPhantomTrigger = Now + FMath::FRandRange(0.2f, 0.4f);
+	}
 }
 
 AActor* UNoFearCombatComponent::GetThreatActor() const
@@ -217,7 +340,12 @@ FVector UNoFearCombatComponent::ComputeShotDirection(FVector MuzzleLocation)
 	AActor* Target = CurrentTarget.Get();
 
 	FVector AimPoint;
-	if (Target && bHasLineOfSight)
+	if (IsSeeingPhantom())
+	{
+		// Видение: огонь по пустому месту.
+		AimPoint = PhantomPoint;
+	}
+	else if (Target && bHasLineOfSight)
 	{
 		const bool bHead = FMath::FRand() < HeadshotChance;
 		AimPoint = GetTargetAimPoint(Target, bHead) - Target->GetVelocity() * TrackingLag;

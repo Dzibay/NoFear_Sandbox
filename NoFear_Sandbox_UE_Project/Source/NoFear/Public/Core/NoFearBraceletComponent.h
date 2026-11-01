@@ -334,6 +334,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Bracelet")
 	float ReceiveMonsterRoar(float Amount, float Cap, FVector Location, AActor* Source);
 
+	/** Страх героя от шептуна (аура, крик, метка): источник Whisper. Возвращает, на сколько вырос страх. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Bracelet")
+	float ReceiveWhisper(float Amount, float Cap, FVector Location, AActor* Source);
+
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Bracelet")
 	void NotifyCalmedCivilian();
 

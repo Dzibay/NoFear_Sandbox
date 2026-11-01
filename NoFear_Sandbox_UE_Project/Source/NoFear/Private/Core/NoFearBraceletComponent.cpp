@@ -36,6 +36,7 @@ namespace NoFearBracelet
 	const FName Corpse(TEXT("Corpse"));
 	const FName Relief(TEXT("Relief"));
 	const FName Stabilize(TEXT("Stabilize"));
+	const FName Whisper(TEXT("Whisper"));
 
 	/** 0 у From, 1 у To, между — линейно. */
 	float Ramp(float Value, float From, float To)
@@ -541,6 +542,11 @@ float UNoFearBraceletComponent::ReceiveMonsterRoar(float Amount, float Cap, FVec
 	return AddHeroFear(NoFearBracelet::Monster, Amount, Cap, Location, Source);
 }
 
+float UNoFearBraceletComponent::ReceiveWhisper(float Amount, float Cap, FVector Location, AActor* Source)
+{
+	return AddHeroFear(NoFearBracelet::Whisper, Amount, Cap, Location, Source);
+}
+
 void UNoFearBraceletComponent::ReceiveDanger(ENoFearDangerType Type, AActor* Source, FVector ThreatLocation)
 {
 	APawn* Pawn = GetHeroPawn();
@@ -1025,11 +1031,11 @@ void UNoFearBraceletComponent::PlayBeep()
 FString UNoFearBraceletComponent::GetDebugText() const
 {
 	return FString::Printf(
-		TEXT("HERO fear %.1f (fx %.1f) | monsters %d near %.0f | spread x%.2f reload x%.2f shake %.2f° | HR %.0f beats %d | stupor %s n=%d cd %.1f | stab cd %.1f | breath %.2f%s%s | src M%.0f H%.0f D%.0f C%.0f F%.0f B%.0f R%.0f S%.0f"),
+		TEXT("HERO fear %.1f (fx %.1f) | monsters %d near %.0f | spread x%.2f reload x%.2f shake %.2f° | HR %.0f beats %d | stupor %s n=%d cd %.1f | stab cd %.1f | breath %.2f%s%s | src M%.0f H%.0f D%.0f C%.0f F%.0f B%.0f R%.0f S%.0f W%.0f"),
 		GetFear(), EffectFear, VisibleMonsters, NearestMonsterDistance, GetSpreadMultiplier(), GetReloadSpeed(), CurrentShakeDegrees,
 		GetHeartRate(), HeartbeatCount, bInStupor ? TEXT("ON") : TEXT("off"), StuporCount, GetStuporCooldownRemaining(),
 		GetStabilizeCooldownRemaining(), Breath, bHoldingBreath ? TEXT(" HOLD") : TEXT(""), IsBreathLocked() ? TEXT(" LOCK") : TEXT(""),
 		GetSourceTotal(NoFearBracelet::Monster), GetSourceTotal(NoFearBracelet::Health), GetSourceTotal(NoFearBracelet::Damage),
 		GetSourceTotal(NoFearBracelet::Companion), GetSourceTotal(NoFearBracelet::Combat), GetSourceTotal(NoFearBracelet::Corpse),
-		GetSourceTotal(NoFearBracelet::Relief), GetSourceTotal(NoFearBracelet::Stabilize));
+		GetSourceTotal(NoFearBracelet::Relief), GetSourceTotal(NoFearBracelet::Stabilize), GetSourceTotal(NoFearBracelet::Whisper));
 }

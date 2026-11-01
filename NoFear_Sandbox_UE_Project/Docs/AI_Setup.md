@@ -26,6 +26,7 @@ C:\NoFear_Sandbox  →  C:\Users\долбаеб\Desktop\NoFear_Sandbox   (juncti
 | `CBP_Bot_Jumper` | Прыгун | Monster | жёлто-оранжевый, ×0.85 | `NoFearJumperAIController` | 60 HP. Прыгает на цель издалека, отскакивает и кружит, уклоняется от прицела (раздел 8.6) |
 | `CBP_Bot_Spitter` | Плевун | Monster | зелёный | `NoFearSpitterAIController` | 80 HP. Держится в 800–1500 см, плюёт кислотой по дуге, лужа жжёт; подошли — отступает |
 | `CBP_Bot_Tank` | Танк | Monster | бордовый, ×1.3 | `NoFearTankAIController` | 400 HP. Ходит шагом, бьёт широко с отбрасыванием, таранит; врезавшись в стену, оглушён (передняя броня снята), хватает и бросает, ревёт, под щитом, в ярости ниже половины здоровья; см. 8.8 |
+| `CBP_Bot_Whisperer` | Шептун | Monster | тёмно-фиолетовый, ×0.8 | `NoFearWhispererAIController` | 50 HP. Держится позади стаи, аура страха, крик, метка, видения у ботов, бафф и охрана; см. 8.9 |
 | `CBP_Bot_Enemy` | Противник | Enemy | оранжевый | `NoFearShooterAIController` | Стоит на своей точке с винтовкой, стреляет очередями, сближается с целью |
 | `CBP_Bot_Ally` | Союзник | Ally | синий | `NoFearShooterAIController` | Как противник, но воюет за игрока. За игроком не ходит |
 | `CBP_Bot_Companion` | Напарник | Ally | зелёный | `NoFearCompanionAIController` | До вербовки — обычный союзник. После вербовки ходит за игроком и воюет рядом с ним |
@@ -53,8 +54,9 @@ CBP_SandboxCharacter                          AAIController
     ├── CBP_Bot_Monster       + Melee             ├── ANoFearMonsterAIController      ближний бой, BT_NoFear_Monster
     │   ├── CBP_Bot_AggroMonster                  │   ├── ANoFearJumperAIController   прыжок, уклонение
     │   ├── CBP_Bot_Jumper                        │   ├── ANoFearSpitterAIController  плевок, отступление
-    │   ├── CBP_Bot_Spitter                       │   └── ANoFearTankAIController     удар с размаху, таран
-    │   └── CBP_Bot_Tank                          └── ANoFearShooterAIController      оружие, точность, поводок, BT_NoFear_Soldier
+    │   ├── CBP_Bot_Spitter                       │   ├── ANoFearTankAIController     удар с размаху, таран
+    │   ├── CBP_Bot_Tank                          │   └── ANoFearWhispererAIController аура, крик, метка, охрана
+    │   └── CBP_Bot_Whisperer                     └── ANoFearShooterAIController      оружие, точность, поводок, BT_NoFear_Soldier
     └── CBP_NoFearBot_Soldier + винтовка, Combat          └── ANoFearCompanionAIController    лидер, следование
         ├── CBP_Bot_Enemy
         ├── CBP_Bot_Ally
@@ -704,6 +706,7 @@ Class Defaults контроллера → **NoFear | AI**:
 | Прыгун | 0.8 | 0.8 | 0.8 | 0.4 |
 | Плевун | 0.6 | 0.6 | 0.8 | 0.5 |
 | Танк | 0.8 | 0.6 | 1 | 0.2 |
+| Шептун | 0.6 | 0.6 | 0.6 | 1 |
 
 **Тела.** Убитый монстр лежит 30 с (**Corpse Life Span** у `ANoFearCharacter`, общий для всех тел).
 
@@ -711,7 +714,7 @@ Class Defaults контроллера → **NoFear | AI**:
 - `NoFear.Monster.Debug 1` — над монстрами вид, цель и открытые окна (оранжевым), сферы зон (зелёная — открыта, серая — закрыта), над людьми метки (голубым).
 - `NoFear.Monster.Tag <Метка> [сек=5] [self]` — повесить метку на ближайшего к игроку человека, с `self` — на игрока.
 - `NoFear.Monster.Window <Окно> [сек=3]` — открыть окно ближайшему монстру.
-- Монстров ставит `NoFearSpawnBot <тип>` (Monster, AggroMonster, Jumper, Spitter, Tank).
+- Монстров ставит `NoFearSpawnBot <тип>` (Monster, AggroMonster, Jumper, Spitter, Tank, Whisperer).
 
 ### 8.8. Колосс (Tank)
 
@@ -725,9 +728,34 @@ Class Defaults контроллера → **NoFear | AI**:
 
 **Щит.** Колосс прикрывает загонщика, идущего перед ним (`SetShadeGoal` задаёт точку тени, `Shield*` — радиусы и время).
 
-**Ярость.** Ниже **Rage Health Fraction** (0.5) скорость 360 (через время актёра, шаг анимации ускоряется тоже), перезарядки ×0.6, таран ×0.5 при дистанции от 250 см; рёв при входе.
+**Ярость.** Ниже **Rage Health Fraction** (0.5) скорость 360 (через время актёра, шаг анимации ускоряется тоже), перезарядки ×0.6, таран ×0.5 при дистанции от 250 см; рёв при входе. Смерть шептуна ближе **Death Rage Range** (2000) — ярость на **Death Rage Time** (20 с), продлевается; ниже порога здоровья ярость остаётся.
 
-**Не сделано.** Пыль от ломаемых укрытий; ярость от смерти шептуна (М3); катапульта (М6); генератор `Tools/LevelDemo` не ставит тег `NoFearBreakable`.
+**Не сделано.** Пыль от ломаемых укрытий; катапульта (М6); генератор `Tools/LevelDemo` не ставит тег `NoFearBreakable`.
+
+### 8.9. Шептун (Whisperer)
+
+`ANoFearWhispererAIController`, тело `CBP_Bot_Whisperer` (50 HP, ×0.8). Атака одна — **Swipe** (5 урона, вплотную до 220). Жетон не нужен, в кольцо не встаёт.
+
+**Позиция.** Держится в **Keep Min / Max Distance** (1500–2200 см) от ближайшего вооружённого человека. Колосс ближе **Tank Shade Range** (1500) — шептун встаёт за ним, в **Tank Shade Distance** (250) от стрелков (`SetShadeGoal`). Скорость задаёт тело.
+
+**Аура.** Люди ближе **Aura Radius** (1200), сквозь стены, получают **Aura Fear Per Second** (3) страха в секунду, не выше **Aura Fear Cap** (85). У героя это источник `Whisper` браслета (`ReceiveWhisper`): браслет гасит его как прочий страх. Шёпот — **Whisper Sound** (заглушка `Starter_Wind05`, низкий тон), громче ближе к шептуну.
+
+**Крик.** Раз в **Scream Interval** (14 с), если цель ближе **Scream Target Range** (2500), и при первом обнаружении. Замах **Scream Windup** (1.5 с): шептун стоит, голова светится (зона `ScreamHead` ×3 вместо `Head` ×1.5, окно Scream). Потом люди в **Scream Radius** (1800) получают **Scream Fear** (22) страха до **Scream Fear Cap** (95), мирные бегут. **Scream Interrupt Damage** (15) урона за замах срывает крик, шептун оглушён на **Scream Stun Time** (1.5 с). Во время канала метки не кричит.
+
+**Метка.** Раз в **Mark Interval** (20 с) шептун выбирает самого напуганного видимого человека ближе **Mark Range** (2500) и **Mark Channel Time** (3 с) тянет к нему фиолетовый луч. Канал срывают **Mark Interrupt Fraction** (20 %) здоровья урона, потеря из виду и смерть жертвы. Метка `Marked` висит **Mark Duration** (20 с): страх жертвы не спадает и растёт на **Mark Fear Per Second** (1), монстры с бонусом метки (+1.5 к весу) переключаются на неё.
+
+**Видения ботов.** Раз в **Vision Interval** (6–10 с) один бот ближе **Aura Radius** со страхом от **Vision Min Fear** (60) видит ложного монстра в **Vision Distance** (800–1500 см): **Vision Duration** (2–3 с) стоит и стреляет в пустоту (`UNoFearCombatComponent::SeePhantom`, поведение на паузе). Граната и портал важнее: видение уступает им. Видения героя — не в М3.
+
+**Бафф.** Монстры ближе **Buff Radius** (1200) бьют чаще и сильнее, колосс быстрее; над ними фиолетовый свет. Бафф держится, пока шептун рядом и жив.
+
+**Охрана.** Человек ближе **Guard Trigger Radius** (900) или урон по шептуну поднимает охрану не чаще раза в **Guard Cooldown** (2 с):
+- фазовый шаг на **Phase Step Distance** (500) прочь от обидчика по навмешу, раз в **Phase Step Cooldown** (8 с);
+- **Guard Defenders** (2) ближайших загонщика или прыгуна бросаются на обидчика на **Guard Time** (10 с) (`Defend`, обида);
+- колоссы ближе **Tank Cover Range** (2000) встают между шептуном и обидчиком.
+
+**Смерть.** Метка, видения, крик и шёпот пропадают, колоссы рядом впадают в ярость (8.8).
+
+**Не сделано.** Видения героя (ложный монстр в его прицеле) перенесены на следующий этап. Своих звуков, модели и анимаций нет: заглушки, крик — поза Roar и сфера отладки.
 
 ## 9. Стрелки
 

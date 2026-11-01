@@ -8,6 +8,7 @@
 #include "Animation/NoFearPoseComponent.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
+#include "Components/PointLightComponent.h"
 #include "Core/NoFearCharacter.h"
 #include "Core/NoFearFearComponent.h"
 #include "Core/NoFearHealthComponent.h"
@@ -132,6 +133,10 @@ void ANoFearMonsterAIController::OnPossess(APawn* InPawn)
 	}
 
 	Grudges.Reset();
+	DefendTarget.Reset();
+	DefendUntil = 0.0;
+	WhisperBuffUntil = 0.0;
+	bBuffDilation = false;
 	bHasAttackToken = false;
 	TokenTarget.Reset();
 	bSelfDefense = false;
@@ -216,6 +221,10 @@ void ANoFearMonsterAIController::UpdateBot()
 			}
 			bHasAttackToken = false;
 		}
+		if (UPointLightComponent* Glow = BuffGlow.Get())
+		{
+			Glow->SetVisibility(false);
+		}
 		return;
 	}
 
@@ -224,6 +233,34 @@ void ANoFearMonsterAIController::UpdateBot()
 	if (UNoFearMeleeComponent* Melee = GetMeleeComponent())
 	{
 		Melee->CooldownScale = IsAggro() ? AggroCooldownScale : 1.f;
+		const bool bBuffed = IsWhisperBuffed();
+		Melee->CooldownScale *= bBuffed ? WhisperBuffCooldownScale : 1.f;
+		Melee->DamageScale = bBuffed ? WhisperBuffDamageScale : 1.f;
+		// Бафф ускоряет тело вне атак (колосс сам пишет время тела каждый кадр, см. его Tick).
+		const float Dilation = bBuffed && !Melee->IsAttacking() ? WhisperBuffSpeedScale : 1.f;
+		if (bBuffed || bBuffDilation)
+		{
+			MyPawn->CustomTimeDilation = Dilation;
+			bBuffDilation = bBuffed;
+		}
+		// Фиолетовый отсвет баффа.
+		UPointLightComponent* Glow = BuffGlow.Get();
+		if (bBuffed && !Glow)
+		{
+			Glow = NewObject<UPointLightComponent>(MyPawn, NAME_None, RF_Transient);
+			Glow->SetLightColor(FLinearColor(0.55f, 0.1f, 1.f));
+			Glow->SetIntensity(2500.f);
+			Glow->SetAttenuationRadius(260.f);
+			Glow->SetCastShadows(false);
+			Glow->SetupAttachment(MyPawn->GetRootComponent());
+			Glow->SetRelativeLocation(FVector(0.f, 0.f, 40.f));
+			Glow->RegisterComponent();
+			BuffGlow = Glow;
+		}
+		if (Glow && Glow->IsVisible() != bBuffed)
+		{
+			Glow->SetVisibility(bBuffed);
+		}
 		// Компонент мог появиться (или смениться) уже после OnPossess.
 		if (!Melee->OnAttackFinished.IsAlreadyBound(this, &ANoFearMonsterAIController::HandleAttackFinished))
 		{
@@ -604,6 +641,11 @@ float ANoFearMonsterAIController::ScoreTarget(const AActor* Candidate, const FNo
 	{
 		Score += PackTargetBonus;
 	}
+	// Охрана шептуна: идёт на обидчика.
+	if (Candidate && Candidate == GetDefendTarget())
+	{
+		Score += DefendScoreBonus;
+	}
 	// Страж первым бьёт того, кто освобождает проводника.
 	if (bPortalGuard)
 	{
@@ -709,6 +751,38 @@ void ANoFearMonsterAIController::SetShadeGoal(FVector Goal, float Duration)
 bool ANoFearMonsterAIController::HasShadeGoal() const
 {
 	return GetNow() < ShadeUntil;
+}
+
+void ANoFearMonsterAIController::Defend(AActor* Offender, float Duration)
+{
+	if (!Offender || Duration <= 0.f || !GetPawn() || IsAggro() || UNoFearHealthComponent::IsActorDead(Offender))
+	{
+		return;
+	}
+	const double Now = GetNow();
+	DefendTarget = Offender;
+	DefendUntil = Now + Duration;
+	// Обида на Duration: запись живёт GrudgeTime с отметки, поэтому отметка сдвинута назад (дольше уже имеющейся не укорачиваем).
+	const double Stamp = Now - FMath::Max(0.f, GrudgeTime - Duration);
+	double& Grudge = Grudges.FindOrAdd(Offender, Stamp);
+	Grudge = FMath::Max(Grudge, Stamp);
+	ReceiveAlarm(Offender, Offender->GetActorLocation());
+}
+
+AActor* ANoFearMonsterAIController::GetDefendTarget() const
+{
+	AActor* Target = DefendTarget.Get();
+	return Target && GetNow() < DefendUntil && !UNoFearHealthComponent::IsActorDead(Target) ? Target : nullptr;
+}
+
+void ANoFearMonsterAIController::ApplyWhisperBuff(float Duration)
+{
+	WhisperBuffUntil = FMath::Max(WhisperBuffUntil, GetNow() + Duration);
+}
+
+bool ANoFearMonsterAIController::IsWhisperBuffed() const
+{
+	return GetNow() < WhisperBuffUntil;
 }
 
 bool ANoFearMonsterAIController::IsRoarReady() const

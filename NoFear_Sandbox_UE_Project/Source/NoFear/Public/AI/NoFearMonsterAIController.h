@@ -6,6 +6,7 @@
 #include "AI/NoFearPackSubsystem.h"
 #include "NoFearMonsterAIController.generated.h"
 
+class UPointLightComponent;
 class UNoFearMeleeComponent;
 class UNoFearMonsterAttack;
 
@@ -127,6 +128,39 @@ public:
 	/** Прибавка к оценке цели за обиду. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster", meta = (ClampMin = "0"))
 	float GrudgeScoreBonus = 1.f;
+
+	// --- Шептун ---
+
+	/**
+	 * Охрана шептуна: бросить цель и идти на обидчика Duration секунд (обида держится столько же).
+	 * Пока не вышло время, обидчик получает DefendScoreBonus к оценке.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Monster|Whisperer")
+	void Defend(AActor* Offender, float Duration);
+
+	/** Кого сейчас бьёт по приказу охраны (пусто — никого). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Whisperer")
+	AActor* GetDefendTarget() const;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Whisperer", meta = (ClampMin = "0"))
+	float DefendScoreBonus = 4.f;
+
+	/** Бафф шептуна на Duration секунд (шептун обновляет его, пока монстр рядом). */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Monster|Whisperer")
+	void ApplyWhisperBuff(float Duration);
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Whisperer")
+	bool IsWhisperBuffed() const;
+
+	/** Под баффом: тело идёт быстрее (время тела ×SpeedScale вне атак), урон и перезарядки атак. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Whisperer", meta = (ClampMin = "0.1"))
+	float WhisperBuffSpeedScale = 1.15f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Whisperer", meta = (ClampMin = "0"))
+	float WhisperBuffDamageScale = 1.15f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Whisperer", meta = (ClampMin = "0.05"))
+	float WhisperBuffCooldownScale = 0.85f;
 
 	// --- Стая ---
 
@@ -345,6 +379,13 @@ private:
 	TWeakObjectPtr<AActor> TokenTarget;
 	/** Защищается от цели вплотную (с запасом, чтобы не дёргаться на границе). */
 	bool bSelfDefense = false;
+
+	TWeakObjectPtr<AActor> DefendTarget;
+	double DefendUntil = 0.0;
+	double WhisperBuffUntil = 0.0;
+	/** Бафф сам выставил время тела (снять, когда кончится). */
+	bool bBuffDilation = false;
+	TWeakObjectPtr<UPointLightComponent> BuffGlow;
 
 	bool bRoaring = false;
 	FVector ShadeGoal = FVector::ZeroVector;
