@@ -203,6 +203,27 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
 	bool IsEvadingGrenade() const { return bEvadingGrenade; }
 
+	/**
+	 * Под управлением порталов (этап 13): дерево на паузе, ходьбу ведёт UNoFearPortalSubsystem (страж идёт к проводнику,
+	 * монстр бежит обратно в портал). bSprint — бежать спринтом. Снятие возвращает дерево, если его не держит что-то ещё.
+	 */
+	void SetPortalControl(bool bControl, bool bSprint = false);
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	bool IsPortalControlled() const { return bPortalControl; }
+
+	/**
+	 * Транс проводника (этап 13): стоит на месте лицом к порталу, не думает и не слышит опасностей, держит позу Trance.
+	 * Выход из транса — OnPortalTranceChanged(false) (мирный бежит от портала).
+	 */
+	void SetPortalTrance(bool bTrance, AActor* Portal = nullptr);
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	bool IsInPortalTrance() const { return bPortalTrance; }
+
+	/** Портал, в который смотрит проводник в трансе (и смотрел — во время OnPortalTranceChanged(false)). */
+	AActor* GetTrancePortal() const { return TrancePortal.Get(); }
+
 	/** Крикнуть: HUD покажет текст над ботом Duration секунд. */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|AI")
 	void Shout(FText Text, float Duration = 1.5f);
@@ -545,6 +566,9 @@ protected:
 
 	/** Можно ли идти проверять эту точку (шум, поиск). */
 	virtual bool CanInvestigateLocation(const FVector& Location) const { return true; }
+
+	/** Вошёл в транс проводника или вышел из него (портал ещё доступен через GetTrancePortal). */
+	virtual void OnPortalTranceChanged(bool bTrance) {}
 	void DrawDebug() const;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "NoFear|AI")
@@ -574,6 +598,12 @@ private:
 	/** Бегство от гранаты держит дерево на паузе (пауза снимается, только когда её не держит и пошатывание). */
 	bool bLogicPausedByGrenade = false;
 	bool bEvadingGrenade = false;
+
+	/** Порталы ведут бота (этап 13): дерево на паузе, пока флаг стоит. */
+	bool bPortalControl = false;
+	bool bPortalSprint = false;
+	bool bPortalTrance = false;
+	TWeakObjectPtr<AActor> TrancePortal;
 	FTimerHandle GrenadeEvadeTimer;
 	TArray<TWeakObjectPtr<ANoFearGrenade>> KnownGrenades;
 	FVector GrenadeEvadeGoal = FVector::ZeroVector;

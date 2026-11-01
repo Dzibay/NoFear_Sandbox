@@ -132,6 +132,8 @@ protected:
 	virtual void NoteCorpse(ANoFearCharacter* Corpse) override;
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnUnPossess() override;
+	/** Транс проводника: прятавшийся встаёт; очнувшись — в панике бежит от портала. */
+	virtual void OnPortalTranceChanged(bool bTrance) override;
 
 private:
 	struct FThreat

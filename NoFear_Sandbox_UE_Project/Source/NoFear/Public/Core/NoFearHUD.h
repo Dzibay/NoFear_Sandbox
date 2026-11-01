@@ -442,6 +442,37 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
 	int32 GetDrawnFearBarCount() const { return DrawnFearBars; }
 
+	// --- Порталы страха (этап 13) ---
+
+	/** Аура и ступень порталов, кольца у ног проводников и ломающихся, кольцо «Освобождаю» у прицела. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Portals")
+	bool bShowPortals = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Portals")
+	FLinearColor PortalColor = FLinearColor(0.75f, 0.4f, 1.f, 1.f);
+
+	/** Порталы дальше этого не подписываются, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Portals", meta = (ClampMin = "100"))
+	float PortalMarkDistance = 6000.f;
+
+	/** Кольца у ног проводников и ломающихся — ближе этого, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Portals", meta = (ClampMin = "100"))
+	float PortalPeopleDistance = 3000.f;
+
+	/** Сколько порталов подписано в последнем кадре (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
+	int32 GetDrawnPortalLabelCount() const { return DrawnPortalLabels; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
+	int32 GetDrawnFeederRingCount() const { return DrawnFeederRings; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
+	int32 GetDrawnBreakRingCount() const { return DrawnBreakRings; }
+
+	/** Кольцо «Освобождаю» нарисовано в последнем кадре (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
+	bool WasPortalFreeDrawn() const { return bPortalFreeDrawn; }
+
 	/** Цвет крика над ботом («Граната!»). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots")
 	FLinearColor ShoutColor = FLinearColor(1.f, 0.95f, 0.6f, 1.f);
@@ -580,6 +611,9 @@ private:
 	void DrawReviveProgress();
 	/** Кольцо у прицела, пока игрок успокаивает мирного. */
 	void DrawCalmProgress();
+	/** Порталы страха: NoFearHUDPortal.cpp. */
+	void DrawPortals();
+	void DrawPortalFreeProgress();
 	void DrawOrderWheel();
 	/** Закрашенный сектор кольца Inner..Outer от угла From до To в градусах (0 — вверх, по часовой). */
 	void DrawWedge(const FVector2D& Center, float Inner, float Outer, float From, float To, const FLinearColor& Color);
@@ -604,6 +638,10 @@ private:
 	int32 DrawnOrderWords = 0;
 	int32 DrawnTactics = 0;
 	int32 DrawnFearBars = 0;
+	int32 DrawnPortalLabels = 0;
+	int32 DrawnFeederRings = 0;
+	int32 DrawnBreakRings = 0;
+	bool bPortalFreeDrawn = false;
 
 	float HitMarkerAge = 1.0e9f;
 	bool bHitHeadshot = false;

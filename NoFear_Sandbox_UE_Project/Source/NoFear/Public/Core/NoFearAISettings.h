@@ -5,6 +5,7 @@
 #include "AI/NoFearSquadSubsystem.h"
 #include "Core/NoFearFearSubsystem.h"
 #include "Engine/DeveloperSettings.h"
+#include "Portal/NoFearPortalTypes.h"
 #include "NoFearAISettings.generated.h"
 
 /** Уровни детализации ботов (UNoFearAILodSubsystem). */
@@ -124,4 +125,8 @@ public:
 	/** Страх людей (этап 11). */
 	UPROPERTY(Config, EditAnywhere, Category = "Fear", meta = (ShowOnlyInnerProperties))
 	FNoFearFearTuning Fear;
+
+	/** Порталы страха (этап 13): слом, рост, аура, монстры по ступеням, освобождение проводников. */
+	UPROPERTY(Config, EditAnywhere, Category = "Portal", meta = (ShowOnlyInnerProperties))
+	FNoFearPortalTuning Portal;
 };

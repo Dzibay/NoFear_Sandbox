@@ -10,6 +10,7 @@
 #include "Core/NoFearHealthComponent.h"
 #include "Core/NoFearTeam.h"
 #include "NavigationSystem.h"
+#include "Portal/NoFearPortalSubsystem.h"
 #include "Perception/AISenseConfig_Hearing.h"
 #include "Perception/AISenseConfig_Sight.h"
 #include "TimerManager.h"
@@ -338,6 +339,11 @@ bool ANoFearMonsterAIController::HasGrudgeAgainst(const AActor* Actor) const
 
 bool ANoFearMonsterAIController::IsValidTarget(const AActor* Candidate) const
 {
+	// Проводник питает портал — его монстры не трогают.
+	if (UNoFearPortalSubsystem::IsActorFeeder(Candidate))
+	{
+		return false;
+	}
 	if (Super::IsValidTarget(Candidate))
 	{
 		return true;

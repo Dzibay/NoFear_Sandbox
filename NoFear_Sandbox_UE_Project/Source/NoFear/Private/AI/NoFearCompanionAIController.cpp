@@ -543,7 +543,7 @@ void ANoFearCompanionAIController::RecoverFromDowned()
 	}
 	bDowned = false;
 	LastCompanionUpdate = GetNow();
-	if (UBrainComponent* Brain = GetBrainComponent())
+	if (UBrainComponent* Brain = GetBrainComponent(); Brain && !IsPortalControlled())
 	{
 		Brain->ResumeLogic(TEXT("Revived"));
 	}

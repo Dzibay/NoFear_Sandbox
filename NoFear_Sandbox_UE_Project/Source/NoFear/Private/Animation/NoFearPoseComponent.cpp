@@ -218,6 +218,23 @@ void UNoFearPoseComponent::FillDefaultPoses()
 		MakeEntry(B::LowerArmL, -15.f),
 	};
 	Poses.Add(ENoFearPose::Throw, ThrowPose);
+
+	// Транс: человек тянется к порталу — грудь вперёд, голова запрокинута к провалу, руки приподняты и разведены ладонями к нему.
+	FNoFearPoseSettings TrancePose;
+	TrancePose.BlendInTime = 1.2f;
+	TrancePose.BlendOutTime = 0.4f;
+	TrancePose.Bones = {
+		MakeEntry(B::Spine02, 4.f),
+		MakeEntry(B::Spine03, 6.f),
+		MakeEntry(B::Spine04, 3.f),
+		MakeEntry(B::Neck01, -6.f),
+		MakeEntry(B::Head, -14.f),
+		MakeEntry(B::UpperArmL, -50.f, 22.f),
+		MakeEntry(B::UpperArmR, -50.f, -22.f),
+		MakeEntry(B::LowerArmL, -20.f),
+		MakeEntry(B::LowerArmR, -20.f),
+	};
+	Poses.Add(ENoFearPose::Trance, TrancePose);
 }
 
 void UNoFearPoseComponent::BeginPlay()

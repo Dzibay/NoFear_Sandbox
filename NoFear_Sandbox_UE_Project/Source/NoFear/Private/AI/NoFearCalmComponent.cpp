@@ -6,6 +6,7 @@
 #include "Core/NoFearPlayerController.h"
 #include "Core/NoFearTeam.h"
 #include "GameFramework/Pawn.h"
+#include "Portal/NoFearPortalSubsystem.h"
 
 UNoFearCalmComponent::UNoFearCalmComponent()
 {
@@ -24,6 +25,7 @@ bool UNoFearCalmComponent::CanInteract_Implementation(APawn* User) const
 	const UNoFearFearSubsystem* Subsystem = UNoFearFearSubsystem::Get(this);
 	return OwnerPawn && Fear && Subsystem
 		&& !UNoFearHealthComponent::IsActorDead(OwnerPawn)
+		&& !UNoFearPortalSubsystem::IsActorFeeder(OwnerPawn)
 		&& Fear->GetFear() >= Subsystem->AnxiousThreshold
 		&& Cast<ANoFearPlayerController>(User->GetController())
 		&& !UNoFearTeamLibrary::AreHostile(OwnerPawn, User);

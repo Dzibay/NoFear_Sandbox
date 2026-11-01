@@ -483,6 +483,31 @@ void ANoFearCivilianAIController::SetCowerPose(bool bCower)
 	}
 }
 
+void ANoFearCivilianAIController::OnPortalTranceChanged(bool bTrance)
+{
+	Super::OnPortalTranceChanged(bTrance);
+	if (bTrance)
+	{
+		// В трансе стоят в полный рост и тянутся к порталу, а не прячутся.
+		SetCowerPose(false);
+		return;
+	}
+	const APawn* MyPawn = GetPawn();
+	if (!MyPawn || UNoFearHealthComponent::IsActorIncapacitated(MyPawn))
+	{
+		return;
+	}
+	// Очнулся: от портала — бегом. Без крика: иначе разбуженный пугал бы соседей и ломал их снова.
+	const AActor* Portal = GetTrancePortal();
+	const UNoFearFearComponent* FearComponent = UNoFearFearComponent::FindFear(MyPawn);
+	const FVector ThreatLocation = Portal ? Portal->GetActorLocation() : (FearComponent ? FearComponent->GetSourceLocation() : MyPawn->GetActorLocation());
+	if (CivilianState == ENoFearCivilianState::Panic || CivilianState == ENoFearCivilianState::Cower)
+	{
+		SetCivilianState(ENoFearCivilianState::Wary);
+	}
+	Panic(ThreatLocation, const_cast<AActor*>(Portal), false);
+}
+
 void ANoFearCivilianAIController::UpdateAlertState()
 {
 	switch (CivilianState)

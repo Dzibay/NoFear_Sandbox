@@ -289,9 +289,15 @@ void ANoFearHUD::DrawHUD()
 		DrawDamageIndicators();
 	}
 
+	DrawnPortalLabels = DrawnFeederRings = DrawnBreakRings = 0;
+	bPortalFreeDrawn = false;
 	if (!bDead)
 	{
 		// Метки в мире — под прицелом и остальным HUD.
+		if (bShowPortals)
+		{
+			DrawPortals();
+		}
 		if (bShowBotIndicators)
 		{
 			DrawBotIndicators();
@@ -355,6 +361,10 @@ void ANoFearHUD::DrawHUD()
 		}
 		DrawReviveProgress();
 		DrawCalmProgress();
+		if (bShowPortals)
+		{
+			DrawPortalFreeProgress();
+		}
 	}
 
 	if (bShowHealth)

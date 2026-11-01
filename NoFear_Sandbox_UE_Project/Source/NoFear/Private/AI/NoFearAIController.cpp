@@ -277,6 +277,20 @@ void ANoFearAIController::OnPossess(APawn* InPawn)
 void ANoFearAIController::RunUpdateBot()
 {
 	NOFEAR_PERF_SCOPE(BotUpdate);
+	if (bPortalTrance)
+	{
+		// Проводник не думает: только смотрит в портал. Походку тело сбрасывает — пишем её каждый раз.
+		LastUpdateTime = GetNow();
+		if (AActor* Portal = TrancePortal.Get())
+		{
+			SetFocus(Portal);
+		}
+		if (GetPawn())
+		{
+			UpdateMovementStance();
+		}
+		return;
+	}
 	UpdateBot();
 }
 
@@ -369,7 +383,11 @@ void ANoFearAIController::UpdateBot()
 	SetTarget(BestTarget);
 
 	// Видимую цель отслеживаем взглядом, невидимую — смотрим туда, где видели последний раз (сквозь стены не подглядываем).
-	if (AActor* Target = CurrentTarget.Get())
+	if (bPortalControl)
+	{
+		// Взгляд ведёт подсистема порталов (страж смотрит на проводника).
+	}
+	else if (AActor* Target = CurrentTarget.Get())
 	{
 		bSuspicionFocus = false;
 		const FNoFearKnownActor* Knowledge = KnownActors.Find(Target);
@@ -1217,7 +1235,7 @@ void ANoFearAIController::ReleaseStagger()
 
 	// Мёртвого дерево не продолжает: StopLogic уже вызван при смерти. Бегство от гранаты держит паузу дальше.
 	UBrainComponent* Brain = GetBrainComponent();
-	if (Brain && Brain->IsPaused() && !bLogicPausedByGrenade && !UNoFearHealthComponent::IsActorIncapacitated(GetPawn()))
+	if (Brain && Brain->IsPaused() && !bLogicPausedByGrenade && !bPortalControl && !UNoFearHealthComponent::IsActorIncapacitated(GetPawn()))
 	{
 		Brain->ResumeLogic(TEXT("Stagger over"));
 	}
@@ -1237,7 +1255,8 @@ void ANoFearAIController::HandleDanger(ENoFearDangerType Type, AActor* Source, F
 void ANoFearAIController::ReceiveDanger(ENoFearDangerType Type, AActor* Source, FVector ThreatLocation)
 {
 	const APawn* MyPawn = GetPawn();
-	if (!MyPawn || UNoFearHealthComponent::IsActorDead(MyPawn))
+	// Проводник в трансе ничего вокруг не замечает.
+	if (!MyPawn || bPortalTrance || UNoFearHealthComponent::IsActorDead(MyPawn))
 	{
 		return;
 	}
@@ -1505,7 +1524,7 @@ void ANoFearAIController::EndGrenadeEvade()
 	const bool bWasPaused = bLogicPausedByGrenade;
 	bLogicPausedByGrenade = false;
 	UBrainComponent* Brain = GetBrainComponent();
-	if (bWasPaused && Brain && Brain->IsPaused() && !bLogicPausedByStagger && !UNoFearHealthComponent::IsActorIncapacitated(GetPawn()))
+	if (bWasPaused && Brain && Brain->IsPaused() && !bLogicPausedByStagger && !bPortalControl && !UNoFearHealthComponent::IsActorIncapacitated(GetPawn()))
 	{
 		StopMovement();
 		Brain->ResumeLogic(TEXT("Grenade over"));
@@ -1514,6 +1533,96 @@ void ANoFearAIController::EndGrenadeEvade()
 	{
 		UpdateMovementStance();
 	}
+}
+
+// --- Порталы (этап 13) ---
+
+void ANoFearAIController::SetPortalControl(bool bControl, bool bSprint)
+{
+	bPortalSprint = bControl && bSprint;
+	if (bControl != bPortalControl)
+	{
+		bPortalControl = bControl;
+		UBrainComponent* Brain = GetBrainComponent();
+		if (!bEvadingGrenade)
+		{
+			StopMovement();
+		}
+		if (bControl)
+		{
+			if (Brain && !Brain->IsPaused())
+			{
+				Brain->PauseLogic(TEXT("Portal"));
+			}
+		}
+		else
+		{
+			ClearFocus(EAIFocusPriority::Gameplay);
+			// Дерево продолжается, только если его не держат пошатывание, граната или ранение.
+			if (Brain && Brain->IsPaused() && !bLogicPausedByStagger && !bLogicPausedByGrenade && !UNoFearHealthComponent::IsActorIncapacitated(GetPawn()))
+			{
+				Brain->ResumeLogic(TEXT("Portal released"));
+			}
+		}
+	}
+	if (GetPawn())
+	{
+		UpdateMovementStance();
+	}
+}
+
+void ANoFearAIController::SetPortalTrance(bool bTrance, AActor* Portal)
+{
+	const ANoFearCharacter* BotCharacter = GetNoFearCharacter();
+	UNoFearPoseComponent* Pose = BotCharacter ? BotCharacter->GetPoseComponent() : nullptr;
+	if (bTrance)
+	{
+		const bool bWasTrance = bPortalTrance;
+		TrancePortal = Portal;
+		bPortalTrance = true;
+		SetPortalControl(true);
+		// Транс сильнее гранаты: бег обрывается, дерево остаётся на паузе (его держат порталы).
+		if (bEvadingGrenade)
+		{
+			EndGrenadeEvade();
+		}
+		StopMovement();
+		if (UNoFearWeaponComponent* Weapons = BotCharacter ? BotCharacter->GetWeaponComponent() : nullptr)
+		{
+			Weapons->StopFire();
+			Weapons->SetAiming(false);
+		}
+		if (Pose)
+		{
+			Pose->SetPoseHeld(ENoFearPose::Trance, true);
+		}
+		if (Portal)
+		{
+			SetFocus(Portal);
+		}
+		if (!bWasTrance)
+		{
+			OnPortalTranceChanged(true);
+		}
+		if (GetPawn())
+		{
+			UpdateMovementStance();
+		}
+		return;
+	}
+
+	if (!bPortalTrance)
+	{
+		return;
+	}
+	bPortalTrance = false;
+	if (Pose)
+	{
+		Pose->SetPoseHeld(ENoFearPose::Trance, false);
+	}
+	SetPortalControl(false);
+	OnPortalTranceChanged(false);
+	TrancePortal.Reset();
 }
 
 void ANoFearAIController::Shout(FText Text, float Duration)
@@ -1529,6 +1638,14 @@ FText ANoFearAIController::GetShoutText() const
 
 void ANoFearAIController::SetMovementFlags(bool bStrafe, bool bAim, bool bWalk, bool bSprint)
 {
+	if (bPortalControl)
+	{
+		// Порталы ведут: стоящий поворачивается к фокусу (проводник — к порталу, страж — к проводнику), идущий смотрит по ходу.
+		bStrafe = bPortalTrance || (!bPortalSprint && GetMoveStatus() != EPathFollowingStatus::Moving);
+		bAim = false;
+		bWalk = bPortalTrance;
+		bSprint = bPortalSprint;
+	}
 	if (bEvadingGrenade)
 	{
 		// Кто бы ни выставлял походку (наследники тоже), от гранаты бегут спринтом и лицом по ходу.
