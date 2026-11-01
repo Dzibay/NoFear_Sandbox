@@ -340,7 +340,7 @@ void UNoFearBotSubsystem::ReportDanger(const UObject* WorldContextObject, ENoFea
 		{
 			continue;
 		}
-		Bot->HandleDanger(Type, Source, ThreatLocation);
+		Bot->ReceiveDanger(Type, Source, ThreatLocation);
 	}
 }
 
@@ -365,7 +365,7 @@ void UNoFearBotSubsystem::ReportBulletPath(const UObject* WorldContextObject, AA
 		const FVector Closest = FMath::ClosestPointOnSegment(Listener->GetActorLocation(), Start, End);
 		if (FVector::DistSquared(Closest, Listener->GetActorLocation()) <= FMath::Square(NearMissRadius))
 		{
-			Bot->HandleDanger(ENoFearDangerType::NearMiss, Shooter, ShooterLocation);
+			Bot->ReceiveDanger(ENoFearDangerType::NearMiss, Shooter, ShooterLocation);
 			if (bPlayerShot && UNoFearTeamLibrary::AreHostile(Shooter, Listener))
 			{
 				PlayerTargets.Add(Listener);

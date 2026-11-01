@@ -7,6 +7,8 @@
 #include "AI/NoFearCompanionAIController.h"
 #include "AI/NoFearShooterAIController.h"
 #include "Core/NoFearCharacter.h"
+#include "Core/NoFearFearComponent.h"
+#include "Core/NoFearFearSubsystem.h"
 #include "Core/NoFearHealthComponent.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
@@ -588,7 +590,25 @@ void UNoFearSquadSubsystem::UpdateMorale(FSquad& Squad, float DeltaTime)
 
 	// «Спокойная» мораль: своих больше, чем врагов, — выше; отряд поредел — ниже.
 	const float Losses = 1.f - static_cast<float>(Alive) / FMath::Max(1, Squad.PeakSize);
-	const float Baseline = FMath::Clamp(StartMorale + 0.08f * (Alive - EnemyCount) - 0.25f * Losses, 0.3f, 0.9f);
+	float Baseline = FMath::Clamp(StartMorale + 0.08f * (Alive - EnemyCount) - 0.25f * Losses, 0.3f, 0.9f);
+
+	// Страх (этап 11): средний страх бойцов выше порога тревоги тянет мораль вниз, до MoralePenalty при страхе 100.
+	if (const UNoFearFearSubsystem* Fear = UNoFearFearSubsystem::Get(this); Fear && Alive > 0)
+	{
+		float FearSum = 0.f;
+		int32 FearCount = 0;
+		for (const FMember& Member : Squad.Members)
+		{
+			if (Member.Pawn.IsValid() && Member.Bot.IsValid() && Member.AssistSquad.IsNone())
+			{
+				FearSum += UNoFearFearComponent::GetActorFear(Member.Pawn.Get());
+				++FearCount;
+			}
+		}
+		const float AverageFear = FearCount > 0 ? FearSum / FearCount : 0.f;
+		const float Excess = FMath::Max(0.f, AverageFear - Fear->AnxiousThreshold) / FMath::Max(1.f, 100.f - Fear->AnxiousThreshold);
+		Baseline = FMath::Max(0.f, Baseline - Fear->MoralePenalty * Excess);
+	}
 	const float Rate = Squad.bEngaged ? MoraleRecoveryRate : MoraleRestRate;
 	Squad.Morale = FMath::FInterpConstantTo(Squad.Morale, Baseline, DeltaTime, Rate);
 }

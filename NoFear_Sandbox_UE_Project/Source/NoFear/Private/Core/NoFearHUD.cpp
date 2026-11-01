@@ -12,6 +12,8 @@
 #include "Camera/PlayerCameraManager.h"
 #include "Components/CapsuleComponent.h"
 #include "Core/NoFearCharacter.h"
+#include "Core/NoFearFearComponent.h"
+#include "Core/NoFearFearSubsystem.h"
 #include "Core/NoFearInteractableComponent.h"
 #include "Core/NoFearPlayerController.h"
 #include "Core/NoFearTeam.h"
@@ -352,6 +354,7 @@ void ANoFearHUD::DrawHUD()
 			DrawWeaponSlots();
 		}
 		DrawReviveProgress();
+		DrawCalmProgress();
 	}
 
 	if (bShowHealth)
@@ -1159,10 +1162,11 @@ void ANoFearHUD::DrawBotIndicators()
 	if (Mode <= 0 || !PlayerController || !PlayerPawn || !World || !Subsystem || !Canvas)
 	{
 		BotPanels.Reset();
-		DrawnSquadRings = DrawnSquadLines = DrawnOrderLines = DrawnOrderWords = DrawnTactics = 0;
+		DrawnSquadRings = DrawnSquadLines = DrawnOrderLines = DrawnOrderWords = DrawnTactics = DrawnFearBars = 0;
 		return;
 	}
-	DrawnOrderWords = DrawnTactics = 0;
+	DrawnOrderWords = DrawnTactics = DrawnFearBars = 0;
+	const FNoFearFearTuning& FearTuning = UNoFearFearSubsystem::Get(this) ? static_cast<const FNoFearFearTuning&>(*UNoFearFearSubsystem::Get(this)) : UNoFearAISettings::Get()->Fear;
 
 	// Кольца под ногами — под панелями.
 	if (bShowSquadRings)
@@ -1217,6 +1221,8 @@ void ANoFearHUD::DrawBotIndicators()
 		bool bOrder = false;
 		/** Над командиром — тактика отряда и шкала морали. */
 		bool bTactic = false;
+		/** Полоска страха над полоской здоровья. */
+		bool bFear = false;
 	};
 	TArray<FPanelDraw> Panels;
 	TSet<const AActor*> Seen;
@@ -1306,7 +1312,14 @@ void ANoFearHUD::DrawBotIndicators()
 		const bool bWantOrder = bSquad && bShowSquadOrders && (SquadView.Order != ENoFearSquadOrder::None || SquadView.bGrenadeOrder);
 		const bool bWantTactic = bSquad && bShowSquadOrders && Pawn == SquadView.Commander && SquadView.Tactic != ENoFearSquadTactic::None;
 
-		bool bWant = (bWantHealth || bWantAlert || bWantLoadout || bWantOrder || bWantTactic || !Shout.IsEmpty()) && Distance <= MaxDistance;
+		// Страх (этап 11): у людей, не у монстров. В отладочном режиме — у всех, кто хоть немного боится.
+		const float Fear = UNoFearFearComponent::GetActorFear(Pawn);
+		State.DisplayedFear = FMath::FInterpTo(State.DisplayedFear, Fear, DeltaTime, HealthInterpSpeed);
+		const bool bFrightening = UNoFearFearSubsystem::IsFrightening(Team);
+		const bool bWantFear = bShowFearBars && !bFrightening
+			&& (Mode >= 2 ? State.DisplayedFear >= 1.f : (Fear >= FearBarMinFear && Distance <= FearBarDistance));
+
+		bool bWant = (bWantHealth || bWantAlert || bWantLoadout || bWantOrder || bWantTactic || bWantFear || !Shout.IsEmpty()) && Distance <= MaxDistance;
 
 		// На экране ли голова бота.
 		FVector2D Screen = FVector2D::ZeroVector;
@@ -1361,6 +1374,7 @@ void ANoFearHUD::DrawBotIndicators()
 		Panel.bCompanion = bCompanion;
 		Panel.bHostile = bHostile;
 		Panel.Team = Team;
+		Panel.bFear = bWantFear;
 		if (bSquad)
 		{
 			Panel.Role = SquadView.Role;
@@ -1497,6 +1511,25 @@ void ANoFearHUD::DrawBotIndicators()
 			}
 			DrawBar(BarX, BarY, BarWidth, BarHeight, State->DisplayedHealth, Fill, State->GhostHealth, Opacity);
 			TopY = BarY - 7.f * PanelScale;
+		}
+
+		// Страх — тонкая полоска прямо над здоровьем: жёлтая (тревога), оранжевая (паника), красная (ужас).
+		if (Panel.bFear)
+		{
+			if (Panel.bHealth)
+			{
+				TopY += 4.f * PanelScale;
+			}
+			const float BarWidth = FMath::RoundToFloat(76.f * PanelScale);
+			const float BarHeight = FMath::Max(2.f, FMath::RoundToFloat(4.f * PanelScale));
+			const float BarX = FMath::RoundToFloat(CenterX - BarWidth * 0.5f);
+			const float BarY = FMath::RoundToFloat(TopY - BarHeight);
+			const float Fear = State->DisplayedFear;
+			const FLinearColor& FearColor = Fear >= FearTuning.TerrorThreshold ? FearTerrorColor
+				: (Fear >= FearTuning.PanicThreshold ? FearPanicColor : FearAnxiousColor);
+			DrawBar(BarX, BarY, BarWidth, BarHeight, FMath::Clamp(Fear / 100.f, 0.f, 1.f), FearColor, -1.f, Opacity);
+			TopY = BarY - 7.f * PanelScale;
+			++DrawnFearBars;
 		}
 
 		if (Panel.bAlert)

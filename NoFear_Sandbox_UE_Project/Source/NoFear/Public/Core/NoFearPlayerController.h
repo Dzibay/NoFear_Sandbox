@@ -51,6 +51,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FNoFearCompanionsChangedSignature);
  * - пока есть стоящий на ногах напарник, игрок не умирает, а падает раненым (UNoFearHealthComponent::bCanBeDowned);
  * - упавшего напарника поднимают, удерживая E ReviveHoldTime секунд; урон по игроку сбрасывает подъём;
  * - реплики напарника приходят сюда же строками рации (AddRadioLine).
+ *
+ * Испуганного мирного успокаивают, удерживая E рядом с ним (StartCalming, этап 11).
  */
 UCLASS()
 class NOFEAR_API ANoFearPlayerController : public APlayerController, public IGenericTeamAgentInterface
@@ -237,6 +239,27 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Companions|Revive")
 	float GetReviveProgress() const { return ReviveTarget.IsValid() ? FMath::Clamp(ReviveElapsed / FMath::Max(ReviveHoldTime, 0.1f), 0.f, 1.f) : 0.f; }
 
+	// --- Успокоение (этап 11) ---
+
+	/**
+	 * Начать успокаивать испуганного (UNoFearCalmComponent на мирном). Пока E держат и игрок ближе CalmDistance,
+	 * страх цели снимается со скоростью CalmRate до CalmTargetFear. Вызванное не клавишей (Blueprint, тест) идёт,
+	 * пока не вызван StopCalming. Игрок при этом стоит на месте.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Fear")
+	bool StartCalming(APawn* ScaredPawn);
+
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Fear")
+	void StopCalming();
+
+	/** Кого сейчас успокаивает игрок. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Fear")
+	APawn* GetCalmTarget() const { return CalmTarget.Get(); }
+
+	/** Сколько страха снято от начала до CalmTargetFear, 0..1. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Fear")
+	float GetCalmProgress() const;
+
 	/** Консоль: уронить напарника раненым. */
 	UFUNCTION(Exec)
 	void NoFearDownCompanion();
@@ -295,6 +318,9 @@ protected:
 	void BuildOrderWheelEntries();
 
 	void UpdateRevive(float DeltaTime);
+	void UpdateCalming(float DeltaTime);
+	/** Клавиши IA_Interact (или E): удержание подъёма и успокоения. */
+	void GetInteractKeys(TArray<FKey>& OutKeys) const;
 	/** Падать раненым можно, пока рядом есть напарник на ногах. */
 	void UpdateCanBeDowned();
 
@@ -333,6 +359,12 @@ private:
 	bool bReviveHeldByInput = false;
 	bool bReviveBlocksMove = false;
 	TArray<FKey> ReviveKeys;
+	// Успокоение мирного.
+	TWeakObjectPtr<APawn> CalmTarget;
+	float CalmStartFear = 0.f;
+	bool bCalmHeldByInput = false;
+	bool bCalmBlocksMove = false;
+	TArray<FKey> CalmKeys;
 	/** Идёт обработка нажатия E: подъём, начатый сейчас, держится клавишей. */
 	bool bHandlingInteractInput = false;
 

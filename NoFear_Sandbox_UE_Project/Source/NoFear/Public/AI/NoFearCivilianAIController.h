@@ -23,13 +23,13 @@ enum class ENoFearCivilianState : uint8
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FNoFearCivilianStateChangedSignature, ANoFearCivilianAIController*, Civilian, ENoFearCivilianState, NewState, ENoFearCivilianState, OldState);
 
 /**
- * Мирный житель: никогда не нападает, только убегает.
+ * Мирный житель: никогда не нападает, только убегает. Состояние следует за шкалой страха (UNoFearFearComponent, этап 11).
  *
- * Спокоен → бродит вокруг дома (BT_NoFear_Civilian). Далёкий выстрел или шорох монстра → насторожен:
- * смотрит на звук и отходит шагом. Угроза рядом (монстр, драка, выстрел ближе PanicGunshotDistance,
- * пуля мимо, ранение, труп, взрыв, граната) → паника: крик (пугает соседей и слышен монстрам) и бег
- * к точке UNoFearFleeLibrary::FindFleeLocation. Добежал или бежать некуда → прячется. Через
- * CalmDownMin..CalmDownMax секунд без новых угроз встаёт и идёт домой или бродит, где оказался.
+ * Спокоен → бродит вокруг дома (BT_NoFear_Civilian). Страх от порога тревоги (далёкий выстрел, шорох монстра,
+ * паника соседей) → насторожен: смотрит на источник и отходит шагом. Страх от порога паники (монстр на виду, драка,
+ * близкий выстрел, пуля мимо, ранение, труп, взрыв, граната, крик соседа) → паника: крик (пугает соседей и слышен
+ * монстрам) и бег к точке UNoFearFleeLibrary::FindFleeLocation. Добежал или бежать некуда → прячется.
+ * Страх спал ниже порога тревоги (сам, рядом со стражем или героя успокоил) → встаёт и идёт домой или бродит, где оказался.
  */
 UCLASS(Blueprintable)
 class NOFEAR_API ANoFearCivilianAIController : public ANoFearAIController
@@ -61,7 +61,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Civilian")
 	void NotifyReachedSafety();
 
-	/** Успокоиться сразу (для тестов и сценариев). */
+	/** Успокоиться сразу (для тестов и сценариев): страх выше порога тревоги сбрасывается в 0. */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Civilian")
 	void CalmDown();
 
@@ -70,11 +70,7 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "NoFear|Civilian")
 	FNoFearCivilianStateChangedSignature OnCivilianStateChanged;
 
-	/** Выстрел ближе этого — паника, дальше — настороженность. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Civilian", meta = (ClampMin = "0"))
-	float PanicGunshotDistance = 1500.f;
-
-	/** Сколько секунд длится настороженность после звука. */
+	/** Настороженность длится не меньше этого после последнего звука (и пока страх не ниже порога тревоги). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Civilian", meta = (ClampMin = "0"))
 	float WaryDuration = 8.f;
 
@@ -99,13 +95,6 @@ public:
 	/** Путь бегства не проходит ближе этого к угрозе; точка ближе этого к угрозе перестаёт быть безопасной. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Civilian", meta = (ClampMin = "0"))
 	float SafePathDistance = 500.f;
-
-	/** Успокаивается через случайное время в этом диапазоне без новых угроз. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Civilian", meta = (ClampMin = "0"))
-	float CalmDownMin = 15.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Civilian", meta = (ClampMin = "0"))
-	float CalmDownMax = 25.f;
 
 	/** Вероятность, что после паники пойдёт домой; иначе новым домом станет место, где успокоился. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Civilian", meta = (ClampMin = "0", ClampMax = "1"))
@@ -141,6 +130,7 @@ protected:
 	virtual void UpdateMovementStance() override;
 	virtual void WriteBlackboard() override;
 	virtual void NoteCorpse(ANoFearCharacter* Corpse) override;
+	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnUnPossess() override;
 
 private:
@@ -159,7 +149,10 @@ private:
 	void Scream(const FVector& ThreatLocation);
 	void SetCivilianState(ENoFearCivilianState NewState);
 	void SetCowerPose(bool bCower);
-	void ResetCalmDownTimer();
+	/** Событие подняло страх: паника, если страх и потолок события не ниже порога паники, иначе — настороженность. */
+	void ReactToFear(const FVector& Location, AActor* Source, float EventCap, bool bScream);
+	/** Состояние по шкале страха. FreshThreat — ближайшая видимая угроза (или nullptr). */
+	void SyncFear(AActor* FreshThreat, const FVector& FreshThreatLocation);
 
 	ENoFearCivilianState CivilianState = ENoFearCivilianState::Calm;
 	TArray<FThreat> Threats;
@@ -167,8 +160,6 @@ private:
 	bool bThreatsChanged = false;
 	FVector FleeLocation = FVector::ZeroVector;
 	bool bHasFleeLocation = false;
-	double LastThreatTime = -1.0e9;
-	float CalmDownDelay = 20.f;
 	double NextReplanTime = 0.0;
 	double LastScreamTime = -1.0e9;
 	FVector WaryLocation = FVector::ZeroVector;

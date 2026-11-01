@@ -107,6 +107,8 @@ struct FNoFearKnownActor
 	bool bInView = false;
 	/** Враг в поле зрения и шкала полна: бот видит его. */
 	bool bVisible = false;
+	/** Монстра уже разглядели: разовый испуг был (этап 11). */
+	bool bFearShocked = false;
 };
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNoFearBotTargetChangedSignature, AActor*, NewTarget, AActor*, OldTarget);
@@ -189,6 +191,13 @@ public:
 	 * База убегает от гранаты (Source — ANoFearGrenade), остальное пропускает; мирные пугаются всего.
 	 */
 	virtual void HandleDanger(ENoFearDangerType Type, AActor* Source, FVector ThreatLocation);
+
+	/** Вход для опасностей: поднимает страх (UNoFearFearComponent) по числам UNoFearFearSubsystem, потом HandleDanger. */
+	void ReceiveDanger(ENoFearDangerType Type, AActor* Source, FVector ThreatLocation);
+
+	/** Страх тела бота (0, если шкалы нет). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	float GetFear() const;
 
 	/** Убегает от гранаты: дерево на паузе, бот бежит спринтом из радиуса взрыва. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
@@ -522,6 +531,12 @@ protected:
 	void EndSearch();
 	void PumpSearch();
 	void GenerateSearchPoints(const FVector& Origin, const FVector& Velocity, int32 NumPoints);
+
+	/** Страх от монстров на виду: разовый испуг при первом взгляде и рост, пока монстр виден. */
+	void UpdateSightFear(float DeltaTime);
+
+	/** Испугать тело бота на Amount (не выше Cap) событием от Source в Location. */
+	void AddFear(float Amount, float Cap, const FVector& Location, const AActor* Source, bool bDirect = true);
 
 	void ScanCorpses();
 	/** Заметил тело (своего или нейтрального). База идёт осмотреться; мирные пугаются. */

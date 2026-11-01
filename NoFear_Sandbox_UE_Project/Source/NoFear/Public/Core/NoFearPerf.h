@@ -27,6 +27,8 @@ enum class ENoFearPerfStat : uint8
 	Pose,
 	/** UNoFearAILodSubsystem: уровни детализации. */
 	Lod,
+	/** UNoFearFearSubsystem: спад и передача страха. */
+	Fear,
 	Count
 };
 

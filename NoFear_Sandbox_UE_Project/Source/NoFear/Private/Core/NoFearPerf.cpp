@@ -59,6 +59,7 @@ const TCHAR* FNoFearPerf::GetName(ENoFearPerfStat Stat)
 	case ENoFearPerfStat::HUD: return TEXT("HUD");
 	case ENoFearPerfStat::Pose: return TEXT("Pose");
 	case ENoFearPerfStat::Lod: return TEXT("Lod");
+	case ENoFearPerfStat::Fear: return TEXT("Fear");
 	default: return TEXT("?");
 	}
 }

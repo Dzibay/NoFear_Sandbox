@@ -272,7 +272,7 @@ void ANoFearGrenade::NotifyDanger()
 		}
 		if (bNoticed)
 		{
-			Bot->HandleDanger(ENoFearDangerType::Grenade, this, Location);
+			Bot->ReceiveDanger(ENoFearDangerType::Grenade, this, Location);
 		}
 	}
 }

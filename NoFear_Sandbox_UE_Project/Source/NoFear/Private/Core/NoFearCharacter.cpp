@@ -10,6 +10,7 @@
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Core/NoFearFearComponent.h"
 #include "Core/NoFearPlayerController.h"
 #include "Engine/DamageEvents.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -29,6 +30,7 @@ ANoFearCharacter::ANoFearCharacter()
 	GrenadeComponent = CreateDefaultSubobject<UNoFearGrenadeComponent>(TEXT("GrenadeComponent"));
 	HealthComponent = CreateDefaultSubobject<UNoFearHealthComponent>(TEXT("HealthComponent"));
 	PoseComponent = CreateDefaultSubobject<UNoFearPoseComponent>(TEXT("PoseComponent"));
+	FearComponent = CreateDefaultSubobject<UNoFearFearComponent>(TEXT("FearComponent"));
 	PoseAnimBlueprint = TSoftClassPtr<UAnimInstance>(FSoftObjectPath(TEXT("/Game/Blueprints/ABP_NoFearPose.ABP_NoFearPose_C")));
 
 	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> MaskedMaterial(

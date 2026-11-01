@@ -412,6 +412,36 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
 	int32 GetDrawnSquadTacticCount() const { return DrawnTactics; }
 
+	// --- Страх (этап 11) ---
+
+	/** Полоска страха над панелью бота (не у монстров): видна от FearBarMinFear и ближе FearBarDistance. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Fear")
+	bool bShowFearBars = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Fear", meta = (ClampMin = "0", ClampMax = "100"))
+	float FearBarMinFear = 30.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Fear", meta = (ClampMin = "0"))
+	float FearBarDistance = 2500.f;
+
+	/** Цвета полоски: тревога, паника, ужас (пороги из настроек страха). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Fear")
+	FLinearColor FearAnxiousColor = FLinearColor(1.f, 0.85f, 0.2f, 1.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Fear")
+	FLinearColor FearPanicColor = FLinearColor(1.f, 0.5f, 0.1f, 1.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Fear")
+	FLinearColor FearTerrorColor = FLinearColor(0.95f, 0.15f, 0.15f, 1.f);
+
+	/** Кольцо «Успокаиваю» у прицела. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots|Fear")
+	FLinearColor CalmColor = FLinearColor(0.55f, 0.85f, 1.f, 1.f);
+
+	/** Сколько полосок страха нарисовано в последнем кадре (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
+	int32 GetDrawnFearBarCount() const { return DrawnFearBars; }
+
 	/** Цвет крика над ботом («Граната!»). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots")
 	FLinearColor ShoutColor = FLinearColor(1.f, 0.95f, 0.6f, 1.f);
@@ -515,6 +545,8 @@ private:
 		double NextRingVisibilityCheck = 0.0;
 		bool bRingLineOfSight = false;
 		float RingAlpha = 0.f;
+		/** Плавная полоска страха, 0..100. */
+		float DisplayedFear = 0.f;
 	};
 
 	/** Кольцо из отрезков, заполненное на Fraction по часовой стрелке от верхней точки. */
@@ -546,6 +578,8 @@ private:
 	void DrawRadio();
 	/** Кольцо у прицела, пока игрок поднимает упавшего. */
 	void DrawReviveProgress();
+	/** Кольцо у прицела, пока игрок успокаивает мирного. */
+	void DrawCalmProgress();
 	void DrawOrderWheel();
 	/** Закрашенный сектор кольца Inner..Outer от угла From до To в градусах (0 — вверх, по часовой). */
 	void DrawWedge(const FVector2D& Center, float Inner, float Outer, float From, float To, const FLinearColor& Color);
@@ -569,6 +603,7 @@ private:
 	int32 DrawnOrderLines = 0;
 	int32 DrawnOrderWords = 0;
 	int32 DrawnTactics = 0;
+	int32 DrawnFearBars = 0;
 
 	float HitMarkerAge = 1.0e9f;
 	bool bHitHeadshot = false;

@@ -417,6 +417,28 @@ void ANoFearHUD::DrawReviveProgress()
 	DrawLabel(Text, Center.X, Center.Y - Radius - 12.f * S - TextHeight, CompanionColor, 1.f * S, ELabelAlign::Center);
 }
 
+void ANoFearHUD::DrawCalmProgress()
+{
+	const ANoFearPlayerController* PlayerController = Cast<ANoFearPlayerController>(GetOwningPlayerController());
+	const APawn* Target = PlayerController ? PlayerController->GetCalmTarget() : nullptr;
+	if (!Target || !Canvas)
+	{
+		return;
+	}
+
+	const float S = GetUIScale();
+	const FVector2D Center(Canvas->SizeX * 0.5f, Canvas->SizeY * 0.5f);
+	const float Radius = 30.f * S;
+	DrawRing(Center, Radius, 1.f, FLinearColor(0.f, 0.f, 0.f, 0.5f), 7.f * S);
+	DrawRing(Center, Radius, PlayerController->GetCalmProgress(), CalmColor, 4.f * S);
+
+	const FString Text = LOCTEXT("Calming", "Успокаиваю").ToString();
+	float TextWidth = 0.f;
+	float TextHeight = 0.f;
+	GetTextSize(Text, TextWidth, TextHeight, GetFont(), 1.f * S);
+	DrawLabel(Text, Center.X, Center.Y - Radius - 12.f * S - TextHeight, CalmColor, 1.f * S, ELabelAlign::Center);
+}
+
 // ---------------------------------------------------------------------------
 // Колесо приказов
 // ---------------------------------------------------------------------------

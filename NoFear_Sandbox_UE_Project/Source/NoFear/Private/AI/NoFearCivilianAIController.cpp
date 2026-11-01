@@ -1,11 +1,15 @@
 #include "AI/NoFearCivilianAIController.h"
 #include "Core/NoFearPerf.h"
 
+#include "AI/NoFearCalmComponent.h"
 #include "AI/NoFearFleeLibrary.h"
 #include "Animation/NoFearPoseComponent.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
+#include "Core/NoFearAISettings.h"
 #include "Core/NoFearCharacter.h"
+#include "Core/NoFearFearComponent.h"
+#include "Core/NoFearFearSubsystem.h"
 #include "Core/NoFearHealthComponent.h"
 #include "Core/NoFearTeam.h"
 #include "UObject/ConstructorHelpers.h"
@@ -14,6 +18,15 @@ namespace
 {
 	/** Угроза сдвинулась настолько, что план бегства стоит пересчитать. */
 	constexpr float ThreatMovedReplanDistance = 300.f;
+
+	const FNoFearFearTuning& GetFearTuning(const UObject* WorldContext)
+	{
+		if (const UNoFearFearSubsystem* Subsystem = UNoFearFearSubsystem::Get(WorldContext))
+		{
+			return *Subsystem;
+		}
+		return UNoFearAISettings::Get()->Fear;
+	}
 }
 
 ANoFearCivilianAIController::ANoFearCivilianAIController(const FObjectInitializer& ObjectInitializer)
@@ -39,43 +52,37 @@ void ANoFearCivilianAIController::HandleDanger(ENoFearDangerType Type, AActor* S
 		return;
 	}
 
-	switch (Type)
+	// Страх уже добавлен в ReceiveDanger. Далёкая стрельба уже напуганного не пугает сильнее, но не даёт страху спадать.
+	float Amount = 0.f;
+	float Cap = 100.f;
+	if (const UNoFearFearSubsystem* Fear = UNoFearFearSubsystem::Get(this))
 	{
-	case ENoFearDangerType::Gunshot:
-		if (FVector::Dist(MyPawn->GetActorLocation(), ThreatLocation) <= PanicGunshotDistance)
-		{
-			Panic(ThreatLocation, Source, true);
-		}
-		else if (CivilianState == ENoFearCivilianState::Panic || CivilianState == ENoFearCivilianState::Cower)
-		{
-			// Уже напуган: далёкая стрельба просто не даёт успокоиться.
-			ResetCalmDownTimer();
-		}
-		else
-		{
-			BecomeWary(ThreatLocation);
-		}
-		break;
-
-	case ENoFearDangerType::Scream:
-		// Соседа испугало что-то в ThreatLocation; кричащий сам не угроза.
-		Panic(ThreatLocation, nullptr, false);
-		break;
-
-	case ENoFearDangerType::NearMiss:
-	case ENoFearDangerType::Fight:
-	case ENoFearDangerType::Explosion:
-	case ENoFearDangerType::Grenade:
-	default:
-		Panic(ThreatLocation, Source, true);
-		break;
+		Fear->GetDangerFear(Type, static_cast<float>(FVector::Dist(MyPawn->GetActorLocation(), ThreatLocation)), Amount, Cap);
 	}
+	const bool bScream = Type == ENoFearDangerType::Scream;
+	// Соседа испугало что-то в ThreatLocation; кричащий сам не угроза, и второй раз крик не передаётся.
+	ReactToFear(ThreatLocation, bScream ? nullptr : Source, Cap, !bScream);
 }
 
 void ANoFearCivilianAIController::NoteCorpse(ANoFearCharacter* Corpse)
 {
-	// Убийца где-то рядом: прочь от тела.
-	Panic(Corpse->GetActorLocation(), nullptr, true);
+	// Убийца где-то рядом: прочь от тела (страх от трупа уже добавлен в ScanCorpses).
+	ReactToFear(Corpse->GetActorLocation(), nullptr, GetFearTuning(this).CorpseCap, true);
+}
+
+void ANoFearCivilianAIController::ReactToFear(const FVector& Location, AActor* Source, float EventCap, bool bScream)
+{
+	const FNoFearFearTuning& Tuning = GetFearTuning(this);
+	const float Fear = GetFear();
+	if (Fear >= Tuning.PanicThreshold && EventCap >= Tuning.PanicThreshold)
+	{
+		Panic(Location, Source, bScream);
+	}
+	else if (Fear >= Tuning.AnxiousThreshold
+		&& (CivilianState == ENoFearCivilianState::Calm || CivilianState == ENoFearCivilianState::Wary))
+	{
+		BecomeWary(Location);
+	}
 }
 
 void ANoFearCivilianAIController::Panic(FVector ThreatLocation, AActor* Threat, bool bScream)
@@ -87,7 +94,15 @@ void ANoFearCivilianAIController::Panic(FVector ThreatLocation, AActor* Threat, 
 	}
 
 	AddThreat(Threat, ThreatLocation);
-	ResetCalmDownTimer();
+	// Паника держится, пока страх не упадёт ниже порога тревоги; вызов извне (сценарий, тест) поднимает страх до порога паники.
+	if (UNoFearFearComponent* FearComponent = UNoFearFearComponent::FindFear(MyPawn))
+	{
+		const float PanicThreshold = GetFearTuning(this).PanicThreshold;
+		if (FearComponent->GetFear() < PanicThreshold)
+		{
+			FearComponent->AddFear(100.f, PanicThreshold, ThreatLocation, false);
+		}
+	}
 
 	if (CivilianState == ENoFearCivilianState::Cower)
 	{
@@ -131,6 +146,11 @@ void ANoFearCivilianAIController::NotifyReachedSafety()
 void ANoFearCivilianAIController::CalmDown()
 {
 	const APawn* MyPawn = GetPawn();
+	if (UNoFearFearComponent* FearComponent = UNoFearFearComponent::FindFear(MyPawn);
+		FearComponent && FearComponent->GetFear() >= GetFearTuning(this).AnxiousThreshold)
+	{
+		FearComponent->SetFear(0.f);
+	}
 	Threats.Reset();
 	bThreatsChanged = false;
 	bHasFleeLocation = false;
@@ -199,7 +219,6 @@ void ANoFearCivilianAIController::Scream(const FVector& ThreatLocation)
 void ANoFearCivilianAIController::AddThreat(AActor* Actor, const FVector& Location)
 {
 	const double Now = GetNow();
-	LastThreatTime = Now;
 	for (FThreat& Threat : Threats)
 	{
 		const bool bSame = Actor ? Threat.Actor.Get() == Actor : (!Threat.Actor.IsValid() && FVector::DistSquared(Threat.Location, Location) < FMath::Square(ThreatMovedReplanDistance));
@@ -248,12 +267,6 @@ bool ANoFearCivilianAIController::PlanFlee()
 	return false;
 }
 
-void ANoFearCivilianAIController::ResetCalmDownTimer()
-{
-	LastThreatTime = GetNow();
-	CalmDownDelay = FMath::FRandRange(CalmDownMin, FMath::Max(CalmDownMin, CalmDownMax));
-}
-
 // --- Обновление ---
 
 void ANoFearCivilianAIController::UpdateBot()
@@ -284,8 +297,11 @@ void ANoFearCivilianAIController::UpdateCivilian()
 		return bDeadActor || Now - Threat.Time > ThreatMemoryTime;
 	});
 
-	// Кого бот уверенно знает (увидел монстра, в него стреляли) — угроза; кого едва заметил — повод насторожиться.
+	// Кого бот уверенно знает (увидел монстра, в него стреляли) — угроза, от неё бежать; страх от неё уже добавлен
+	// (UpdateSightFear, HandlePawnDamaged). Кого едва заметил — немного страха и повод насторожиться.
+	const FNoFearFearTuning& Tuning = GetFearTuning(this);
 	AActor* FreshThreat = nullptr;
+	FVector FreshThreatLocation = FVector::ZeroVector;
 	float FreshThreatDistance = TNumericLimits<float>::Max();
 	for (const TPair<TWeakObjectPtr<AActor>, FNoFearKnownActor>& Pair : KnownActors)
 	{
@@ -300,39 +316,67 @@ void ANoFearCivilianAIController::UpdateCivilian()
 		if (Knowledge.bVisible || bRecentlyAttacked)
 		{
 			const FVector Location = Knowledge.bVisible ? Actor->GetActorLocation() : Knowledge.LastKnownLocation;
-			if (CivilianState == ENoFearCivilianState::Calm || CivilianState == ENoFearCivilianState::Wary)
-			{
-				Panic(Location, Actor, true);
-			}
-			else
-			{
-				AddThreat(Actor, Location);
-			}
+			AddThreat(Actor, Location);
 			const float Distance = FVector::Dist2D(MyLocation, Location);
 			if (Distance < FreshThreatDistance)
 			{
 				FreshThreat = Actor;
+				FreshThreatLocation = Location;
 				FreshThreatDistance = Distance;
 			}
 		}
 		else if (Knowledge.Awareness >= SuspiciousThreshold && UNoFearTeamLibrary::AreHostile(MyPawn, Actor)
-			&& Now - FMath::Max(Knowledge.LastHeardTime, Knowledge.LastSeenTime) < 1.0
-			&& (CivilianState == ENoFearCivilianState::Calm || CivilianState == ENoFearCivilianState::Wary))
+			&& Now - FMath::Max(Knowledge.LastHeardTime, Knowledge.LastSeenTime) < 1.0)
 		{
-			BecomeWary(Knowledge.LastKnownLocation);
+			AddFear(Tuning.SuspiciousFear, Tuning.SuspiciousCap, Knowledge.LastKnownLocation, Actor);
+			if (GetFear() >= Tuning.AnxiousThreshold
+				&& (CivilianState == ENoFearCivilianState::Calm || CivilianState == ENoFearCivilianState::Wary))
+			{
+				BecomeWary(Knowledge.LastKnownLocation);
+			}
 		}
 	}
 
+	SyncFear(FreshThreat, FreshThreatLocation);
+}
+
+void ANoFearCivilianAIController::SyncFear(AActor* FreshThreat, const FVector& FreshThreatLocation)
+{
+	const APawn* MyPawn = GetPawn();
+	const double Now = GetNow();
+	const FNoFearFearTuning& Tuning = GetFearTuning(this);
+	const UNoFearFearComponent* FearComponent = UNoFearFearComponent::FindFear(MyPawn);
+	const float Fear = FearComponent ? FearComponent->GetFear() : 0.f;
+	// Без видимой угрозы — туда, откуда пришёл страх (монстр, выстрел, паникующий сосед).
+	const FVector FearLocation = FreshThreat ? FreshThreatLocation : (FearComponent ? FearComponent->GetSourceLocation() : MyPawn->GetActorLocation());
+	const float FreshThreatDistance = FreshThreat ? static_cast<float>(FVector::Dist2D(MyPawn->GetActorLocation(), FreshThreatLocation)) : TNumericLimits<float>::Max();
+
 	switch (CivilianState)
 	{
+	case ENoFearCivilianState::Calm:
 	case ENoFearCivilianState::Wary:
+		if (Fear >= Tuning.PanicThreshold)
+		{
+			// Кричит, только если сам видит угрозу; заразившийся паникой от соседей бежит молча.
+			Panic(FearLocation, FreshThreat, FreshThreat != nullptr);
+			break;
+		}
+		if (CivilianState == ENoFearCivilianState::Calm)
+		{
+			if (Fear >= Tuning.AnxiousThreshold)
+			{
+				BecomeWary(FearLocation);
+			}
+			break;
+		}
 		if (bWaryFocus && Now >= WaryLookUntil)
 		{
 			// Посмотрел на звук — теперь отходит, глядя куда идёт.
 			ClearFocus(EAIFocusPriority::Gameplay);
 			bWaryFocus = false;
 		}
-		if (Now >= WaryUntil)
+		// Успокоил герой — тревога проходит сразу, без WaryDuration.
+		if (Fear < Tuning.AnxiousThreshold && (Now >= WaryUntil || (FearComponent && Now - FearComponent->GetLastComfortTime() < 1.0)))
 		{
 			bHasFleeLocation = false;
 			SetCivilianState(ENoFearCivilianState::Calm);
@@ -340,7 +384,7 @@ void ANoFearCivilianAIController::UpdateCivilian()
 		break;
 
 	case ENoFearCivilianState::Panic:
-		if (Now - LastThreatTime > CalmDownDelay)
+		if (Fear < Tuning.AnxiousThreshold)
 		{
 			CalmDown();
 			break;
@@ -361,7 +405,7 @@ void ANoFearCivilianAIController::UpdateCivilian()
 		break;
 
 	case ENoFearCivilianState::Cower:
-		if (Now - LastThreatTime > CalmDownDelay)
+		if (Fear < Tuning.AnxiousThreshold)
 		{
 			CalmDown();
 			break;
@@ -496,6 +540,17 @@ void ANoFearCivilianAIController::WriteBlackboard()
 		{
 			BlackboardComp->ClearValue(FNoFearBotKeys::FleeLocation);
 		}
+	}
+}
+
+void ANoFearCivilianAIController::OnPossess(APawn* InPawn)
+{
+	Super::OnPossess(InPawn);
+	// Героя можно попросить успокоить испуганного мирного: удерживать E рядом с ним.
+	if (InPawn && !InPawn->FindComponentByClass<UNoFearCalmComponent>())
+	{
+		UNoFearCalmComponent* Calm = NewObject<UNoFearCalmComponent>(InPawn, TEXT("CalmComponent"));
+		Calm->RegisterComponent();
 	}
 }
 

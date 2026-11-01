@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "AI/NoFearPackSubsystem.h"
 #include "AI/NoFearSquadSubsystem.h"
+#include "Core/NoFearFearSubsystem.h"
 #include "Engine/DeveloperSettings.h"
 #include "NoFearAISettings.generated.h"
 
@@ -119,4 +120,8 @@ public:
 
 	UPROPERTY(Config, EditAnywhere, Category = "HUD", meta = (ShowOnlyInnerProperties))
 	FNoFearAIHudTuning Hud;
+
+	/** Страх людей (этап 11). */
+	UPROPERTY(Config, EditAnywhere, Category = "Fear", meta = (ShowOnlyInnerProperties))
+	FNoFearFearTuning Fear;
 };

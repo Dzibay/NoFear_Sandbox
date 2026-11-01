@@ -8,6 +8,8 @@
 #include "BrainComponent.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "Core/NoFearCharacter.h"
+#include "Core/NoFearFearComponent.h"
+#include "Core/NoFearFearSubsystem.h"
 #include "Core/NoFearTeam.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
@@ -341,6 +343,7 @@ void ANoFearAIController::UpdateBot()
 
 	UpdateAwareness(DeltaTime);
 	ForgetStaleActors();
+	UpdateSightFear(DeltaTime);
 	ScanCorpses();
 
 	// Целью становится только тот, в ком бот уверен (шкала полна).
@@ -992,6 +995,10 @@ void ANoFearAIController::ScanCorpses()
 			continue;
 		}
 		NoticedCorpses.Add(Corpse);
+		if (const UNoFearFearSubsystem* Fear = UNoFearFearSubsystem::Get(this))
+		{
+			AddFear(Fear->CorpseFear, Fear->CorpseCap, Corpse->GetActorLocation(), Corpse);
+		}
 		NoteCorpse(Corpse);
 		return;
 	}
@@ -1076,6 +1083,10 @@ void ANoFearAIController::HandlePawnDamaged(UNoFearHealthComponent* Component, c
 	if (!Attacker && Info.DamageCauser)
 	{
 		Attacker = Info.DamageCauser->GetInstigator() ? Info.DamageCauser->GetInstigator() : Info.DamageCauser.Get();
+	}
+	if (const UNoFearFearSubsystem* Fear = UNoFearFearSubsystem::Get(this); Fear && GetPawn() && Info.Amount > 0.f)
+	{
+		AddFear(Fear->DamageFear, Fear->DamageCap, Attacker ? Attacker->GetActorLocation() : GetPawn()->GetActorLocation(), Attacker);
 	}
 	ReportThreat(Attacker);
 
@@ -1218,6 +1229,83 @@ void ANoFearAIController::HandleDanger(ENoFearDangerType Type, AActor* Source, F
 	if (Type == ENoFearDangerType::Grenade && bEvadeGrenades)
 	{
 		BeginGrenadeEvade(Cast<ANoFearGrenade>(Source));
+	}
+}
+
+// --- Страх ---
+
+void ANoFearAIController::ReceiveDanger(ENoFearDangerType Type, AActor* Source, FVector ThreatLocation)
+{
+	const APawn* MyPawn = GetPawn();
+	if (!MyPawn || UNoFearHealthComponent::IsActorDead(MyPawn))
+	{
+		return;
+	}
+	if (const UNoFearFearSubsystem* Fear = UNoFearFearSubsystem::Get(this))
+	{
+		float Amount = 0.f;
+		float Cap = 0.f;
+		Fear->GetDangerFear(Type, static_cast<float>(FVector::Dist(MyPawn->GetActorLocation(), ThreatLocation)), Amount, Cap);
+		// Крик соседа пугает, но дальше не передаётся: иначе крики гоняли бы панику по толпе по кругу.
+		AddFear(Amount, Cap, ThreatLocation, Source, Type != ENoFearDangerType::Scream);
+	}
+	HandleDanger(Type, Source, ThreatLocation);
+}
+
+float ANoFearAIController::GetFear() const
+{
+	return UNoFearFearComponent::GetActorFear(GetPawn());
+}
+
+void ANoFearAIController::AddFear(float Amount, float Cap, const FVector& Location, const AActor* Source, bool bDirect)
+{
+	if (UNoFearFearComponent* Fear = UNoFearFearComponent::FindFear(GetPawn()))
+	{
+		Fear->AddFearFrom(Amount, Cap, Location, Source, bDirect);
+	}
+}
+
+void ANoFearAIController::UpdateSightFear(float DeltaTime)
+{
+	const APawn* MyPawn = GetPawn();
+	UNoFearFearComponent* FearComponent = UNoFearFearComponent::FindFear(MyPawn);
+	const UNoFearFearSubsystem* Fear = UNoFearFearSubsystem::Get(this);
+	if (!FearComponent || !Fear || !FearComponent->CanBeAfraid())
+	{
+		return;
+	}
+
+	const FVector MyLocation = MyPawn->GetActorLocation();
+	const AActor* WorstMonster = nullptr;
+	float WorstRate = 0.f;
+	float WorstCap = 0.f;
+	for (TPair<TWeakObjectPtr<AActor>, FNoFearKnownActor>& Pair : KnownActors)
+	{
+		const AActor* Actor = Pair.Key.Get();
+		if (!Actor || !Pair.Value.bVisible || !UNoFearFearSubsystem::IsFrightening(UNoFearTeamLibrary::GetTeam(Actor))
+			|| UNoFearHealthComponent::IsActorDead(Actor))
+		{
+			continue;
+		}
+		float Shock = 0.f;
+		float Rate = 0.f;
+		float Cap = 0.f;
+		Fear->GetMonsterSightFear(static_cast<float>(FVector::Dist(MyLocation, Actor->GetActorLocation())), Shock, Rate, Cap);
+		if (!Pair.Value.bFearShocked)
+		{
+			Pair.Value.bFearShocked = true;
+			FearComponent->AddFearFrom(Shock, 100.f, Actor->GetActorLocation(), Actor);
+		}
+		if (Rate > WorstRate)
+		{
+			WorstMonster = Actor;
+			WorstRate = Rate;
+			WorstCap = Cap;
+		}
+	}
+	if (WorstMonster)
+	{
+		FearComponent->AddFearFrom(WorstRate * DeltaTime, WorstCap, WorstMonster->GetActorLocation(), WorstMonster);
 	}
 }
 

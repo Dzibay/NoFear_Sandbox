@@ -3,6 +3,8 @@
 
 #include "AI/NoFearCombatSubsystem.h"
 #include "Animation/NoFearPoseComponent.h"
+#include "Core/NoFearFearComponent.h"
+#include "Core/NoFearFearSubsystem.h"
 #include "Core/NoFearHealthComponent.h"
 #include "Core/NoFearTeam.h"
 #include "EngineUtils.h"
@@ -286,6 +288,17 @@ float UNoFearCombatComponent::GetCurrentSpreadDegrees(float Distance) const
 	if (!bHasLineOfSight)
 	{
 		Multiplier *= BlindFireSpreadMultiplier;
+	}
+
+	// Паника (этап 11): руки трясутся — от порога паники до страха 100 разброс растёт до PanicSpreadMultiplier.
+	if (const UNoFearFearSubsystem* FearSubsystem = UNoFearFearSubsystem::Get(this))
+	{
+		const float Fear = UNoFearFearComponent::GetActorFear(GetOwner());
+		if (Fear >= FearSubsystem->PanicThreshold)
+		{
+			const float PanicAlpha = FMath::Clamp((Fear - FearSubsystem->PanicThreshold) / FMath::Max(1.f, 100.f - FearSubsystem->PanicThreshold), 0.f, 1.f);
+			Multiplier *= FMath::Lerp(1.f, FearSubsystem->PanicSpreadMultiplier, PanicAlpha);
+		}
 	}
 
 	return FMath::Min(BaseSpreadDegrees * Multiplier, MaxSpreadDegrees);

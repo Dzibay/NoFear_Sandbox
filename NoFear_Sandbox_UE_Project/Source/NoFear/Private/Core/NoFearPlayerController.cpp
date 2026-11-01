@@ -3,6 +3,8 @@
 #include "AI/NoFearBotSubsystem.h"
 #include "AI/NoFearCompanionAIController.h"
 #include "Core/NoFearCharacter.h"
+#include "Core/NoFearFearComponent.h"
+#include "Core/NoFearFearSubsystem.h"
 #include "Core/NoFearInteractableComponent.h"
 #include "Core/NoFearPerf.h"
 #include "Core/NoFearTeam.h"
@@ -83,6 +85,7 @@ void ANoFearPlayerController::OnUnPossess()
 {
 	CloseOrderWheel(false);
 	StopRevive();
+	StopCalming();
 
 	Super::OnUnPossess();
 }
@@ -91,6 +94,7 @@ void ANoFearPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	CloseOrderWheel(false);
 	StopRevive();
+	StopCalming();
 
 	Super::EndPlay(EndPlayReason);
 }
@@ -128,6 +132,7 @@ void ANoFearPlayerController::NotifyPawnDied(const FNoFearDamageInfo& Info)
 
 	CloseOrderWheel(false);
 	StopRevive();
+	StopCalming();
 	bWaitingForRespawn = true;
 	RespawnTime = GetWorld()->GetTimeSeconds() + RespawnDelay;
 	// Камера остаётся на теле, можно оглядеться; двигаться мёртвый не должен.
@@ -412,6 +417,7 @@ void ANoFearPlayerController::PlayerTick(float DeltaTime)
 	UpdateCanBeDowned();
 	UpdateFocusedInteractable();
 	UpdateRevive(DeltaTime);
+	UpdateCalming(DeltaTime);
 	if (bOrderWheelOpen)
 	{
 		UpdateOrderWheel();
@@ -670,6 +676,7 @@ void ANoFearPlayerController::OpenOrderWheel()
 	}
 
 	StopRevive();
+	StopCalming();
 	bOrderWheelOpen = true;
 	OrderWheelCursor = FVector2D::ZeroVector;
 	OrderWheelSelection = INDEX_NONE;
@@ -933,20 +940,14 @@ bool ANoFearPlayerController::StartRevive(APawn* DownedPawn)
 	}
 
 	StopRevive();
+	StopCalming();
 	ReviveTarget = DownedPawn;
 	ReviveElapsed = 0.f;
 	bReviveHeldByInput = bHandlingInteractInput;
 	ReviveKeys.Reset();
 	if (bReviveHeldByInput)
 	{
-		if (const UEnhancedInputLocalPlayerSubsystem* Input = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()); Input && InteractAction)
-		{
-			ReviveKeys = Input->QueryKeysMappedToAction(InteractAction);
-		}
-		if (ReviveKeys.IsEmpty())
-		{
-			ReviveKeys.Add(EKeys::E);
-		}
+		GetInteractKeys(ReviveKeys);
 	}
 	// Поднимает на месте и не стреляет.
 	SetIgnoreMoveInput(true);
@@ -1014,6 +1015,119 @@ void ANoFearPlayerController::UpdateRevive(float DeltaTime)
 	{
 		TargetHealth->Revive(MyPawn);
 		StopRevive();
+	}
+}
+
+void ANoFearPlayerController::GetInteractKeys(TArray<FKey>& OutKeys) const
+{
+	OutKeys.Reset();
+	if (const UEnhancedInputLocalPlayerSubsystem* Input = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()); Input && InteractAction)
+	{
+		OutKeys = Input->QueryKeysMappedToAction(InteractAction);
+	}
+	if (OutKeys.IsEmpty())
+	{
+		OutKeys.Add(EKeys::E);
+	}
+}
+
+// --- Успокоение мирного ---
+
+bool ANoFearPlayerController::StartCalming(APawn* ScaredPawn)
+{
+	APawn* MyPawn = GetPawn();
+	const UNoFearFearComponent* Fear = UNoFearFearComponent::FindFear(ScaredPawn);
+	const UNoFearFearSubsystem* FearSubsystem = UNoFearFearSubsystem::Get(this);
+	if (!MyPawn || !ScaredPawn || ScaredPawn == MyPawn || !Fear || !FearSubsystem || UNoFearHealthComponent::IsActorDead(ScaredPawn)
+		|| UNoFearHealthComponent::IsActorIncapacitated(MyPawn) || UNoFearTeamLibrary::AreHostile(MyPawn, ScaredPawn)
+		|| Fear->GetFear() <= FearSubsystem->CalmTargetFear)
+	{
+		return false;
+	}
+	if (CalmTarget.Get() == ScaredPawn)
+	{
+		return true;
+	}
+
+	StopRevive();
+	StopCalming();
+	CalmTarget = ScaredPawn;
+	CalmStartFear = Fear->GetFear();
+	bCalmHeldByInput = bHandlingInteractInput;
+	CalmKeys.Reset();
+	if (bCalmHeldByInput)
+	{
+		GetInteractKeys(CalmKeys);
+	}
+	// Говорит с человеком на месте и не стреляет.
+	SetIgnoreMoveInput(true);
+	bCalmBlocksMove = true;
+	if (const ANoFearCharacter* PlayerCharacter = Cast<ANoFearCharacter>(MyPawn))
+	{
+		if (UNoFearWeaponComponent* Weapons = PlayerCharacter->GetWeaponComponent())
+		{
+			Weapons->StopFire();
+		}
+	}
+	return true;
+}
+
+void ANoFearPlayerController::StopCalming()
+{
+	CalmTarget = nullptr;
+	CalmStartFear = 0.f;
+	bCalmHeldByInput = false;
+	if (bCalmBlocksMove)
+	{
+		bCalmBlocksMove = false;
+		SetIgnoreMoveInput(false);
+	}
+}
+
+float ANoFearPlayerController::GetCalmProgress() const
+{
+	const UNoFearFearComponent* Fear = UNoFearFearComponent::FindFear(CalmTarget.Get());
+	const UNoFearFearSubsystem* FearSubsystem = UNoFearFearSubsystem::Get(this);
+	if (!Fear || !FearSubsystem)
+	{
+		return 0.f;
+	}
+	const float Range = CalmStartFear - FearSubsystem->CalmTargetFear;
+	return Range > 0.f ? FMath::Clamp((CalmStartFear - Fear->GetFear()) / Range, 0.f, 1.f) : 1.f;
+}
+
+void ANoFearPlayerController::UpdateCalming(float DeltaTime)
+{
+	if (!CalmTarget.IsValid())
+	{
+		if (bCalmBlocksMove)
+		{
+			StopCalming();
+		}
+		return;
+	}
+
+	const APawn* MyPawn = GetPawn();
+	const APawn* Target = CalmTarget.Get();
+	UNoFearFearComponent* Fear = UNoFearFearComponent::FindFear(Target);
+	const UNoFearFearSubsystem* FearSubsystem = UNoFearFearSubsystem::Get(this);
+	const UNoFearHealthComponent* MyHealth = UNoFearHealthComponent::FindHealth(MyPawn);
+	bool bHeld = !bCalmHeldByInput;
+	for (const FKey& Key : CalmKeys)
+	{
+		bHeld = bHeld || IsInputKeyDown(Key);
+	}
+	const bool bInRange = MyPawn && FearSubsystem && FVector::Dist(MyPawn->GetActorLocation(), Target->GetActorLocation()) <= FearSubsystem->CalmDistance;
+	if (!bHeld || !bInRange || !Fear || UNoFearHealthComponent::IsActorDead(Target) || !MyHealth || MyHealth->IsDead() || MyHealth->IsDowned())
+	{
+		StopCalming();
+		return;
+	}
+
+	Fear->Comfort(FearSubsystem->CalmRate * DeltaTime);
+	if (Fear->GetFear() <= FearSubsystem->CalmTargetFear)
+	{
+		StopCalming();
 	}
 }
 
