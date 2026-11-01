@@ -1,4 +1,6 @@
 #include "Core/NoFearHUD.h"
+#include "Core/NoFearAISettings.h"
+#include "Core/NoFearPerf.h"
 
 #include "AI/NoFearAIController.h"
 #include "AI/NoFearBotSubsystem.h"
@@ -40,8 +42,6 @@ namespace
 	constexpr int32 MaxDamageIndicators = 8;
 	/** Как часто пересчитывается прямая видимость панели над ботом. */
 	constexpr double BotVisibilityInterval = 0.2;
-	/** Сколько панелей над ботами рисуется за кадр: ближайшие, остальные пропускаются. */
-	constexpr int32 MaxBotPanels = 24;
 
 	TAutoConsoleVariable<int32> CVarBotIndicators(
 		TEXT("NoFear.HUD.BotIndicators"), 1,
@@ -1150,6 +1150,7 @@ void ANoFearHUD::DrawRing(const FVector2D& Center, float Radius, float Fraction,
 
 void ANoFearHUD::DrawBotIndicators()
 {
+	NOFEAR_PERF_SCOPE(HUD);
 	const int32 Mode = CVarBotIndicators.GetValueOnGameThread();
 	const ANoFearPlayerController* PlayerController = Cast<ANoFearPlayerController>(GetOwningPlayerController());
 	const APawn* PlayerPawn = GetOwningPawn();
@@ -1379,6 +1380,8 @@ void ANoFearHUD::DrawBotIndicators()
 
 	// Ближайшие рисуются первыми и вытесняют дальние при переизбытке.
 	Panels.Sort([](const FPanelDraw& A, const FPanelDraw& B) { return A.Distance < B.Distance; });
+	// Сколько панелей рисуется за кадр (Project Settings → NoFear AI → HUD): ближайшие, остальные пропускаются.
+	const int32 MaxBotPanels = UNoFearAISettings::Get()->Hud.MaxBotPanels;
 	if (Panels.Num() > MaxBotPanels)
 	{
 		Panels.SetNum(MaxBotPanels);
@@ -1764,6 +1767,7 @@ void ANoFearHUD::DrawRoleIcon(const FVector2D& Center, float Size, ENoFearSquadR
 
 void ANoFearHUD::DrawSquadRings()
 {
+	NOFEAR_PERF_SCOPE(HUD);
 	DrawnSquadRings = DrawnSquadLines = DrawnOrderLines = 0;
 	const int32 Mode = CVarBotIndicators.GetValueOnGameThread();
 	const ANoFearPlayerController* PlayerController = Cast<ANoFearPlayerController>(GetOwningPlayerController());
@@ -1794,6 +1798,7 @@ void ANoFearHUD::DrawSquadRings()
 		bool bHostile = false;
 		bool bDim = false;
 		float Opacity = 0.f;
+		float Distance = 0.f;
 	};
 	TArray<FRingDraw> Rings;
 
@@ -1858,7 +1863,16 @@ void ANoFearHUD::DrawSquadRings()
 			continue;
 		}
 		Ring.Center = Pawn->GetActorLocation() - FVector(0.f, 0.f, Pawn->GetSimpleCollisionHalfHeight() - 4.f);
+		Ring.Distance = Distance;
 		Rings.Add(Ring);
+	}
+
+	// Не больше MaxSquadRings колец (Project Settings → NoFear AI → HUD): ближние вытесняют дальние.
+	Rings.Sort([](const FRingDraw& A, const FRingDraw& B) { return A.Distance < B.Distance; });
+	const int32 MaxRings = UNoFearAISettings::Get()->Hud.MaxSquadRings;
+	if (Rings.Num() > MaxRings)
+	{
+		Rings.SetNum(MaxRings);
 	}
 
 	const float Radius = SquadRingRadius;

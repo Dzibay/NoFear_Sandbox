@@ -1,4 +1,5 @@
 #include "AI/NoFearCivilianAIController.h"
+#include "Core/NoFearPerf.h"
 
 #include "AI/NoFearFleeLibrary.h"
 #include "Animation/NoFearPoseComponent.h"
@@ -344,7 +345,8 @@ void ANoFearCivilianAIController::UpdateCivilian()
 			CalmDown();
 			break;
 		}
-		if (Now >= NextReplanTime)
+		// Перепланирование — плановый поиск: при исчерпанном лимите кадра ждёт следующего обновления.
+		if (Now >= NextReplanTime && FNoFearSearchBudget::HasBudget(ENoFearSearchKind::Location))
 		{
 			TArray<FVector> Locations;
 			GetThreatLocations(Locations);

@@ -137,6 +137,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
 	AActor* GetCurrentTarget() const { return CurrentTarget.Get(); }
 
+	/** Уровень детализации (UNoFearAILodSubsystem): бот думает раз в UpdateInterval * Scale (Scale >= 1). */
+	void SetThinkScale(float Scale);
+
+	/** Как часто бот сейчас думает, сек (UpdateInterval с поправкой на дальность). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	float GetThinkInterval() const { return UpdateInterval * ThinkScale; }
+
 	/** Всё, что бот знает о врагах (отряд собирает отсюда, кого видят его бойцы). */
 	const TMap<TWeakObjectPtr<AActor>, FNoFearKnownActor>& GetKnownActors() const { return KnownActors; }
 
@@ -538,7 +545,11 @@ protected:
 	TMap<TWeakObjectPtr<AActor>, FNoFearKnownActor> KnownActors;
 
 private:
+	/** Таймер размышлений: UpdateBot под замером NoFearPerf. */
+	void RunUpdateBot();
+
 	FTimerHandle UpdateTimer;
+	float ThinkScale = 1.f;
 	FTimerHandle StaggerTimer;
 	TWeakObjectPtr<UNoFearHealthComponent> BoundHealth;
 	TWeakObjectPtr<UNoFearPoseComponent> BoundPose;

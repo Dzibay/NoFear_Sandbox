@@ -1,4 +1,5 @@
 #include "AI/EnvQueryTest_NoFearCover.h"
+#include "Core/NoFearPerf.h"
 
 #include "AI/EnvQueryContext_NoFearThreat.h"
 #include "AI/NoFearCombatComponent.h"
@@ -31,6 +32,7 @@ UEnvQueryTest_NoFearCover::UEnvQueryTest_NoFearCover(const FObjectInitializer& O
 
 void UEnvQueryTest_NoFearCover::RunTest(FEnvQueryInstance& QueryInstance) const
 {
+	NOFEAR_PERF_SCOPE(Cover);
 	UObject* QueryOwner = QueryInstance.Owner.Get();
 	UWorld* World = QueryInstance.World;
 	if (!QueryOwner || !World)

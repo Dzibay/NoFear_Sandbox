@@ -425,7 +425,7 @@ Class Defaults контроллера → **NoFear | AI**:
 - **Рык.** Первый, кто заметил цель, рычит (поза Roar, шум): стая получает цель и бежит, но сама не рычит.
 - **Слух.** Зрение хуже, чем у людей (1800 см, ±70°), слух дальше: **Hearing Range Scale** 1.75 к дальности любого шума, шаги слышны громче. На шум монстр бежит, а не идёт. Цель выбирает до 8000 см, помнит 15 с.
 
-Параметры `UNoFearPackSubsystem` (пока задаются только в C++):
+Параметры `UNoFearPackSubsystem` — Project Settings → Game → **NoFear AI**, раздел **Pack** (раздел 12):
 
 | Параметр | По умолчанию | Смысл |
 |---|---|---|
@@ -701,7 +701,7 @@ Class Defaults контроллера → **NoFear | AI**:
 
 Настройки — Class Defaults `NoFearHUD` → **Bots | Squad**: `Show Squad Rings`, `Squad Ring Radius`, `Squad Ring Max Distance`, `Squad Line Time`, `Squad Role Change Time`, цвета ролей и `Squad Ally Border Color`; для приказов — `Show Squad Orders`, `Squad Order Line Time`, `Squad Order Flash Time`, `Squad Fire Line Color`, `Squad Morale Low Color` / `Squad Morale High Color`. Переменная `NoFear.HUD.BotIndicators 0` выключает и кольца.
 
-**Настройки отряда** — свойства `UNoFearSquadSubsystem` (разделы **NoFear | Squad**, **…| Morale**, **…| Tactics**, **…| Help**, **…| Assist**, **…| Grenade**; значения по умолчанию — в таблицах выше). Это подсистема мира, в Details её нет: менять из C++ (значения по умолчанию в `NoFearSquadSubsystem.h`) или во время игры из Blueprint / Python, например `unreal.NoFearSquadSubsystem.get(world).set_editor_property('fallback_morale', 0.3)`. У бойца — `NoFearShooterAIController`, раздел **NoFear | AI | Squad**: `Role Weapons`, `Squad Target Share Penalty`, `Bound Gain`, `Rush Gain`, `Reinforce Search Radius`, `Medic Wait Radius`, `Contact Cover Advance`; в **NoFear | AI | Cover** — `Flank Max Threat Distance`.
+**Настройки отряда** — Project Settings → Game → **NoFear AI**, разделы **Squad**, **Squad | Morale**, **…| Tactics**, **…| Help**, **…| Assist**, **…| Grenade** (значения по умолчанию — в таблицах выше и в `FNoFearSquadTuning`, `NoFearSquadSubsystem.h`; см. раздел 12). Подсистема копирует их при создании мира. Во время игры — `GetTuning` / `SetTuning` у подсистемы, в Python: `sq = unreal.NoFearSquadSubsystem.get(world); t = sq.get_tuning(); t.fallback_morale = 0.3; sq.set_tuning(t)`. У бойца — `NoFearShooterAIController`, раздел **NoFear | AI | Squad**: `Role Weapons`, `Squad Target Share Penalty`, `Bound Gain`, `Rush Gain`, `Reinforce Search Radius`, `Medic Wait Radius`, `Contact Cover Advance`; в **NoFear | AI | Cover** — `Flank Max Threat Distance`.
 
 Для Blueprint и Python у подсистемы (`UNoFearSquadSubsystem::Get`, в Python — `unreal.NoFearSquadSubsystem.get(world)`):
 - состав: `GetSquadRole`, `GetSquadCommander`, `GetSquadMembers`, `GetSquadKnownEnemyCount`, `CountSquadmatesTargeting`, `UpdateSquads`;
@@ -878,17 +878,54 @@ Class Defaults контроллера → **NoFear | AI**:
 
 Во время игры цвет меняет функция **Set Body Color**.
 
-## 12. Чего пока нет
+## 12. Нагрузка и общие настройки
+
+**Общие настройки ИИ** — Project Settings → Game → **NoFear AI** (`UNoFearAISettings`, хранятся в `Config/DefaultGame.ini`). Подсистемы копируют числа при создании мира, поэтому правка действует со следующего запуска игры. Разделы:
+
+- **Squad…** — числа отрядов (раздел 9.2), **Pack** — числа стай (раздел 8.3). На ходу — `GetTuning` / `SetTuning` у `UNoFearSquadSubsystem` и `UNoFearPackSubsystem`.
+- **Lod** — уровни детализации ботов, ниже.
+- **Search** — лимиты поиска точек, ниже.
+- **HUD** — `Max Bot Panels` (24) и `Max Squad Rings` (12): больше панелей над ботами и колец под ногами не рисуется, ближние вытесняют дальние.
+
+**Уровни детализации** (`UNoFearAILodSubsystem`, раз в `Interval` 0.25 с). Уровень бота — по расстоянию до камеры игрока: ближе `Near Distance` (2500 см) — Near, ближе `Mid Distance` (5000) — Mid, дальше — Far. Вниз уровень меняется, только когда бот ушёл за границу на `Hysteresis` (10 %), чтобы не дёргался. Бот, чья цель — игрок, всегда Near.
+
+| | Near | Mid | Far |
+|---|---|---|---|
+| Решения контроллера (`UpdateBot`) | `Update Interval` (0.25 с) | ×`Mid Think Scale` (1.6) | ×`Far Think Scale` (3) |
+| Линия огня и подавление (`NoFearCombatComponent`) | `Update Interval` (0.1 с) | ×`Mid Combat Scale` (1.5) | ×`Far Combat Scale` (3) |
+| Анимация | каждый кадр | URO | URO; за кадром — только монтажи (`Freeze Far Offscreen Pose`) |
+| Точки-кандидаты укрытия | все | ×`Mid Sample Scale` (0.75) | ×`Far Sample Scale` (0.5) |
+
+URO (`Anim Update Rate Optimization`) — пропуск кадров анимации по размеру бота на экране, за кадром — раз в 4 кадра. Деревья поведения не трогаются: они и так работают по событиям.
+
+**Лимиты поиска.** За кадр не больше `Cover Searches Per Frame` (2) полных поисков укрытия и `Location Searches Per Frame` (3) поисков точки (бегство, обход, Find Location). Плановые поиски (периодическая проверка укрытия стрелка, отход раненого, перепланирование бегства мирного) при исчерпанном лимите ждут следующего кадра. Первая реакция — паника, уход от гранаты, приказ отряда — лимит не ждёт.
+
+**Нагрузочный тест.** В консоли игры:
+
+- `NoFearStressTest 40 battle` — убрать ботов (кроме напарника) и расставить 40 вокруг игрока на навмеше: союзный отряд, три вражеских отряда на 30–60 м, две стаи монстров на 40–70 м, 10 мирных; больше 40 — дополнительные вражеские отряды. `calm` вместо `battle` — то же в 2.5 раза дальше, бои начинаются не сразу.
+- `NoFearPerf 10` — замер на 10 с, в лог строка `NOFEAR_PERF`: FPS, время кадра и игрового потока (среднее / 95 % / максимум), сколько ботов на каждом уровне, сколько поисков отложено, и время по системам за кадр (решения, бой, отряды, стаи, укрытия, поиск точек, HUD, позы, LOD).
+- `NoFear.AI.Lod 0` — выключить уровни детализации (для сравнения), `NoFear.AI.LodDebug 1` — подписать над ботами уровень и интервал решений.
+
+Замер в Development, окно 1280×720, 40 ботов, бой:
+
+| | FPS | Кадр, мс | Код ИИ, мс |
+|---|---|---|---|
+| Без уровней (`NoFear.AI.Lod 0`) | 61–65 | 15.3–16.3 | 1.0–1.2 |
+| С уровнями | 73–74 | 13.5–13.7 | 1.0–1.2 |
+| С уровнями, `calm` | 93–106 | 9.5–10.8 | ~0.3 |
+| С уровнями, 60 ботов | 53–59 | 17.0–18.9 | 1.3–1.7 |
+
+Код ИИ — всё, что считает `NoFearPerf`, из них HUD — 0.2–1 мс. Это малая часть кадра; основное — движение персонажей, анимация и отрисовка, поэтому больше всего даёт URO.
+
+## 13. Чего пока нет
 
 - Эффект и звук взрыва гранаты временные (`P_Explosion_Big_A`, звук выстрела), граната в руке и в полёте — простая сфера движка.
 - У монстров нет анимации ударов: работают процедурные позы Swing, Lunge, Spit и Roar, слот `Montage` пустой.
 - Прыгун, плевун и танк — манекен с другим цветом и масштабом, своих моделей нет. Звуков плевка, лужи и тарана нет (слоты есть).
-- Настройки `UNoFearPackSubsystem` не вынесены в редактор.
 - Укрытия ищутся на C++ (раздел 9.1). Классы `EnvQueryContext_NoFearThreat` и `EnvQueryTest_NoFearCover` для EQS остались, но в деревьях не используются.
 - Подавление только удлиняет время в укрытии (×1.5); отдельной ветки «залечь» нет.
 - Точки открытого боя не проверяются на полный путь: бот на отдельном острове навмеша (например, на ящике) стоит и стреляет с места.
 - Отрядами командует только ИИ: игрок приказов не отдаёт, союзный отряд игрока не слушает.
-- Настройки `UNoFearSquadSubsystem` (мораль, тактики, помощь) не вынесены в редактор: значения по умолчанию в C++, на ходу — из Blueprint / Python.
 - Санитар перевязывает без анимации: стоит присев 4 с.
 - Раненый не лежит, а сидит в приседе (анимации лежания у манекена нет); подъём и передача магазина и бинта — без анимации.
 - Круг приказов командует одним напарником — первым живым из списка.

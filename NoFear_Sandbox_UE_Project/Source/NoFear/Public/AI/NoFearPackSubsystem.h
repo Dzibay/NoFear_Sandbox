@@ -41,6 +41,91 @@ struct FNoFearPackMemberView
 };
 
 /**
+ * Числа стай монстров: сбор, окружение, волны, разбегание.
+ * Хранятся в Project Settings → Game → NoFear AI; подсистема копирует их к себе при создании мира.
+ */
+USTRUCT(BlueprintType)
+struct FNoFearPackTuning
+{
+	GENERATED_BODY()
+
+	/** Как часто пересобирать стаи и решения, сек. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0.05"))
+	float UpdateInterval = 0.2f;
+
+	/** Монстр без PackName ближе этого к кому-то из стаи без имени — вступает в неё; спокойные стаи так же сливаются, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
+	float PackFormRadius = 1500.f;
+
+	/** Больше этого в стае не бывает. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "1"))
+	int32 MaxPackSize = 8;
+
+	/** Монстр без PackName отстал от спокойного вожака дальше этого — уходит из стаи, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
+	float LeaveDistance = 6000.f;
+
+	/** Цель, которую кто-то видел (или которая в него попала) не дольше этого назад, сообщается всей стае, сек. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
+	float PackIntelTime = 1.f;
+
+	/** Отставший дальше этого от вожака — вожак ждёт его (не дольше MaxHoldTime), см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
+	float StragglerDistance = 1500.f;
+
+	/** Сколько вожак ждёт отставших, сек. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
+	float MaxHoldTime = 4.f;
+
+	/** Шаг цепи при сборе: расстояние между соседями, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
+	float GatherSpacing = 350.f;
+
+	/** Вожак подвёл стаю к видимой цели ближе этого — окружать, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
+	float EngageDistance = 1500.f;
+
+	/** Кто-то из стаи уже ближе этого к видимой цели — окружать сразу, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
+	float ContactDistance = 700.f;
+
+	/** Все дальше этого от цели (сбежала) — снова собираться и догонять, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
+	float DisengageDistance = 2500.f;
+
+	/** Монстр ближе этого к своему месту в кольце — на месте, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
+	float SlotReachedDistance = 300.f;
+
+	/** На местах такая доля кольца — атаковать. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0", ClampMax = "1"))
+	float EncircleReadyFraction = 0.6f;
+
+	/** Окружают не дольше этого, потом атакуют как есть, сек. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
+	float EncircleMaxTime = 5.f;
+
+	/** Место дальше этого угла от монстра — идёт к нему в обход, шагами по столько градусов. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "10", ClampMax = "90"))
+	float FlankStepAngle = 50.f;
+
+	/** Волна, которая не успела ударить за столько секунд, уступает следующей. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0.5"))
+	float WaveMaxTime = 5.f;
+
+	/** Сколько разбегаются после гибели вожака, сек. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
+	float ScatterTime = 6.f;
+
+	/** На сколько разбегаются от угрозы, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
+	float ScatterMinDistance = 1500.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
+	float ScatterMaxDistance = 2500.f;
+};
+
+/**
  * Стаи монстров. Обычные монстры одной команды с одинаковым ANoFearCharacter::PackName — одна стая, где бы ни стояли;
  * без имени — стая собирается из стоящих рядом (PackFormRadius) и держится вместе: кто попал в стаю, из неё не
  * выпадает, пока не отстанет дальше LeaveDistance. Агрессивные монстры — одиночки, в стаи не входят.
@@ -53,14 +138,25 @@ struct FNoFearPackMemberView
  *  - погиб вожак — стая на ScatterTime разбегается от угрозы, потом новый вожак рычит и собирает её.
  */
 UCLASS()
-class NOFEAR_API UNoFearPackSubsystem : public UTickableWorldSubsystem
+class NOFEAR_API UNoFearPackSubsystem : public UTickableWorldSubsystem, public FNoFearPackTuning
 {
 	GENERATED_BODY()
 
 public:
+	/** Копирует числа из Project Settings → NoFear AI. */
+	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+
 	/** Подсистема стай мира WorldContextObject. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Pack", meta = (WorldContext = "WorldContextObject", DisplayName = "Get Pack Subsystem"))
 	static UNoFearPackSubsystem* Get(const UObject* WorldContextObject);
+
+	/** Текущие числа стай (копия). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Pack")
+	FNoFearPackTuning GetTuning() const { return *this; }
+
+	/** Заменить числа стай на ходу, до конца этого мира. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Pack")
+	void SetTuning(const FNoFearPackTuning& NewTuning) { static_cast<FNoFearPackTuning&>(*this) = NewTuning; }
 
 	virtual bool DoesSupportWorldType(const EWorldType::Type WorldType) const override;
 	virtual void Tick(float DeltaTime) override;
@@ -111,81 +207,6 @@ public:
 
 	/** Монстр закончил удар: его часть волны сделана. */
 	void NotifyAttackFinished(const ANoFearMonsterAIController* Bot);
-
-	/** Как часто пересобирать стаи и решения, сек. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0.05"))
-	float UpdateInterval = 0.2f;
-
-	/** Монстр без PackName ближе этого к кому-то из стаи без имени — вступает в неё; спокойные стаи так же сливаются, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0"))
-	float PackFormRadius = 1500.f;
-
-	/** Больше этого в стае не бывает. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "1"))
-	int32 MaxPackSize = 8;
-
-	/** Монстр без PackName отстал от спокойного вожака дальше этого — уходит из стаи, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0"))
-	float LeaveDistance = 6000.f;
-
-	/** Цель, которую кто-то видел (или которая в него попала) не дольше этого назад, сообщается всей стае, сек. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0"))
-	float PackIntelTime = 1.f;
-
-	/** Отставший дальше этого от вожака — вожак ждёт его (не дольше MaxHoldTime), см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0"))
-	float StragglerDistance = 1500.f;
-
-	/** Сколько вожак ждёт отставших, сек. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0"))
-	float MaxHoldTime = 4.f;
-
-	/** Шаг цепи при сборе: расстояние между соседями, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0"))
-	float GatherSpacing = 350.f;
-
-	/** Вожак подвёл стаю к видимой цели ближе этого — окружать, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0"))
-	float EngageDistance = 1500.f;
-
-	/** Кто-то из стаи уже ближе этого к видимой цели — окружать сразу, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0"))
-	float ContactDistance = 700.f;
-
-	/** Все дальше этого от цели (сбежала) — снова собираться и догонять, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0"))
-	float DisengageDistance = 2500.f;
-
-	/** Монстр ближе этого к своему месту в кольце — на месте, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0"))
-	float SlotReachedDistance = 300.f;
-
-	/** На местах такая доля кольца — атаковать. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0", ClampMax = "1"))
-	float EncircleReadyFraction = 0.6f;
-
-	/** Окружают не дольше этого, потом атакуют как есть, сек. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0"))
-	float EncircleMaxTime = 5.f;
-
-	/** Место дальше этого угла от монстра — идёт к нему в обход, шагами по столько градусов. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "10", ClampMax = "90"))
-	float FlankStepAngle = 50.f;
-
-	/** Волна, которая не успела ударить за столько секунд, уступает следующей. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0.5"))
-	float WaveMaxTime = 5.f;
-
-	/** Сколько разбегаются после гибели вожака, сек. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0"))
-	float ScatterTime = 6.f;
-
-	/** На сколько разбегаются от угрозы, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0"))
-	float ScatterMinDistance = 1500.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Pack", meta = (ClampMin = "0"))
-	float ScatterMaxDistance = 2500.f;
 
 private:
 	struct FMember

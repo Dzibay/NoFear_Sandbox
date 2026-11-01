@@ -1,4 +1,5 @@
 #include "AI/NoFearFleeLibrary.h"
+#include "Core/NoFearPerf.h"
 
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
@@ -36,6 +37,8 @@ bool UNoFearFleeLibrary::IsLocationSafe(const FVector& Location, const TArray<FV
 bool UNoFearFleeLibrary::FindFleeLocation(APawn* Pawn, const TArray<FVector>& Threats, FVector& OutLocation,
 	float MinDistance, float MaxDistance, float SafePathDistance, int32 NumSamples)
 {
+	NOFEAR_PERF_SCOPE(FindLocation);
+	FNoFearSearchBudget::Consume(ENoFearSearchKind::Location);
 	UWorld* World = Pawn ? Pawn->GetWorld() : nullptr;
 	UNavigationSystemV1* NavSys = World ? FNavigationSystem::GetCurrent<UNavigationSystemV1>(World) : nullptr;
 	if (!NavSys)

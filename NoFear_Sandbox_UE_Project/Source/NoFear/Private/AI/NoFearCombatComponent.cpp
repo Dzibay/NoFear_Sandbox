@@ -1,4 +1,5 @@
 #include "AI/NoFearCombatComponent.h"
+#include "Core/NoFearPerf.h"
 
 #include "AI/NoFearCombatSubsystem.h"
 #include "Animation/NoFearPoseComponent.h"
@@ -101,6 +102,7 @@ void UNoFearCombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 void UNoFearCombatComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
+	NOFEAR_PERF_SCOPE(Combat);
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
 	if (!bManualTarget && !TargetKeyName.IsNone())

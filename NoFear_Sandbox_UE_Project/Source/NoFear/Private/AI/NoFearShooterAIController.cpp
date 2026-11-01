@@ -6,6 +6,9 @@
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "Core/NoFearHealthComponent.h"
+#include "Core/NoFearPerf.h"
+#include "Core/NoFearAISettings.h"
+#include "AI/NoFearAILodSubsystem.h"
 #include "NavigationSystem.h"
 #include "Animation/NoFearPoseComponent.h"
 #include "Core/NoFearCharacter.h"
@@ -649,6 +652,15 @@ void ANoFearShooterAIController::MakeCoverSearch(bool bRetreat, AActor* Threat, 
 	OutSearch.ReserveRadius = CoverReserveRadius;
 	OutSearch.LeashAnchor = GetLeashAnchor();
 	OutSearch.LeashRadius = GetLeashRadius() > 0.f && bRetreat ? GetLeashRadius() * 1.5f : GetLeashRadius();
+	if (const UNoFearAILodSubsystem* Lod = UNoFearAILodSubsystem::Get(this))
+	{
+		// Далёкий бот: меньше точек и проверок пути — игрок разницы не увидит.
+		const ENoFearAILod Level = Lod->GetBotLod(this);
+		const FNoFearAISearchTuning& Tuning = UNoFearAISettings::Get()->Search;
+		const float Scale = Level == ENoFearAILod::Far ? Tuning.FarSampleScale : Level == ENoFearAILod::Mid ? Tuning.MidSampleScale : 1.f;
+		OutSearch.MaxRingSamples = FMath::Max(6, FMath::RoundToInt(OutSearch.MaxRingSamples * Scale));
+		OutSearch.MaxPathChecks = FMath::Max(2, FMath::RoundToInt(OutSearch.MaxPathChecks * Scale));
+	}
 	if (!bRetreat)
 	{
 		// Не дальше, чем бьёт оружие: дробовик ищет укрытие рядом с целью.
@@ -734,7 +746,7 @@ void ANoFearShooterAIController::UpdateCover()
 		bRetreating = false;
 		RequestCoverRefresh();
 	}
-	if (bWounded && !bRetreating && Now >= NextRetreatTime)
+	if (bWounded && !bRetreating && Now >= NextRetreatTime && FNoFearSearchBudget::HasBudget(ENoFearSearchKind::Cover))
 	{
 		NextRetreatTime = Now + 5.0;
 		if (SearchCover(true))
@@ -747,7 +759,8 @@ void ANoFearShooterAIController::UpdateCover()
 		}
 	}
 
-	if (Now < NextCoverCheckTime)
+	// Лимит поисков этого кадра исчерпан — проверка на следующем размышлении (без укрытия — ищем первыми, у кого есть — подождут).
+	if (Now < NextCoverCheckTime || !FNoFearSearchBudget::HasBudget(ENoFearSearchKind::Cover))
 	{
 		return;
 	}

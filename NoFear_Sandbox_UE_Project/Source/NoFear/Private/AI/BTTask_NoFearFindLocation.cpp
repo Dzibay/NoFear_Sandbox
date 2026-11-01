@@ -1,4 +1,5 @@
 #include "AI/BTTask_NoFearFindLocation.h"
+#include "Core/NoFearPerf.h"
 
 #include "AIController.h"
 #include "AI/NoFearAIController.h"
@@ -56,6 +57,7 @@ void UBTTask_NoFearFindWanderLocation::InitializeFromAsset(UBehaviorTree& Asset)
 
 EBTNodeResult::Type UBTTask_NoFearFindWanderLocation::ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
 {
+	NOFEAR_PERF_SCOPE(FindLocation);
 	const AAIController* Controller = OwnerComp.GetAIOwner();
 	const APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
 	UBlackboardComponent* Blackboard = OwnerComp.GetBlackboardComponent();
@@ -122,6 +124,7 @@ void UBTTask_NoFearFindChaseLocation::InitializeFromAsset(UBehaviorTree& Asset)
 
 EBTNodeResult::Type UBTTask_NoFearFindChaseLocation::ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
 {
+	NOFEAR_PERF_SCOPE(FindLocation);
 	AAIController* Controller = OwnerComp.GetAIOwner();
 	const APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
 	UBlackboardComponent* Blackboard = OwnerComp.GetBlackboardComponent();
@@ -231,6 +234,7 @@ void UBTTask_NoFearFindCircleLocation::InitializeFromAsset(UBehaviorTree& Asset)
 
 EBTNodeResult::Type UBTTask_NoFearFindCircleLocation::ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
 {
+	NOFEAR_PERF_SCOPE(FindLocation);
 	AAIController* Controller = OwnerComp.GetAIOwner();
 	const APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
 	UBlackboardComponent* Blackboard = OwnerComp.GetBlackboardComponent();
@@ -342,6 +346,7 @@ void UBTTask_NoFearFindRetreatLocation::InitializeFromAsset(UBehaviorTree& Asset
 
 EBTNodeResult::Type UBTTask_NoFearFindRetreatLocation::ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
 {
+	NOFEAR_PERF_SCOPE(FindLocation);
 	AAIController* Controller = OwnerComp.GetAIOwner();
 	const APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
 	UBlackboardComponent* Blackboard = OwnerComp.GetBlackboardComponent();

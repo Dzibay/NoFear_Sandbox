@@ -1,4 +1,5 @@
 #include "Animation/NoFearPoseComponent.h"
+#include "Core/NoFearPerf.h"
 
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
@@ -347,6 +348,7 @@ float UNoFearPoseComponent::GetPoseWeight(ENoFearPose Pose) const
 
 void UNoFearPoseComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
+	NOFEAR_PERF_SCOPE(Pose);
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
 	const double Now = GetNow();

@@ -1,4 +1,5 @@
 #include "AI/NoFearCoverLibrary.h"
+#include "Core/NoFearPerf.h"
 
 #include "AI/NoFearAIController.h"
 #include "AI/NoFearBotSubsystem.h"
@@ -166,6 +167,8 @@ FString UNoFearCoverLibrary::LastSearchStats;
 
 bool UNoFearCoverLibrary::FindCover(const FNoFearCoverSearch& Search, FNoFearCoverPoint& OutCover)
 {
+	NOFEAR_PERF_SCOPE(Cover);
+	FNoFearSearchBudget::Consume(ENoFearSearchKind::Cover);
 	APawn* Pawn = Search.Pawn;
 	UWorld* World = Pawn ? Pawn->GetWorld() : nullptr;
 	UNavigationSystemV1* NavSys = World ? FNavigationSystem::GetCurrent<UNavigationSystemV1>(const_cast<UWorld*>(World)) : nullptr;

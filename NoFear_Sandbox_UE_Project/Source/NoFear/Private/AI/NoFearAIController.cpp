@@ -1,4 +1,5 @@
 #include "AI/NoFearAIController.h"
+#include "Core/NoFearPerf.h"
 
 #include "AI/NoFearFleeLibrary.h"
 #include "Animation/NoFearPoseComponent.h"
@@ -268,7 +269,27 @@ void ANoFearAIController::OnPossess(APawn* InPawn)
 	}
 
 	// Разносим обновления ботов по кадрам.
-	GetWorldTimerManager().SetTimer(UpdateTimer, this, &ANoFearAIController::UpdateBot, UpdateInterval, true, FMath::FRandRange(0.05f, UpdateInterval));
+	GetWorldTimerManager().SetTimer(UpdateTimer, this, &ANoFearAIController::RunUpdateBot, GetThinkInterval(), true, FMath::FRandRange(0.05f, GetThinkInterval()));
+}
+
+void ANoFearAIController::RunUpdateBot()
+{
+	NOFEAR_PERF_SCOPE(BotUpdate);
+	UpdateBot();
+}
+
+void ANoFearAIController::SetThinkScale(float Scale)
+{
+	Scale = FMath::Max(Scale, 1.f);
+	if (FMath::IsNearlyEqual(Scale, ThinkScale) || !GetPawn())
+	{
+		ThinkScale = Scale;
+		return;
+	}
+	ThinkScale = Scale;
+	// Первый вызов — в случайный момент нового интервала, чтобы боты одного уровня не думали в одном кадре.
+	const float Interval = GetThinkInterval();
+	GetWorldTimerManager().SetTimer(UpdateTimer, this, &ANoFearAIController::RunUpdateBot, Interval, true, FMath::FRandRange(0.02f, Interval));
 }
 
 void ANoFearAIController::OnUnPossess()
@@ -314,7 +335,8 @@ void ANoFearAIController::UpdateBot()
 	}
 
 	const double Now = GetNow();
-	const float DeltaTime = FMath::Clamp(static_cast<float>(Now - LastUpdateTime), 0.f, 0.5f);
+	// Далёкие боты (LOD) думают реже, поэтому шаг может быть до секунды.
+	const float DeltaTime = FMath::Clamp(static_cast<float>(Now - LastUpdateTime), 0.f, 1.f);
 	LastUpdateTime = Now;
 
 	UpdateAwareness(DeltaTime);
@@ -1484,7 +1506,7 @@ void ANoFearAIController::DrawDebug() const
 		return;
 	}
 
-	const float Duration = UpdateInterval + 0.05f;
+	const float Duration = GetThinkInterval() + 0.05f;
 	const FColor Color = GetAlertColor(AlertState);
 	const FVector Location = MyPawn->GetActorLocation();
 

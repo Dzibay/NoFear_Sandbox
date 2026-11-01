@@ -1,4 +1,6 @@
 #include "AI/NoFearPackSubsystem.h"
+#include "Core/NoFearAISettings.h"
+#include "Core/NoFearPerf.h"
 
 #include "AI/NoFearBotSubsystem.h"
 #include "AI/NoFearMonsterAIController.h"
@@ -80,8 +82,15 @@ TStatId UNoFearPackSubsystem::GetStatId() const
 	RETURN_QUICK_DECLARE_CYCLE_STAT(UNoFearPackSubsystem, STATGROUP_Tickables);
 }
 
+void UNoFearPackSubsystem::Initialize(FSubsystemCollectionBase& Collection)
+{
+	Super::Initialize(Collection);
+	static_cast<FNoFearPackTuning&>(*this) = UNoFearAISettings::Get()->Pack;
+}
+
 void UNoFearPackSubsystem::Tick(float DeltaTime)
 {
+	NOFEAR_PERF_SCOPE(Pack);
 	Super::Tick(DeltaTime);
 	TimeSinceUpdate += DeltaTime;
 	if (TimeSinceUpdate >= UpdateInterval)

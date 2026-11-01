@@ -145,6 +145,286 @@ struct FNoFearSquadMemberView
 };
 
 /**
+ * Числа отрядов: тактика, мораль, отход, помощь, гранаты.
+ * Хранятся в Project Settings → Game → NoFear AI; подсистема копирует их к себе при создании мира.
+ */
+USTRUCT(BlueprintType)
+struct FNoFearSquadTuning
+{
+	GENERATED_BODY()
+
+	/** Как часто пересобирать отряды и делиться знанием о врагах, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad", meta = (ClampMin = "0.05"))
+	float UpdateInterval = 0.2f;
+
+	/** Враг, которого кто-то из отряда видел не дольше этого назад, известен всему отряду, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad", meta = (ClampMin = "0"))
+	float SquadIntelTime = 1.f;
+
+	/** Через столько после последнего взгляда отряд забывает врага, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad", meta = (ClampMin = "0"))
+	float EnemyMemoryTime = 30.f;
+
+	/** Бой идёт, пока у кого-то есть цель или врага видели не дольше этого назад, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad", meta = (ClampMin = "0"))
+	float CombatMemoryTime = 8.f;
+
+	/** Поводок бойца в отряде: от центра постов отряда, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad", meta = (ClampMin = "0"))
+	float SquadLeashRadius = 2500.f;
+
+	// --- Мораль ---
+
+	/** Мораль собранного отряда. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0", ClampMax = "1"))
+	float StartMorale = 0.7f;
+
+	/** Не ниже этого — натиск, если враг уязвим. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0", ClampMax = "1"))
+	float RushMorale = 0.65f;
+
+	/** Ниже этого — оборона; выход из неё выше DefendExitMorale. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0", ClampMax = "1"))
+	float DefendMorale = 0.4f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0", ClampMax = "1"))
+	float DefendExitMorale = 0.5f;
+
+	/** Ниже этого — отход перекатами. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0", ClampMax = "1"))
+	float FallbackMorale = 0.2f;
+
+	/** Ниже этого отряд зовёт на помощь соседей (и в обороне, и при отходе — всегда). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0", ClampMax = "1"))
+	float AssistMorale = 0.45f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0"))
+	float DeathMoraleLoss = 0.2f;
+
+	/** Сверх DeathMoraleLoss, если погиб командир. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0"))
+	float CommanderDeathMoraleLoss = 0.25f;
+
+	/** За каждое потерянное «полное здоровье» бойца (половина — вдвое меньше). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0"))
+	float DamageMoraleLoss = 0.2f;
+
+	/** В секунду за каждого прижатого огнём бойца. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0"))
+	float SuppressionMoraleLoss = 0.03f;
+
+	/** Боец убегает от гранаты (не чаще раза в 3 с на бойца). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0"))
+	float GrenadeMoraleLoss = 0.08f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0"))
+	float KillMoraleGain = 0.15f;
+
+	/** Пришла помощь соседнего отряда. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0"))
+	float HelpArrivedMoraleGain = 0.15f;
+
+	/** Подмога добежала до прижатого своего. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0"))
+	float ReinforceMoraleGain = 0.05f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0"))
+	float BandageMoraleGain = 0.05f;
+
+	/** Как быстро мораль в бою тянется к «спокойной» (по числу своих против врагов), в секунду. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0"))
+	float MoraleRecoveryRate = 0.01f;
+
+	/** То же вне боя. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Morale", meta = (ClampMin = "0"))
+	float MoraleRestRate = 0.05f;
+
+	// --- Тактика ---
+
+	/** Как часто командир пересматривает тактику, с (срочное — контакт, отход — сразу). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Tactics", meta = (ClampMin = "0.2"))
+	float TacticThinkInterval = 1.f;
+
+	/** Меньше этого тактика не меняется на равноценную, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Tactics", meta = (ClampMin = "0"))
+	float MinTacticTime = 3.f;
+
+	/** Сколько длится «Контакт», с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Tactics", meta = (ClampMin = "0"))
+	float ContactDuration = 2.5f;
+
+	/** Враг не виден столько — сближаться перебежками, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Tactics", meta = (ClampMin = "0"))
+	float BoundHiddenTime = 3.f;
+
+	/** Перебежка дольше этого — смена групп, даже если не все дошли, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Tactics", meta = (ClampMin = "1"))
+	float BoundPhaseMaxTime = 8.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Tactics", meta = (ClampMin = "1"))
+	int32 MaxBoundSwaps = 6;
+
+	/** Враг сидит на одном месте (в пределах 300 см) столько — обходить с фланга, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Tactics", meta = (ClampMin = "0"))
+	float FlankDugInTime = 5.f;
+
+	/** Укрытие на фланге: угол у врага от направления на отряд не меньше этого, градусы. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Tactics", meta = (ClampMin = "10", ClampMax = "170"))
+	float FlankMinAngle = 60.f;
+
+	/** Не вышло (или вышло) обойти — следующая попытка не раньше, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Tactics", meta = (ClampMin = "0"))
+	float FlankCooldown = 8.f;
+
+	/** Обход дольше этого — бросить, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Tactics", meta = (ClampMin = "1"))
+	float FlankMaxTime = 20.f;
+
+	/** Дошёл до фланга — столько держит укрытие и бьёт перекрёстным огнём, пока отряд прижимает, с. Потом — обычный бой. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Tactics", meta = (ClampMin = "0"))
+	float FlankFireTime = 6.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Tactics", meta = (ClampMin = "1"))
+	float RushMaxTime = 6.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Tactics", meta = (ClampMin = "0"))
+	float RushCooldown = 10.f;
+
+	/** Враг дальше этого от отряда — натиском не взять, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Tactics", meta = (ClampMin = "0"))
+	float RushMaxDistance = 2500.f;
+
+	/** Здоровье ниже этой доли — боец «ранен»: не бегает по приказам, а когда ранены все — отход. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Tactics", meta = (ClampMin = "0", ClampMax = "1"))
+	float WoundedFraction = 0.5f;
+
+	// --- Отход ---
+
+	/** Рубеж — посты отряда, а если они не дальше от врага — на столько прочь от врага, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Fallback", meta = (ClampMin = "300"))
+	float FallbackDistance = 1500.f;
+
+	/** Все ближе этого к рубежу — дошли, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Fallback", meta = (ClampMin = "100"))
+	float FallbackArriveRadius = 700.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Fallback", meta = (ClampMin = "1"))
+	int32 MaxFallbackSwaps = 4;
+
+	/** Оборона на рубеже: поводок вокруг него, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Fallback", meta = (ClampMin = "100"))
+	float FallbackLeashRadius = 900.f;
+
+	/** После отхода снова отходить по морали не раньше, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Fallback", meta = (ClampMin = "0"))
+	float FallbackCooldown = 20.f;
+
+	// --- Помощь своим ---
+
+	/** Сколько бойцов прикрывают отходящего. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Help", meta = (ClampMin = "1"))
+	int32 CoveringFireHelpers = 2;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Help", meta = (ClampMin = "0"))
+	float CoveringFireTime = 8.f;
+
+	/** Прижат огнём дольше этого — слать подмогу, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Help", meta = (ClampMin = "0"))
+	float ReinforcePinnedTime = 2.f;
+
+	/** Только что ранен и здоровья меньше этой доли — слать подмогу. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Help", meta = (ClampMin = "0", ClampMax = "1"))
+	float ReinforceHealthFraction = 0.6f;
+
+	/** Подмога — из бойцов не дальше этого от прижатого, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Help", meta = (ClampMin = "0"))
+	float ReinforceRadius = 2000.f;
+
+	/** Ближе этого к прижатому — подмога пришла, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Help", meta = (ClampMin = "100"))
+	float ReinforceArriveRadius = 700.f;
+
+	/** К одному и тому же прижатому — не чаще, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Help", meta = (ClampMin = "0"))
+	float ReinforceCooldown = 15.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Help", meta = (ClampMin = "1"))
+	float ReinforceMaxTime = 12.f;
+
+	/** В бою перевязывают раненых ниже этой доли здоровья — до HealCombatTarget. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Help", meta = (ClampMin = "0", ClampMax = "1"))
+	float HealCombatFraction = 0.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Help", meta = (ClampMin = "0", ClampMax = "1"))
+	float HealCombatTarget = 0.7f;
+
+	/** Вне боя — всех ниже этой доли, до полного. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Help", meta = (ClampMin = "0", ClampMax = "1"))
+	float HealRestFraction = 0.95f;
+
+	/** Раненого не перевязывают, пока по нему попадали меньше этого назад, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Help", meta = (ClampMin = "0"))
+	float HealSafeTime = 3.f;
+
+	/** Одного и того же — не чаще, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Help", meta = (ClampMin = "0"))
+	float HealCooldown = 20.f;
+
+	/** В бою санитар идёт не дальше этого, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Help", meta = (ClampMin = "0"))
+	float HealMaxDistance = 2000.f;
+
+	/** Не успел перевязать за это время — приказ снимается, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Help", meta = (ClampMin = "1"))
+	float HealOrderTimeout = 25.f;
+
+	// --- Помощь между отрядами ---
+
+	/** Соседний отряд (центр) не дальше этого может прийти на помощь, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Assist", meta = (ClampMin = "0"))
+	float AssistRadius = 5000.f;
+
+	/** Помогающие держатся не дальше этого от отряда, которому помогают, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Assist", meta = (ClampMin = "100"))
+	float AssistLeashRadius = 2000.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Assist", meta = (ClampMin = "100"))
+	float AssistArriveRadius = 900.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Assist", meta = (ClampMin = "1"))
+	float AssistMaxTime = 60.f;
+
+	/** Звать соседей снова не раньше, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Assist", meta = (ClampMin = "0"))
+	float AssistCallCooldown = 30.f;
+
+	// --- Гранаты отряда ---
+
+	/** Враг сидит на месте столько — командир велит бросить гранату, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Grenade", meta = (ClampMin = "0"))
+	float GrenadeDugInTime = 4.f;
+
+	/** Дольше этого врага не видели — где он, неизвестно, не бросать, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Grenade", meta = (ClampMin = "0"))
+	float GrenadeMaxUnseenTime = 12.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Grenade", meta = (ClampMin = "0"))
+	float GrenadeClusterRadius = 400.f;
+
+	/** Столько врагов кучкой — тоже повод для гранаты. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Grenade", meta = (ClampMin = "2"))
+	int32 GrenadeClusterCount = 2;
+
+	/** Между гранатами отряда, с (случайно в пределах). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Grenade", meta = (ClampMin = "0"))
+	FVector2D SquadGrenadeCooldown = FVector2D(8.f, 12.f);
+
+	/** Первая граната не раньше, чем через столько после контакта, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Squad|Grenade", meta = (ClampMin = "0"))
+	float FirstSquadGrenadeDelay = 5.f;
+};
+
+/**
  * Отряды стрелков. Стрелки одной команды с одинаковым ANoFearCharacter::Squad — один отряд (до MaxSquadSize бойцов).
  * Состав пересобирается каждые UpdateInterval секунд из живых стрелков, поэтому отряд не надо регистрировать:
  * погибший выбывает сам, поменявший имя отряда — переходит.
@@ -162,14 +442,25 @@ struct FNoFearSquadMemberView
  * Приказы исполняет ANoFearShooterAIController (поиск укрытий по приказу, огонь вслепую, поводок отряда).
  */
 UCLASS()
-class NOFEAR_API UNoFearSquadSubsystem : public UTickableWorldSubsystem
+class NOFEAR_API UNoFearSquadSubsystem : public UTickableWorldSubsystem, public FNoFearSquadTuning
 {
 	GENERATED_BODY()
 
 public:
+	/** Копирует числа из Project Settings → NoFear AI. */
+	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+
 	/** Подсистема отрядов мира WorldContextObject. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Squad", meta = (WorldContext = "WorldContextObject", DisplayName = "Get Squad Subsystem"))
 	static UNoFearSquadSubsystem* Get(const UObject* WorldContextObject);
+
+	/** Текущие числа отряда (копия). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Squad")
+	FNoFearSquadTuning GetTuning() const { return *this; }
+
+	/** Заменить числа отряда на ходу, до конца этого мира. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Squad")
+	void SetTuning(const FNoFearSquadTuning& NewTuning) { static_cast<FNoFearSquadTuning&>(*this) = NewTuning; }
 
 	virtual bool DoesSupportWorldType(const EWorldType::Type WorldType) const override;
 	virtual void Tick(float DeltaTime) override;
@@ -282,276 +573,6 @@ public:
 
 	/** Бойцов в отряде не больше этого; лишние воюют сами по себе. */
 	static constexpr int32 MaxSquadSize = 6;
-
-	/** Как часто пересобирать отряды и делиться знанием о врагах, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad", meta = (ClampMin = "0.05"))
-	float UpdateInterval = 0.2f;
-
-	/** Враг, которого кто-то из отряда видел не дольше этого назад, известен всему отряду, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad", meta = (ClampMin = "0"))
-	float SquadIntelTime = 1.f;
-
-	/** Через столько после последнего взгляда отряд забывает врага, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad", meta = (ClampMin = "0"))
-	float EnemyMemoryTime = 30.f;
-
-	/** Бой идёт, пока у кого-то есть цель или врага видели не дольше этого назад, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad", meta = (ClampMin = "0"))
-	float CombatMemoryTime = 8.f;
-
-	/** Поводок бойца в отряде: от центра постов отряда, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad", meta = (ClampMin = "0"))
-	float SquadLeashRadius = 2500.f;
-
-	// --- Мораль ---
-
-	/** Мораль собранного отряда. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0", ClampMax = "1"))
-	float StartMorale = 0.7f;
-
-	/** Не ниже этого — натиск, если враг уязвим. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0", ClampMax = "1"))
-	float RushMorale = 0.65f;
-
-	/** Ниже этого — оборона; выход из неё выше DefendExitMorale. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0", ClampMax = "1"))
-	float DefendMorale = 0.4f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0", ClampMax = "1"))
-	float DefendExitMorale = 0.5f;
-
-	/** Ниже этого — отход перекатами. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0", ClampMax = "1"))
-	float FallbackMorale = 0.2f;
-
-	/** Ниже этого отряд зовёт на помощь соседей (и в обороне, и при отходе — всегда). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0", ClampMax = "1"))
-	float AssistMorale = 0.45f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0"))
-	float DeathMoraleLoss = 0.2f;
-
-	/** Сверх DeathMoraleLoss, если погиб командир. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0"))
-	float CommanderDeathMoraleLoss = 0.25f;
-
-	/** За каждое потерянное «полное здоровье» бойца (половина — вдвое меньше). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0"))
-	float DamageMoraleLoss = 0.2f;
-
-	/** В секунду за каждого прижатого огнём бойца. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0"))
-	float SuppressionMoraleLoss = 0.03f;
-
-	/** Боец убегает от гранаты (не чаще раза в 3 с на бойца). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0"))
-	float GrenadeMoraleLoss = 0.08f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0"))
-	float KillMoraleGain = 0.15f;
-
-	/** Пришла помощь соседнего отряда. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0"))
-	float HelpArrivedMoraleGain = 0.15f;
-
-	/** Подмога добежала до прижатого своего. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0"))
-	float ReinforceMoraleGain = 0.05f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0"))
-	float BandageMoraleGain = 0.05f;
-
-	/** Как быстро мораль в бою тянется к «спокойной» (по числу своих против врагов), в секунду. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0"))
-	float MoraleRecoveryRate = 0.01f;
-
-	/** То же вне боя. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Morale", meta = (ClampMin = "0"))
-	float MoraleRestRate = 0.05f;
-
-	// --- Тактика ---
-
-	/** Как часто командир пересматривает тактику, с (срочное — контакт, отход — сразу). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Tactics", meta = (ClampMin = "0.2"))
-	float TacticThinkInterval = 1.f;
-
-	/** Меньше этого тактика не меняется на равноценную, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Tactics", meta = (ClampMin = "0"))
-	float MinTacticTime = 3.f;
-
-	/** Сколько длится «Контакт», с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Tactics", meta = (ClampMin = "0"))
-	float ContactDuration = 2.5f;
-
-	/** Враг не виден столько — сближаться перебежками, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Tactics", meta = (ClampMin = "0"))
-	float BoundHiddenTime = 3.f;
-
-	/** Перебежка дольше этого — смена групп, даже если не все дошли, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Tactics", meta = (ClampMin = "1"))
-	float BoundPhaseMaxTime = 8.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Tactics", meta = (ClampMin = "1"))
-	int32 MaxBoundSwaps = 6;
-
-	/** Враг сидит на одном месте (в пределах 300 см) столько — обходить с фланга, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Tactics", meta = (ClampMin = "0"))
-	float FlankDugInTime = 5.f;
-
-	/** Укрытие на фланге: угол у врага от направления на отряд не меньше этого, градусы. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Tactics", meta = (ClampMin = "10", ClampMax = "170"))
-	float FlankMinAngle = 60.f;
-
-	/** Не вышло (или вышло) обойти — следующая попытка не раньше, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Tactics", meta = (ClampMin = "0"))
-	float FlankCooldown = 8.f;
-
-	/** Обход дольше этого — бросить, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Tactics", meta = (ClampMin = "1"))
-	float FlankMaxTime = 20.f;
-
-	/** Дошёл до фланга — столько держит укрытие и бьёт перекрёстным огнём, пока отряд прижимает, с. Потом — обычный бой. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Tactics", meta = (ClampMin = "0"))
-	float FlankFireTime = 6.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Tactics", meta = (ClampMin = "1"))
-	float RushMaxTime = 6.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Tactics", meta = (ClampMin = "0"))
-	float RushCooldown = 10.f;
-
-	/** Враг дальше этого от отряда — натиском не взять, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Tactics", meta = (ClampMin = "0"))
-	float RushMaxDistance = 2500.f;
-
-	/** Здоровье ниже этой доли — боец «ранен»: не бегает по приказам, а когда ранены все — отход. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Tactics", meta = (ClampMin = "0", ClampMax = "1"))
-	float WoundedFraction = 0.5f;
-
-	// --- Отход ---
-
-	/** Рубеж — посты отряда, а если они не дальше от врага — на столько прочь от врага, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Fallback", meta = (ClampMin = "300"))
-	float FallbackDistance = 1500.f;
-
-	/** Все ближе этого к рубежу — дошли, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Fallback", meta = (ClampMin = "100"))
-	float FallbackArriveRadius = 700.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Fallback", meta = (ClampMin = "1"))
-	int32 MaxFallbackSwaps = 4;
-
-	/** Оборона на рубеже: поводок вокруг него, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Fallback", meta = (ClampMin = "100"))
-	float FallbackLeashRadius = 900.f;
-
-	/** После отхода снова отходить по морали не раньше, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Fallback", meta = (ClampMin = "0"))
-	float FallbackCooldown = 20.f;
-
-	// --- Помощь своим ---
-
-	/** Сколько бойцов прикрывают отходящего. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Help", meta = (ClampMin = "1"))
-	int32 CoveringFireHelpers = 2;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Help", meta = (ClampMin = "0"))
-	float CoveringFireTime = 8.f;
-
-	/** Прижат огнём дольше этого — слать подмогу, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Help", meta = (ClampMin = "0"))
-	float ReinforcePinnedTime = 2.f;
-
-	/** Только что ранен и здоровья меньше этой доли — слать подмогу. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Help", meta = (ClampMin = "0", ClampMax = "1"))
-	float ReinforceHealthFraction = 0.6f;
-
-	/** Подмога — из бойцов не дальше этого от прижатого, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Help", meta = (ClampMin = "0"))
-	float ReinforceRadius = 2000.f;
-
-	/** Ближе этого к прижатому — подмога пришла, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Help", meta = (ClampMin = "100"))
-	float ReinforceArriveRadius = 700.f;
-
-	/** К одному и тому же прижатому — не чаще, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Help", meta = (ClampMin = "0"))
-	float ReinforceCooldown = 15.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Help", meta = (ClampMin = "1"))
-	float ReinforceMaxTime = 12.f;
-
-	/** В бою перевязывают раненых ниже этой доли здоровья — до HealCombatTarget. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Help", meta = (ClampMin = "0", ClampMax = "1"))
-	float HealCombatFraction = 0.5f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Help", meta = (ClampMin = "0", ClampMax = "1"))
-	float HealCombatTarget = 0.7f;
-
-	/** Вне боя — всех ниже этой доли, до полного. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Help", meta = (ClampMin = "0", ClampMax = "1"))
-	float HealRestFraction = 0.95f;
-
-	/** Раненого не перевязывают, пока по нему попадали меньше этого назад, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Help", meta = (ClampMin = "0"))
-	float HealSafeTime = 3.f;
-
-	/** Одного и того же — не чаще, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Help", meta = (ClampMin = "0"))
-	float HealCooldown = 20.f;
-
-	/** В бою санитар идёт не дальше этого, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Help", meta = (ClampMin = "0"))
-	float HealMaxDistance = 2000.f;
-
-	/** Не успел перевязать за это время — приказ снимается, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Help", meta = (ClampMin = "1"))
-	float HealOrderTimeout = 25.f;
-
-	// --- Помощь между отрядами ---
-
-	/** Соседний отряд (центр) не дальше этого может прийти на помощь, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Assist", meta = (ClampMin = "0"))
-	float AssistRadius = 5000.f;
-
-	/** Помогающие держатся не дальше этого от отряда, которому помогают, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Assist", meta = (ClampMin = "100"))
-	float AssistLeashRadius = 2000.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Assist", meta = (ClampMin = "100"))
-	float AssistArriveRadius = 900.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Assist", meta = (ClampMin = "1"))
-	float AssistMaxTime = 60.f;
-
-	/** Звать соседей снова не раньше, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Assist", meta = (ClampMin = "0"))
-	float AssistCallCooldown = 30.f;
-
-	// --- Гранаты отряда ---
-
-	/** Враг сидит на месте столько — командир велит бросить гранату, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Grenade", meta = (ClampMin = "0"))
-	float GrenadeDugInTime = 4.f;
-
-	/** Дольше этого врага не видели — где он, неизвестно, не бросать, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Grenade", meta = (ClampMin = "0"))
-	float GrenadeMaxUnseenTime = 12.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Grenade", meta = (ClampMin = "0"))
-	float GrenadeClusterRadius = 400.f;
-
-	/** Столько врагов кучкой — тоже повод для гранаты. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Grenade", meta = (ClampMin = "2"))
-	int32 GrenadeClusterCount = 2;
-
-	/** Между гранатами отряда, с (случайно в пределах). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Grenade", meta = (ClampMin = "0"))
-	FVector2D SquadGrenadeCooldown = FVector2D(8.f, 12.f);
-
-	/** Первая граната не раньше, чем через столько после контакта, с. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Squad|Grenade", meta = (ClampMin = "0"))
-	float FirstSquadGrenadeDelay = 5.f;
 
 private:
 	struct FMember

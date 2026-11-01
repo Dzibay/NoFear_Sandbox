@@ -1,4 +1,6 @@
 #include "AI/NoFearSquadSubsystem.h"
+#include "Core/NoFearAISettings.h"
+#include "Core/NoFearPerf.h"
 
 #include "AI/NoFearBotSubsystem.h"
 #include "AI/NoFearCombatComponent.h"
@@ -113,8 +115,15 @@ TStatId UNoFearSquadSubsystem::GetStatId() const
 	RETURN_QUICK_DECLARE_CYCLE_STAT(UNoFearSquadSubsystem, STATGROUP_Tickables);
 }
 
+void UNoFearSquadSubsystem::Initialize(FSubsystemCollectionBase& Collection)
+{
+	Super::Initialize(Collection);
+	static_cast<FNoFearSquadTuning&>(*this) = UNoFearAISettings::Get()->Squad;
+}
+
 void UNoFearSquadSubsystem::Tick(float DeltaTime)
 {
+	NOFEAR_PERF_SCOPE(Squad);
 	Super::Tick(DeltaTime);
 	TimeSinceUpdate += DeltaTime;
 	if (TimeSinceUpdate >= UpdateInterval)

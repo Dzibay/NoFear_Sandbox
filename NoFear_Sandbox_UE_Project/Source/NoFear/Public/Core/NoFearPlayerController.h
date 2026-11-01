@@ -108,6 +108,18 @@ public:
 	UFUNCTION(Exec)
 	void NoFearSpawnBot(const FString& Type, int32 Count = 1);
 
+	/**
+	 * Консоль: нагрузочная сцена (этап 10). Убирает ботов (кроме напарников) и расставляет Count ботов по навмешу вокруг игрока:
+	 * отряд союзников, три вражеских отряда, две стаи монстров, мирные; больше 40 — дополнительные вражеские отряды.
+	 * Mode: battle — враги рядом, бой начинается сразу; calm — всё в 2,5 раза дальше. Пример: NoFearStressTest 40 battle.
+	 */
+	UFUNCTION(Exec)
+	void NoFearStressTest(int32 Count = 40, const FString& Mode = TEXT("battle"));
+
+	/** Консоль: замер нагрузки на Seconds секунд, отчёт на экран и в лог (NOFEAR_PERF). Пример: NoFearPerf 10. */
+	UFUNCTION(Exec)
+	void NoFearPerf(float Seconds = 10.f);
+
 	/** Вызывается из ANoFearCharacter::HandleDeath, когда пешка этого игрока погибла. */
 	void NotifyPawnDied(const FNoFearDamageInfo& Info);
 

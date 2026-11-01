@@ -4,6 +4,7 @@
 #include "AI/NoFearCompanionAIController.h"
 #include "Core/NoFearCharacter.h"
 #include "Core/NoFearInteractableComponent.h"
+#include "Core/NoFearPerf.h"
 #include "Core/NoFearTeam.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -15,6 +16,7 @@
 #include "InputAction.h"
 #include "InputMappingContext.h"
 #include "Kismet/GameplayStatics.h"
+#include "NavigationSystem.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Weapons/NoFearGrenadeComponent.h"
@@ -234,6 +236,129 @@ void ANoFearPlayerController::NoFearSpawnBot(const FString& Type, int32 Count)
 		const float SideOffset = (Index - (Count - 1) * 0.5f) * 150.f;
 		const FVector Location = ControlledPawn->GetActorLocation() + Forward * 400.f + Right * SideOffset + FVector(0.f, 0.f, 10.f);
 		World->SpawnActor<APawn>(BotClass, Location, BotRotation, Params);
+	}
+}
+
+void ANoFearPlayerController::NoFearStressTest(int32 Count, const FString& Mode)
+{
+	UWorld* World = GetWorld();
+	const APawn* ControlledPawn = GetPawn();
+	UNavigationSystemV1* NavSystem = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+	if (!World || !ControlledPawn || !NavSystem)
+	{
+		return;
+	}
+
+	// Старые боты (кроме напарников) мешают замеру.
+	if (const UNoFearBotSubsystem* Bots = UNoFearBotSubsystem::Get(this))
+	{
+		for (ANoFearAIController* Bot : Bots->GetBots())
+		{
+			APawn* BotPawn = Bot ? Bot->GetPawn() : nullptr;
+			if (BotPawn && !Bot->IsA<ANoFearCompanionAIController>())
+			{
+				BotPawn->Destroy();
+			}
+		}
+	}
+
+	Count = FMath::Clamp(Count, 1, 120);
+	const float DistanceScale = Mode.Equals(TEXT("calm"), ESearchCase::IgnoreCase) ? 2.5f : 1.f;
+	const FVector Origin = ControlledPawn->GetActorLocation();
+	const FRotator Facing(0.f, GetControlRotation().Yaw, 0.f);
+
+	struct FGroup
+	{
+		TArray<FString> Types;
+		FName Squad;
+		FName Pack;
+		/** Направление от игрока (градусы от взгляда) и дальность, см. */
+		float Angle;
+		float Distance;
+		/** Разброс бойцов вокруг центра группы, см. */
+		float Spread;
+	};
+	TArray<FGroup> Groups;
+	const TArray<FString> SquadTypes = {TEXT("Enemy"), TEXT("Enemy"), TEXT("Enemy"), TEXT("Enemy"), TEXT("Enemy")};
+	Groups.Add({{TEXT("Ally"), TEXT("Ally"), TEXT("Ally"), TEXT("Ally"), TEXT("Ally")}, TEXT("StressAllies"), NAME_None, 160.f, 800.f, 400.f});
+	Groups.Add({SquadTypes, TEXT("StressEnemyA"), NAME_None, 0.f, 3000.f, 500.f});
+	Groups.Add({SquadTypes, TEXT("StressEnemyB"), NAME_None, -40.f, 3000.f, 500.f});
+	Groups.Add({SquadTypes, TEXT("StressEnemyC"), NAME_None, 20.f, 6000.f, 500.f});
+	Groups.Add({{TEXT("Monster"), TEXT("Monster"), TEXT("Monster"), TEXT("Jumper"), TEXT("Spitter")}, NAME_None, TEXT("StressPack1"), 80.f, 4000.f, 500.f});
+	Groups.Add({{TEXT("Monster"), TEXT("Monster"), TEXT("Monster"), TEXT("Tank"), TEXT("Jumper")}, NAME_None, TEXT("StressPack2"), -130.f, 7000.f, 500.f});
+	TArray<FString> Civilians;
+	Civilians.Init(TEXT("Civilian"), 10);
+	Groups.Add({Civilians, NAME_None, NAME_None, 0.f, 0.f, 0.f});
+	// Сверх 40 — ещё вражеские отряды по кругу на 40–80 м.
+	for (int32 Extra = 0, Total = 40; Total < Count; ++Extra, Total += 5)
+	{
+		Groups.Add({SquadTypes, FName(*FString::Printf(TEXT("StressEnemyX%d"), Extra)), NAME_None, Extra * 67.f + 30.f, 4000.f + (Extra % 3) * 2000.f, 500.f});
+	}
+
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+	const ENoFearSquadRole Roles[] = {ENoFearSquadRole::Commander, ENoFearSquadRole::Assault, ENoFearSquadRole::Support, ENoFearSquadRole::Rifleman, ENoFearSquadRole::Rifleman};
+
+	int32 Spawned = 0;
+	for (const FGroup& Group : Groups)
+	{
+		const bool bCivilians = Group.Distance <= 0.f;
+		FNavLocation Center;
+		const FVector Wanted = Origin + Facing.RotateVector(FRotator(0.f, Group.Angle, 0.f).Vector()) * Group.Distance * DistanceScale;
+		if (!bCivilians && !NavSystem->ProjectPointToNavigation(Wanted, Center, FVector(2000.f, 2000.f, 2000.f))
+			&& !NavSystem->GetRandomReachablePointInRadius(Origin, Group.Distance * DistanceScale, Center))
+		{
+			continue;
+		}
+
+		for (int32 Index = 0; Index < Group.Types.Num() && Spawned < Count; ++Index)
+		{
+			const FString& Type = Group.Types[Index];
+			UClass* BotClass = LoadClass<APawn>(nullptr, *FString::Printf(TEXT("/Game/Blueprints/Bots/CBP_Bot_%s.CBP_Bot_%s_C"), *Type, *Type));
+			if (!BotClass)
+			{
+				continue;
+			}
+			FNavLocation Point;
+			const bool bFound = bCivilians
+				? NavSystem->GetRandomReachablePointInRadius(Origin, 5000.f * DistanceScale, Point) && FVector::Dist2D(Point.Location, Origin) > 1000.f
+				: NavSystem->GetRandomReachablePointInRadius(Center.Location, Group.Spread, Point);
+			if (!bFound)
+			{
+				Point.Location = bCivilians ? Origin + FMath::VRand().GetSafeNormal2D() * 1500.f : Center.Location;
+			}
+
+			const FVector Location = Point.Location + FVector(0.f, 0.f, 100.f);
+			const FRotator Rotation(0.f, (Origin - Location).Rotation().Yaw, 0.f);
+			APawn* NewPawn = World->SpawnActorDeferred<APawn>(BotClass, FTransform(Rotation, Location), nullptr, nullptr, Params.SpawnCollisionHandlingOverride);
+			if (!NewPawn)
+			{
+				continue;
+			}
+			if (ANoFearCharacter* BotCharacter = Cast<ANoFearCharacter>(NewPawn))
+			{
+				if (!Group.Squad.IsNone())
+				{
+					BotCharacter->Squad = Group.Squad;
+					BotCharacter->SquadRole = Roles[Index % UE_ARRAY_COUNT(Roles)];
+				}
+				BotCharacter->PackName = Group.Pack;
+			}
+			NewPawn->FinishSpawning(FTransform(Rotation, Location));
+			++Spawned;
+		}
+	}
+
+	const FString Message = FString::Printf(TEXT("NoFearStressTest: %d bots (%s)"), Spawned, *Mode);
+	UE_LOG(LogTemp, Display, TEXT("NOFEAR_STRESS %s"), *Message);
+	ClientMessage(Message);
+}
+
+void ANoFearPlayerController::NoFearPerf(float Seconds)
+{
+	if (UNoFearPerfSubsystem* Perf = UNoFearPerfSubsystem::Get(this))
+	{
+		Perf->StartSample(Seconds);
 	}
 }
 
