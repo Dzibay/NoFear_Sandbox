@@ -442,6 +442,37 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
 	int32 GetDrawnFearBarCount() const { return DrawnFearBars; }
 
+	// --- Браслет героя (этап 12) ---
+
+	/** Дуга страха героя слева внизу над здоровьем, способности Q и Alt, ступор, предупреждение о разломе. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hero|Bracelet")
+	bool bShowBracelet = true;
+
+	/** Цвет шкалы, пока герой спокоен. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hero|Bracelet")
+	FLinearColor BraceletCalmColor = FLinearColor(0.45f, 0.9f, 0.75f, 1.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hero|Bracelet")
+	FText BraceletLabel = NSLOCTEXT("NoFearHUD", "BraceletLabel", "СТРАХ");
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hero|Bracelet")
+	FText StuporText = NSLOCTEXT("NoFearHUD", "StuporText", "СТУПОР");
+
+	/** Предупреждение браслета; {0} — расстояние в метрах. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hero|Bracelet")
+	FText RiftWarningText = NSLOCTEXT("NoFearHUD", "RiftWarning", "РАЗЛОМ {0} м");
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hero|Bracelet")
+	FLinearColor RiftColor = FLinearColor(0.75f, 0.4f, 1.f, 1.f);
+
+	/** Браслет нарисован в последнем кадре (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
+	bool WasBraceletDrawn() const { return bBraceletDrawn; }
+
+	/** Предупреждение о разломе нарисовано в последнем кадре (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
+	bool WasRiftWarningDrawn() const { return bRiftWarningDrawn; }
+
 	// --- Порталы страха (этап 13) ---
 
 	/** Аура и ступень порталов, кольца у ног проводников и ломающихся, кольцо «Освобождаю» у прицела. */
@@ -611,9 +642,14 @@ private:
 	void DrawReviveProgress();
 	/** Кольцо у прицела, пока игрок успокаивает мирного. */
 	void DrawCalmProgress();
+	/** Браслет героя: NoFearHUDBracelet.cpp. */
+	void DrawBracelet();
+	void DrawRiftWarning(const class UNoFearBraceletComponent* Bracelet);
 	/** Порталы страха: NoFearHUDPortal.cpp. */
 	void DrawPortals();
 	void DrawPortalFreeProgress();
+	/** Дуга кольца From..To, разбитая на куски не больше 15°, чтобы оставалась гладкой. */
+	void DrawArc(const FVector2D& Center, float Inner, float Outer, float From, float To, const FLinearColor& Color);
 	void DrawOrderWheel();
 	/** Закрашенный сектор кольца Inner..Outer от угла From до To в градусах (0 — вверх, по часовой). */
 	void DrawWedge(const FVector2D& Center, float Inner, float Outer, float From, float To, const FLinearColor& Color);
@@ -638,6 +674,8 @@ private:
 	int32 DrawnOrderWords = 0;
 	int32 DrawnTactics = 0;
 	int32 DrawnFearBars = 0;
+	bool bBraceletDrawn = false;
+	bool bRiftWarningDrawn = false;
 	int32 DrawnPortalLabels = 0;
 	int32 DrawnFeederRings = 0;
 	int32 DrawnBreakRings = 0;

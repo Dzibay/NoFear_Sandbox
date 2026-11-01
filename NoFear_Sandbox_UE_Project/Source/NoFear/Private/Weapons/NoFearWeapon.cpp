@@ -5,6 +5,7 @@
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Camera/PlayerCameraManager.h"
+#include "Core/NoFearBraceletComponent.h"
 #include "Core/NoFearHealthComponent.h"
 #include "Components/DecalComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -741,6 +742,8 @@ float ANoFearWeapon::GetCurrentSpread() const
 		{
 			Spread = Spread * 2.f + 2.5f;
 		}
+		// Страх героя: руки не слушаются (браслет, этап 12).
+		Spread *= UNoFearBraceletComponent::GetSpreadMultiplierFor(Character);
 	}
 	return Spread;
 }
@@ -865,18 +868,21 @@ bool ANoFearWeapon::Reload()
 
 	SetState(ENoFearWeaponState::Reloading);
 
-	const float MontageLength = PlayCharacterMontage(Data->CharacterReloadMontage);
+	// В ужасе герой перезаряжается медленнее (браслет, этап 12).
+	const float ReloadSpeed = FMath::Max(UNoFearBraceletComponent::GetReloadSpeedFor(Character), 0.1f);
+	const float MontageLength = PlayCharacterMontage(Data->CharacterReloadMontage, ReloadSpeed) / ReloadSpeed;
 	if (Data->WeaponReloadAnimation)
 	{
 		Mesh->PlayAnimation(Data->WeaponReloadAnimation, false);
+		Mesh->SetPlayRate(ReloadSpeed);
 	}
 	ClearTimedSounds();
 	PlayTimedSounds(Data->ReloadSounds);
 
-	float Duration = Data->ReloadTime > 0.f ? Data->ReloadTime : MontageLength;
+	float Duration = Data->ReloadTime > 0.f ? Data->ReloadTime / ReloadSpeed : MontageLength;
 	if (Duration <= KINDA_SMALL_NUMBER)
 	{
-		Duration = 2.f;
+		Duration = 2.f / ReloadSpeed;
 	}
 	GetWorldTimerManager().SetTimer(ReloadTimer, this, &ANoFearWeapon::FinishReload, Duration, false);
 	return true;
@@ -947,10 +953,10 @@ UAnimInstance* ANoFearWeapon::GetCharacterAnimInstance() const
 	return Character && Character->GetMesh() ? Character->GetMesh()->GetAnimInstance() : nullptr;
 }
 
-float ANoFearWeapon::PlayCharacterMontage(UAnimMontage* Montage) const
+float ANoFearWeapon::PlayCharacterMontage(UAnimMontage* Montage, float PlayRate) const
 {
 	UAnimInstance* AnimInstance = Montage ? GetCharacterAnimInstance() : nullptr;
-	return AnimInstance ? AnimInstance->Montage_Play(Montage) : 0.f;
+	return AnimInstance ? AnimInstance->Montage_Play(Montage, PlayRate) : 0.f;
 }
 
 void ANoFearWeapon::StopCharacterMontage(UAnimMontage* Montage) const

@@ -371,6 +371,12 @@ void ANoFearHUD::DrawHUD()
 	{
 		DrawHealth();
 	}
+	bBraceletDrawn = false;
+	bRiftWarningDrawn = false;
+	if (bShowBracelet && !bDead)
+	{
+		DrawBracelet();
+	}
 	if (bShowRadio)
 	{
 		DrawRadio();

@@ -2,6 +2,7 @@
 
 #include "AI/NoFearBotSubsystem.h"
 #include "AI/NoFearCompanionAIController.h"
+#include "Core/NoFearBraceletComponent.h"
 #include "Core/NoFearCharacter.h"
 #include "Core/NoFearFearComponent.h"
 #include "Core/NoFearFearSubsystem.h"
@@ -64,6 +65,8 @@ ANoFearPlayerController::ANoFearPlayerController()
 {
 	static ConstructorHelpers::FObjectFinderOptional<UInputAction> InteractActionFinder(TEXT("/Game/Input/IA_Interact.IA_Interact"));
 	InteractAction = InteractActionFinder.Get();
+
+	Bracelet = CreateDefaultSubobject<UNoFearBraceletComponent>(TEXT("Bracelet"));
 }
 
 FGenericTeamId ANoFearPlayerController::GetGenericTeamId() const
@@ -157,6 +160,11 @@ void ANoFearPlayerController::NotifyHitConfirmed(AActor* Victim, float Damage, b
 	{
 		LastHitEnemy = Victim;
 		LastHitEnemyTime = GetWorld()->GetTimeSeconds();
+	}
+	// Убитый монстр — легче на душе (браслет, этап 12).
+	if (bKilled && Bracelet && Victim && UNoFearFearSubsystem::IsFrightening(UNoFearTeamLibrary::GetTeam(Victim)))
+	{
+		Bracelet->NotifyMonsterKilled();
 	}
 	OnHitConfirmed.Broadcast(Victim, Damage, bHeadshot, bKilled);
 }
@@ -377,11 +385,25 @@ void ANoFearPlayerController::SetupInputComponent()
 		OrderWheelAction = NewObject<UInputAction>(this, TEXT("IA_NoFearOrderWheel"));
 		OrderWheelAction->ValueType = EInputActionValueType::Boolean;
 	}
+	if (!StabilizeAction)
+	{
+		StabilizeAction = NewObject<UInputAction>(this, TEXT("IA_NoFearStabilize"));
+		StabilizeAction->ValueType = EInputActionValueType::Boolean;
+	}
+	if (!BreathAction)
+	{
+		BreathAction = NewObject<UInputAction>(this, TEXT("IA_NoFearHoldBreath"));
+		BreathAction->ValueType = EInputActionValueType::Boolean;
+	}
 	if (!CompanionInputContext)
 	{
 		CompanionInputContext = NewObject<UInputMappingContext>(this, TEXT("IMC_NoFearCompanion"));
 		CompanionInputContext->MapKey(OrderWheelAction, EKeys::Tab);
 		CompanionInputContext->MapKey(OrderWheelAction, EKeys::Gamepad_DPad_Up);
+		CompanionInputContext->MapKey(StabilizeAction, EKeys::Q);
+		CompanionInputContext->MapKey(StabilizeAction, EKeys::Gamepad_DPad_Down);
+		CompanionInputContext->MapKey(BreathAction, EKeys::LeftAlt);
+		CompanionInputContext->MapKey(BreathAction, EKeys::Gamepad_LeftThumbstick);
 	}
 
 	if (UEnhancedInputComponent* EnhancedInput = Cast<UEnhancedInputComponent>(InputComponent))
@@ -394,6 +416,34 @@ void ANoFearPlayerController::SetupInputComponent()
 		EnhancedInput->BindAction(OrderWheelAction, ETriggerEvent::Started, this, &ANoFearPlayerController::OnOrderWheelPressed);
 		EnhancedInput->BindAction(OrderWheelAction, ETriggerEvent::Completed, this, &ANoFearPlayerController::OnOrderWheelReleased);
 		EnhancedInput->BindAction(OrderWheelAction, ETriggerEvent::Canceled, this, &ANoFearPlayerController::OnOrderWheelReleased);
+		EnhancedInput->BindAction(StabilizeAction, ETriggerEvent::Started, this, &ANoFearPlayerController::OnStabilizeInput);
+		EnhancedInput->BindAction(BreathAction, ETriggerEvent::Started, this, &ANoFearPlayerController::OnBreathPressed);
+		EnhancedInput->BindAction(BreathAction, ETriggerEvent::Completed, this, &ANoFearPlayerController::OnBreathReleased);
+		EnhancedInput->BindAction(BreathAction, ETriggerEvent::Canceled, this, &ANoFearPlayerController::OnBreathReleased);
+	}
+}
+
+void ANoFearPlayerController::OnStabilizeInput()
+{
+	if (Bracelet)
+	{
+		Bracelet->StartStabilize();
+	}
+}
+
+void ANoFearPlayerController::OnBreathPressed()
+{
+	if (Bracelet)
+	{
+		Bracelet->SetBreathHold(true);
+	}
+}
+
+void ANoFearPlayerController::OnBreathReleased()
+{
+	if (Bracelet)
+	{
+		Bracelet->SetBreathHold(false);
 	}
 }
 
@@ -1128,10 +1178,34 @@ void ANoFearPlayerController::UpdateCalming(float DeltaTime)
 	if (Fear->GetFear() <= FearSubsystem->CalmTargetFear)
 	{
 		StopCalming();
+		// Успокоил человека — и самому легче (браслет, этап 12).
+		if (Bracelet)
+		{
+			Bracelet->NotifyCalmedCivilian();
+		}
 	}
 }
 
 // --- Консоль ---
+
+void ANoFearPlayerController::NoFearHeroFear(float Value)
+{
+	if (UNoFearFearComponent* Fear = UNoFearFearComponent::FindFear(GetPawn()))
+	{
+		Fear->SetFear(Value);
+	}
+}
+
+void ANoFearPlayerController::NoFearRift(float Distance)
+{
+	FVector ViewLocation;
+	FRotator ViewRotation;
+	GetPlayerViewPoint(ViewLocation, ViewRotation);
+	if (Bracelet)
+	{
+		Bracelet->ReportRift(ViewLocation + FRotator(0.f, ViewRotation.Yaw, 0.f).Vector() * Distance);
+	}
+}
 
 void ANoFearPlayerController::NoFearDownCompanion()
 {

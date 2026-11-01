@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "AI/NoFearPackSubsystem.h"
 #include "AI/NoFearSquadSubsystem.h"
+#include "Core/NoFearBraceletComponent.h"
 #include "Core/NoFearFearSubsystem.h"
 #include "Engine/DeveloperSettings.h"
 #include "Portal/NoFearPortalTypes.h"
@@ -125,6 +126,10 @@ public:
 	/** Страх людей (этап 11). */
 	UPROPERTY(Config, EditAnywhere, Category = "Fear", meta = (ShowOnlyInnerProperties))
 	FNoFearFearTuning Fear;
+
+	/** Страх героя и браслет (этап 12): источники, эффекты, ступор, стабилизация, дыхание. */
+	UPROPERTY(Config, EditAnywhere, Category = "HeroFear", meta = (ShowOnlyInnerProperties))
+	FNoFearHeroFearTuning HeroFear;
 
 	/** Порталы страха (этап 13): слом, рост, аура, монстры по ступеням, освобождение проводников. */
 	UPROPERTY(Config, EditAnywhere, Category = "Portal", meta = (ShowOnlyInnerProperties))

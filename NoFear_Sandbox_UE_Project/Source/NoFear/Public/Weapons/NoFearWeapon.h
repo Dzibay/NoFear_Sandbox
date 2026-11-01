@@ -174,7 +174,7 @@ private:
 	void ClearTimedSounds();
 
 	class UAnimInstance* GetCharacterAnimInstance() const;
-	float PlayCharacterMontage(class UAnimMontage* Montage) const;
+	float PlayCharacterMontage(class UAnimMontage* Montage, float PlayRate = 1.f) const;
 	void StopCharacterMontage(class UAnimMontage* Montage) const;
 
 	bool IsPlayerControlled() const;

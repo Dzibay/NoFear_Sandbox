@@ -96,7 +96,7 @@ bool UNoFearGrenadeComponent::CanThrow() const
 	}
 	const ANoFearCharacter* Character = Cast<ANoFearCharacter>(GetOwner());
 	const UNoFearWeaponComponent* Weapons = Character ? Character->GetWeaponComponent() : nullptr;
-	return !Weapons || (!Weapons->IsWeaponBusy() && !Weapons->AreHandsBusy());
+	return !Weapons || (!Weapons->IsWeaponBusy() && !Weapons->AreHandsBusy() && !Weapons->IsFireBlocked());
 }
 
 // ---------------------------------------------------------------------------

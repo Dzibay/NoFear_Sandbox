@@ -1,6 +1,7 @@
 #include "AI/NoFearBotSubsystem.h"
 
 #include "AI/NoFearAIController.h"
+#include "Core/NoFearBraceletComponent.h"
 #include "Core/NoFearCharacter.h"
 #include "Core/NoFearHealthComponent.h"
 #include "Core/NoFearTeam.h"
@@ -342,6 +343,21 @@ void UNoFearBotSubsystem::ReportDanger(const UObject* WorldContextObject, ENoFea
 		}
 		Bot->ReceiveDanger(Type, Source, ThreatLocation);
 	}
+
+	// Герой тоже пугается (браслет, этап 12).
+	if (const UWorld* World = Subsystem->GetWorld())
+	{
+		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+		{
+			const APlayerController* PlayerController = It->Get();
+			const APawn* Hero = PlayerController ? PlayerController->GetPawn() : nullptr;
+			UNoFearBraceletComponent* Bracelet = PlayerController ? PlayerController->FindComponentByClass<UNoFearBraceletComponent>() : nullptr;
+			if (Bracelet && Hero && Hero != Source && FVector::DistSquared(Hero->GetActorLocation(), Origin) <= RadiusSquared)
+			{
+				Bracelet->ReceiveDanger(Type, Source, ThreatLocation);
+			}
+		}
+	}
 }
 
 void UNoFearBotSubsystem::ReportBulletPath(const UObject* WorldContextObject, AActor* Shooter, const FVector& Start, const FVector& End)
@@ -369,6 +385,26 @@ void UNoFearBotSubsystem::ReportBulletPath(const UObject* WorldContextObject, AA
 			if (bPlayerShot && UNoFearTeamLibrary::AreHostile(Shooter, Listener))
 			{
 				PlayerTargets.Add(Listener);
+			}
+		}
+	}
+
+	// Пуля мимо героя пугает и его (браслет, этап 12).
+	if (const UWorld* PlayerWorld = Subsystem->GetWorld())
+	{
+		for (FConstPlayerControllerIterator It = PlayerWorld->GetPlayerControllerIterator(); It; ++It)
+		{
+			const APlayerController* PlayerController = It->Get();
+			const APawn* Hero = PlayerController ? PlayerController->GetPawn() : nullptr;
+			UNoFearBraceletComponent* Bracelet = PlayerController ? PlayerController->FindComponentByClass<UNoFearBraceletComponent>() : nullptr;
+			if (!Bracelet || !Hero || Hero == Shooter)
+			{
+				continue;
+			}
+			const FVector Closest = FMath::ClosestPointOnSegment(Hero->GetActorLocation(), Start, End);
+			if (FVector::DistSquared(Closest, Hero->GetActorLocation()) <= FMath::Square(NearMissRadius))
+			{
+				Bracelet->ReceiveDanger(ENoFearDangerType::NearMiss, Shooter, ShooterLocation);
 			}
 		}
 	}

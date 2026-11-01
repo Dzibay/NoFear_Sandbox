@@ -237,13 +237,22 @@ ANoFearWeapon* UNoFearWeaponComponent::GetCurrentWeapon() const
 
 void UNoFearWeaponComponent::StartFire()
 {
-	if (bOwnerDead || bHandsBusy)
+	if (bOwnerDead || bHandsBusy || bFireBlocked)
 	{
 		return;
 	}
 	if (ANoFearWeapon* Weapon = GetCurrentWeapon())
 	{
 		Weapon->StartFire();
+	}
+}
+
+void UNoFearWeaponComponent::SetFireBlocked(bool bBlocked)
+{
+	bFireBlocked = bBlocked;
+	if (bBlocked)
+	{
+		StopFire();
 	}
 }
 

@@ -274,7 +274,7 @@ void UNoFearFearSubsystem::UpdateFear(float DeltaTime)
 			Component->AddFear(SpreadRate * FMath::Min(Spreaders, SpreadMaxSources) * DeltaTime, Cap, SpreaderLocation, false);
 		}
 
-		if (Component->GetFear() <= 0.f)
+		if (Component->GetFear() <= 0.f || Component->DecayMultiplier <= 0.f)
 		{
 			continue;
 		}
@@ -285,7 +285,7 @@ void UNoFearFearSubsystem::UpdateFear(float DeltaTime)
 			continue;
 		}
 		const float CalmBonus = FMath::Min(CalmNeighbours * CalmNeighbourBonus, CalmNeighbourMaxBonus);
-		Component->Soothe(DecayRate * GuardianScale * (1.f + CalmBonus) * DeltaTime);
+		Component->Soothe(DecayRate * GuardianScale * (1.f + CalmBonus) * Component->DecayMultiplier * DeltaTime);
 	}
 }
 

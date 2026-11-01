@@ -167,6 +167,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
 	bool AreHandsBusy() const { return bHandsBusy; }
 
+	/** Стрельба и броски запрещены (ступор героя от страха): спуск отпущен, нажатия игнорируются. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Weapon")
+	void SetFireBlocked(bool bBlocked);
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
+	bool IsFireBlocked() const { return bFireBlocked; }
+
 	/** Идёт смена оружия или перезарядка: руки заняты оружием. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
 	bool IsWeaponBusy() const;
@@ -229,6 +236,7 @@ private:
 	UFUNCTION()
 	void HandleAnimInitialized();
 	bool bHandsBusy = false;
+	bool bFireBlocked = false;
 
 	// Идёт убирание текущего оружия; после него достаём PendingIndex.
 	bool bSwitching = false;

@@ -109,6 +109,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fear", meta = (ClampMin = "0"))
 	float GainMultiplier = 1.f;
 
+	/** Свой множитель спада страха (0 — не спадает; браслет героя ставит 0, пока тот задерживает дыхание). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fear", meta = (ClampMin = "0"))
+	float DecayMultiplier = 1.f;
+
 	/** Уровень страха сменился. */
 	UPROPERTY(BlueprintAssignable, Category = "NoFear|Fear")
 	FNoFearFearLevelChangedSignature OnFearLevelChanged;

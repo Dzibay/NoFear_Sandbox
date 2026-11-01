@@ -28,7 +28,7 @@ namespace
 		return Role == ENoFearSquadRole::None ? ENoFearSquadRole::Rifleman : Role;
 	}
 
-	bool IsDebugEnabled()
+	bool IsSquadDebugEnabled()
 	{
 		const IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("NoFear.AI.Debug"));
 		return CVar && CVar->GetInt() > 0;
@@ -2253,7 +2253,7 @@ bool UNoFearSquadSubsystem::HasSettled(const FMember& Member, double Now) const
 void UNoFearSquadSubsystem::DrawDebug(double Now) const
 {
 	const UWorld* World = GetWorld();
-	if (!World || !IsDebugEnabled())
+	if (!World || !IsSquadDebugEnabled())
 	{
 		return;
 	}

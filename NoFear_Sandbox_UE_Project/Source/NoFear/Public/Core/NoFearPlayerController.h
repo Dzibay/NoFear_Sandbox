@@ -9,6 +9,7 @@
 
 class UInputAction;
 class UInputMappingContext;
+class UNoFearBraceletComponent;
 class UNoFearInteractableComponent;
 
 /** Строка рации: что сказал напарник (HUD, левый нижний угол). */
@@ -53,6 +54,9 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FNoFearCompanionsChangedSignature);
  * - реплики напарника приходят сюда же строками рации (AddRadioLine).
  *
  * Испуганного мирного успокаивают, удерживая E рядом с ним (StartCalming, этап 11).
+ *
+ * Браслет стража (UNoFearBraceletComponent, этап 12): страх героя, его эффекты; Q — стабилизация,
+ * держать Left Alt целясь — задержка дыхания.
  */
 UCLASS()
 class NOFEAR_API ANoFearPlayerController : public APlayerController, public IGenericTeamAgentInterface
@@ -121,6 +125,27 @@ public:
 	/** Консоль: замер нагрузки на Seconds секунд, отчёт на экран и в лог (NOFEAR_PERF). Пример: NoFearPerf 10. */
 	UFUNCTION(Exec)
 	void NoFearPerf(float Seconds = 10.f);
+
+	/** Консоль: поставить страх героя. Пример: NoFearHeroFear 90. */
+	UFUNCTION(Exec)
+	void NoFearHeroFear(float Value = 100.f);
+
+	/** Консоль: браслет почуял разлом в Distance см перед игроком (заготовка этапа 13). */
+	UFUNCTION(Exec)
+	void NoFearRift(float Distance = 2000.f);
+
+	// --- Браслет (этап 12) ---
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Bracelet")
+	UNoFearBraceletComponent* GetBracelet() const { return Bracelet; }
+
+	/** Стабилизация браслетом. Не задано — создаётся на Q / крестовину вниз. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Bracelet")
+	TObjectPtr<UInputAction> StabilizeAction;
+
+	/** Задержка дыхания (держать). Не задано — создаётся на Left Alt / нажатие левого стика. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Bracelet")
+	TObjectPtr<UInputAction> BreathAction;
 
 	/** Вызывается из ANoFearCharacter::HandleDeath, когда пешка этого игрока погибла. */
 	void NotifyPawnDied(const FNoFearDamageInfo& Info);
@@ -310,6 +335,9 @@ protected:
 
 	void OnOrderWheelPressed();
 	void OnOrderWheelReleased();
+	void OnStabilizeInput();
+	void OnBreathPressed();
+	void OnBreathReleased();
 	void OpenOrderWheel();
 	/** bIssue — отдать выбранный приказ. */
 	void CloseOrderWheel(bool bIssue);
@@ -331,6 +359,9 @@ protected:
 	void ReleaseCompanion(APawn* CompanionPawn);
 
 private:
+	UPROPERTY(VisibleAnywhere, Category = "NoFear|Bracelet")
+	TObjectPtr<UNoFearBraceletComponent> Bracelet;
+
 	TArray<TWeakObjectPtr<APawn>> Companions;
 	TWeakObjectPtr<UNoFearInteractableComponent> FocusedInteractable;
 
