@@ -51,6 +51,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Melee")
 	bool IsInRecovery() const { return Phase == EPhase::Recovery; }
 
+	/** Сорвать текущую атаку (замах, удар или отход) — как если бы она закончилась. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Melee")
+	void CancelAttack() { FinishAttack(); }
+
 	/** Не начинать атак ближайшие Seconds секунд (выдох бешеного). */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Melee")
 	void BlockAttacksFor(float Seconds);

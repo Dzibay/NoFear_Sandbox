@@ -2,6 +2,8 @@
 #include "Core/NoFearPerf.h"
 
 #include "AI/NoFearFleeLibrary.h"
+#include "AI/NoFearMonsterKinds.h"
+#include "AI/NoFearOpportunitySubsystem.h"
 #include "Animation/NoFearPoseComponent.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
@@ -359,6 +361,7 @@ void ANoFearAIController::UpdateBot()
 	ForgetStaleActors();
 	UpdateSightFear(DeltaTime);
 	ScanCorpses();
+	NoticePinners();
 
 	// Целью становится только тот, в ком бот уверен (шкала полна).
 	AActor* BestTarget = nullptr;
@@ -429,6 +432,7 @@ void ANoFearAIController::UpdateAwareness(float DeltaTime)
 {
 	const APawn* MyPawn = GetPawn();
 	const double Now = GetNow();
+	const bool bBlinded = MyPawn && UNoFearOpportunitySubsystem::HasTag(MyPawn, ENoFearOpportunity::Blinded);
 
 	for (TPair<TWeakObjectPtr<AActor>, FNoFearKnownActor>& Pair : KnownActors)
 	{
@@ -442,8 +446,11 @@ void ANoFearAIController::UpdateAwareness(float DeltaTime)
 
 		const float PreviousAwareness = Knowledge.Awareness;
 		bool bRising = false;
+		// Ослеплён — дальние враги пропадают из виду.
+		const bool bInView = Knowledge.bInView
+			&& !(bBlinded && FVector::Dist(MyPawn->GetActorLocation(), Actor->GetActorLocation()) > BlindedSightRange);
 
-		if (Knowledge.bInView)
+		if (bInView)
 		{
 			if (Knowledge.Awareness < 1.f)
 			{
@@ -470,7 +477,7 @@ void ANoFearAIController::UpdateAwareness(float DeltaTime)
 			Knowledge.Awareness = FMath::Max(0.f, Knowledge.Awareness - AwarenessDecayRate * DeltaTime);
 		}
 
-		Knowledge.bVisible = Knowledge.bInView && Knowledge.Awareness >= 1.f;
+		Knowledge.bVisible = bInView && Knowledge.Awareness >= 1.f;
 
 		// Шкала перешла порог — насторожен и идёт проверить; пока она растёт выше порога, подозрение освежается.
 		if (Knowledge.Awareness >= SuspiciousThreshold && (bRising || PreviousAwareness < SuspiciousThreshold))
@@ -622,10 +629,47 @@ bool ANoFearAIController::IsValidTarget(const AActor* Candidate) const
 	return FVector::DistSquared(MyPawn->GetActorLocation(), Candidate->GetActorLocation()) <= FMath::Square(MaxTargetDistance);
 }
 
+void ANoFearAIController::NoticePinners()
+{
+	const APawn* MyPawn = GetPawn();
+	if (!bCanAttack || PinRescueRadius <= 0.f || !MyPawn)
+	{
+		return;
+	}
+	// Союзник под ловчим кричит — ловчий сразу «замечен» целиком.
+	TArray<ANoFearJumperAIController*> Pinners;
+	ANoFearJumperAIController::GetActivePinners(GetWorld(), Pinners);
+	for (const ANoFearJumperAIController* Pinner : Pinners)
+	{
+		APawn* Catcher = Pinner->GetPawn();
+		const AActor* Victim = Pinner->GetPinVictim();
+		if (!Catcher || !Victim || Victim == MyPawn || UNoFearTeamLibrary::AreHostile(MyPawn, Victim)
+			|| !UNoFearTeamLibrary::AreHostile(MyPawn, Catcher)
+			|| FVector::Dist(MyPawn->GetActorLocation(), Catcher->GetActorLocation()) > PinRescueRadius)
+		{
+			continue;
+		}
+		FNoFearKnownActor& Knowledge = KnownActors.FindOrAdd(Catcher);
+		Knowledge.Awareness = 1.f;
+		Knowledge.LastKnownLocation = Catcher->GetActorLocation();
+		Knowledge.LastHeardTime = GetNow();
+	}
+}
+
 float ANoFearAIController::ScoreTarget(const AActor* Candidate, const FNoFearKnownActor& Knowledge) const
 {
 	const float Distance = FVector::Dist(GetPawn()->GetActorLocation(), Candidate->GetActorLocation());
 	float Score = 1.f - FMath::Clamp(Distance / FMath::Max(MaxTargetDistance, 1.f), 0.f, 1.f);
+	if (PinRescueBonus > 0.f && Distance <= PinRescueRadius)
+	{
+		const APawn* CandidatePawn = Cast<APawn>(Candidate);
+		const ANoFearJumperAIController* Pinner = CandidatePawn ? Cast<ANoFearJumperAIController>(CandidatePawn->GetController()) : nullptr;
+		const AActor* Victim = Pinner ? Pinner->GetPinVictim() : nullptr;
+		if (Victim && !UNoFearTeamLibrary::AreHostile(GetPawn(), Victim))
+		{
+			Score += PinRescueBonus;
+		}
+	}
 	if (Knowledge.bVisible)
 	{
 		Score += 1.f;

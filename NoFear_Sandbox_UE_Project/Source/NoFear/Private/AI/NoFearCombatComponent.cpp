@@ -3,6 +3,8 @@
 
 #include "AI/NoFearCombatSubsystem.h"
 #include "AI/NoFearAIController.h"
+#include "AI/NoFearMonsterKinds.h"
+#include "AI/NoFearOpportunitySubsystem.h"
 #include "AIController.h"
 #include "Animation/NoFearPoseComponent.h"
 #include "BrainComponent.h"
@@ -315,6 +317,11 @@ AActor* UNoFearCombatComponent::FindFriendInLine(const AActor* Shooter, const AA
 		{
 			continue;
 		}
+		// Лежит под ловчим, в которого и целимся, — стреляем поверх.
+		if (const ANoFearJumperAIController* Pinner = ANoFearJumperAIController::FindPinner(Other); Pinner && Target && Pinner->GetPawn() == Target)
+		{
+			continue;
+		}
 		const UCapsuleComponent* Capsule = Other->GetCapsuleComponent();
 		if (!Capsule)
 		{
@@ -416,6 +423,12 @@ float UNoFearCombatComponent::GetCurrentSpreadDegrees(float Distance) const
 	if (!bHasLineOfSight)
 	{
 		Multiplier *= BlindFireSpreadMultiplier;
+	}
+
+	// Ослеплён плевком: точность ×0.3.
+	if (UNoFearOpportunitySubsystem::HasTag(GetOwner(), ENoFearOpportunity::Blinded))
+	{
+		Multiplier *= BlindedSpreadMultiplier;
 	}
 
 	// Паника (этап 11): руки трясутся — от порога паники до страха 100 разброс растёт до PanicSpreadMultiplier.

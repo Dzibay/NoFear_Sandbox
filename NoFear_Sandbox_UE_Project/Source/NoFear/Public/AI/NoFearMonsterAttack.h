@@ -230,8 +230,31 @@ public:
 };
 
 /**
+ * Прыжок сверху (ловчий, Pounce): с насеста по баллистической дуге прямо на цель, до 1500 см и до 700 см вниз.
+ * Без отскока; задел — окно удара кончается сразу. Прижатие делает контроллер ловчего (OnAttackHit).
+ * Вес 0: сама не выбирается, её запускает ловчий по имени.
+ */
+UCLASS(meta = (DisplayName = "Pounce"))
+class NOFEAR_API UNoFearMonsterAttack_Pounce : public UNoFearMonsterAttack_Leap
+{
+	GENERATED_BODY()
+
+public:
+	UNoFearMonsterAttack_Pounce();
+
+	/** Высота дуги: 0 — почти прямо, 1 — очень навесом. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Lunge", meta = (ClampMin = "0.05", ClampMax = "0.95"))
+	float ArcParam = 0.3f;
+
+	virtual bool CanUse(const UNoFearMeleeComponent* Melee, const AActor* Target) const override { return false; }
+	virtual void BeginStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target) override;
+	virtual bool TickStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target, float DeltaTime) override;
+};
+
+/**
  * Плевок (плевун): на ударе выпускает по дуге снаряд ProjectileClass с упреждением по скорости цели.
- * Урон наносят снаряд и лужа, которую он оставляет. Нужна прямая видимость цели.
+ * Урон наносят снаряд и лужа, которую он оставляет. Цель за укрытием — навесом (LobArcParam) без упреждения,
+ * если дуга падает рядом с ней.
  */
 UCLASS(meta = (DisplayName = "Spit"))
 class NOFEAR_API UNoFearMonsterAttack_Spit : public UNoFearMonsterAttack
@@ -260,12 +283,34 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spit", meta = (ClampMin = "0", ClampMax = "1.5"))
 	float LeadFactor = 0.7f;
 
+	/** Цель за укрытием (видимости нет) — плевать высокой дугой туда, где она. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spit")
+	bool bLobOverCover = true;
+
+	/** Высота дуги навеса. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spit", meta = (ClampMin = "0.05", ClampMax = "0.95"))
+	float LobArcParam = 0.75f;
+
+	/** Навес годится, если дуга падает не дальше столько от цели, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spit", meta = (ClampMin = "0"))
+	float LobLandTolerance = 300.f;
+
 	/** Сколько снарядов выпущено (для тестов). */
 	UPROPERTY(Transient, BlueprintReadOnly, Category = "Spit")
 	int32 ShotCount = 0;
 
+	/** Сколько из них навесом за укрытие. */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Spit")
+	int32 LobCount = 0;
+
 	virtual bool CanUse(const UNoFearMeleeComponent* Melee, const AActor* Target) const override;
 	virtual void BeginStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target) override;
+
+private:
+	FVector GetMuzzle(const AActor* Owner) const;
+	bool HasLineOfSight(const UNoFearMeleeComponent* Melee, const AActor* Owner, const AActor* Target) const;
+	/** Дуга навеса из Start на цель падает рядом с ней (не упирается в стену или потолок). */
+	bool CanLob(const UNoFearMeleeComponent* Melee, const AActor* Owner, const AActor* Target, FVector& OutVelocity) const;
 };
 
 /**

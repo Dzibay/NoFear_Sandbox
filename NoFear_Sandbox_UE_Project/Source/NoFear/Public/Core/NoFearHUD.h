@@ -473,6 +473,30 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
 	bool WasRiftWarningDrawn() const { return bRiftWarningDrawn; }
 
+	/** Подсказка «Пробел — вырваться» у браслета, пока героя прижал ловчий. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hero|Bracelet")
+	FText BreakFreeText = NSLOCTEXT("NoFearHUD", "BreakFree", "вырваться");
+
+	/** Подтёки слизи плевуна по краям экрана (метка Slimed). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hero|Monsters")
+	FLinearColor SlimeColor = FLinearColor(0.35f, 0.75f, 0.1f, 0.55f);
+
+	/** Тёмные пятна ослепления плевком (метка Blinded). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hero|Monsters")
+	FLinearColor BlindColor = FLinearColor(0.03f, 0.05f, 0.f, 0.85f);
+
+	/** Полоска вырывания нарисована в последнем кадре (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
+	bool WasPinEscapeDrawn() const { return bPinEscapeDrawn; }
+
+	/** Слизь на экране нарисована в последнем кадре (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
+	bool WasSlimeOverlayDrawn() const { return bSlimeOverlayDrawn; }
+
+	/** Пятна ослепления нарисованы в последнем кадре (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|HUD")
+	bool WasBlindOverlayDrawn() const { return bBlindOverlayDrawn; }
+
 	// --- Порталы страха (этап 13) ---
 
 	/** Аура и ступень порталов, кольца у ног проводников и ломающихся, кольцо «Освобождаю» у прицела. */
@@ -645,6 +669,10 @@ private:
 	/** Браслет героя: NoFearHUDBracelet.cpp. */
 	void DrawBracelet();
 	void DrawRiftWarning(const class UNoFearBraceletComponent* Bracelet);
+	/** «Пробел — вырваться» и полоска нажатий, пока героя прижал ловчий. */
+	void DrawPinEscape(float X, float Y);
+	/** Слизь и пятна ослепления плевуна поверх картинки. */
+	void DrawSpitterOverlays();
 	/** Порталы страха: NoFearHUDPortal.cpp. */
 	void DrawPortals();
 	void DrawPortalFreeProgress();
@@ -680,6 +708,9 @@ private:
 	int32 DrawnFearBars = 0;
 	bool bBraceletDrawn = false;
 	bool bRiftWarningDrawn = false;
+	bool bPinEscapeDrawn = false;
+	bool bSlimeOverlayDrawn = false;
+	bool bBlindOverlayDrawn = false;
 	int32 DrawnPortalLabels = 0;
 	int32 DrawnFeederRings = 0;
 	int32 DrawnBreakRings = 0;

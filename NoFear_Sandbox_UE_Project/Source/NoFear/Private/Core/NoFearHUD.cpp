@@ -283,6 +283,12 @@ void ANoFearHUD::DrawHUD()
 	{
 		DrawVignette();
 	}
+	bSlimeOverlayDrawn = false;
+	bBlindOverlayDrawn = false;
+	if (!bDead)
+	{
+		DrawSpitterOverlays();
+	}
 	DrawDownedScreen();
 	if (bShowDamageIndicators && !bDead)
 	{
@@ -374,6 +380,7 @@ void ANoFearHUD::DrawHUD()
 	}
 	bBraceletDrawn = false;
 	bRiftWarningDrawn = false;
+	bPinEscapeDrawn = false;
 	if (bShowBracelet && !bDead)
 	{
 		DrawBracelet();

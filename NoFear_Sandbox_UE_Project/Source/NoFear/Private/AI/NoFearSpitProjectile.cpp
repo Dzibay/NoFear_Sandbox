@@ -2,6 +2,9 @@
 
 #include "AI/NoFearAcidPuddle.h"
 #include "AI/NoFearOpportunitySubsystem.h"
+#include "AI/NoFearSpitEffectComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "GameFramework/Character.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Core/NoFearHealthComponent.h"
@@ -91,8 +94,21 @@ void ANoFearSpitProjectile::HandleHit(UPrimitiveComponent* HitComponent, AActor*
 	{
 		const FVector Direction = ProjectileMovement->Velocity.GetSafeNormal();
 		UGameplayStatics::ApplyPointDamage(OtherActor, DirectDamage, Direction, Hit, Shooter ? Shooter->GetController() : nullptr, this, DamageType);
-		// Прямое попадание облепляет слизью: метка для ловчего.
-		UNoFearOpportunitySubsystem::AddTag(OtherActor, ENoFearOpportunity::Slimed, SlimeTime);
+		// Прямое попадание облепляет слизью: метка для ловчего и замедление.
+		UNoFearSpitEffectComponent::ApplySlime(OtherActor, SlimeTime, SlimeSpeedScale);
+		// В голову или верх корпуса — ослепляет. Героя — только в лицо.
+		const ACharacter* Victim = Cast<ACharacter>(OtherActor);
+		if (Victim && BlindTime > 0.f && Victim->GetCapsuleComponent())
+		{
+			const float Half = Victim->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+			const bool bHigh = Hit.ImpactPoint.Z >= Victim->GetActorLocation().Z + Half * BlindHeightFraction;
+			const FVector Facing = Victim->GetViewRotation().Vector().GetSafeNormal2D();
+			const bool bFront = !Victim->IsPlayerControlled() || FVector::DotProduct(Facing, -Direction.GetSafeNormal2D()) >= 0.3f;
+			if (bHigh && bFront)
+			{
+				UNoFearSpitEffectComponent::ApplyBlind(OtherActor, BlindTime);
+			}
+		}
 	}
 	if (ImpactSound)
 	{

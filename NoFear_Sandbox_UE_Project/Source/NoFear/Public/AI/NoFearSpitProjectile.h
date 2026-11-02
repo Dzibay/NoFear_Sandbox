@@ -38,6 +38,22 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spit", meta = (ClampMin = "0"))
 	float SlimeTime = 4.f;
 
+	/** Облепленный слизью движется медленнее: время тела ×SlimeSpeedScale. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spit", meta = (ClampMin = "0.1", ClampMax = "1"))
+	float SlimeSpeedScale = 0.6f;
+
+	/** Попал в голову или верх корпуса (героя — только спереди) — ослепление на столько секунд. 0 — не слепит. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spit", meta = (ClampMin = "0"))
+	float BlindTime = 2.f;
+
+	/** Верх корпуса — выше центра капсулы на эту долю полувысоты. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spit", meta = (ClampMin = "-1", ClampMax = "1"))
+	float BlindHeightFraction = 0.25f;
+
+	/** Пущен навесом за укрытие (для тестов). */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Spit")
+	bool bLobbed = false;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spit")
 	TSubclassOf<UDamageType> DamageType;
 

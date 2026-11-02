@@ -147,6 +147,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Bracelet")
 	TObjectPtr<UInputAction> BreathAction;
 
+	/** Вырываться из-под ловчего (жать часто). Не задано — создаётся на Пробел / нижнюю кнопку геймпада; прыжок не глушит. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Bracelet")
+	TObjectPtr<UInputAction> BreakFreeAction;
+
+	/** Одно нажатие «вырваться»: ловчий слетает, когда за окно набрано нужное число нажатий. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Bracelet")
+	void BreakFree();
+
 	/** Вызывается из ANoFearCharacter::HandleDeath, когда пешка этого игрока погибла. */
 	void NotifyPawnDied(const FNoFearDamageInfo& Info);
 
@@ -337,6 +345,7 @@ protected:
 	void OnOrderWheelReleased();
 	void OnStabilizeInput();
 	void OnBreathPressed();
+	void OnBreakFreeInput();
 	void OnBreathReleased();
 	void OpenOrderWheel();
 	/** bIssue — отдать выбранный приказ. */

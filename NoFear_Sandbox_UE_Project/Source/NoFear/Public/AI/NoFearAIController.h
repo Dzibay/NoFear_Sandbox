@@ -318,6 +318,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Targeting", meta = (ClampMin = "0"))
 	float TargetStickiness = 0.35f;
 
+	/** Ловчий прижал союзника ближе этого — бот знает о ловчем и бьёт его первым. 0 — не спасает. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Targeting", meta = (ClampMin = "0"))
+	float PinRescueRadius = 2000.f;
+
+	/** Прибавка к оценке ловчего, прижавшего союзника. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Targeting", meta = (ClampMin = "0"))
+	float PinRescueBonus = 4.f;
+
+	/** Ослеплён плевком (метка Blinded) — не видит дальше этого, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Detection", meta = (ClampMin = "0"))
+	float BlindedSightRange = 600.f;
+
 	/** Цель пропала из памяти — пойти проверить, где её видели последней. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Targeting")
 	bool bInvestigateLostTarget = true;
@@ -492,6 +504,9 @@ protected:
 
 	/** Чем больше, тем охотнее бот выберет цель. Отрицательное — не выбирать. */
 	virtual float ScoreTarget(const AActor* Candidate, const FNoFearKnownActor& Knowledge) const;
+
+	/** Ловчий прижал союзника рядом — запомнить ловчего как замеченного врага. */
+	void NoticePinners();
 
 	virtual void HandleTargetChanged(AActor* NewTarget, AActor* OldTarget);
 

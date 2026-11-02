@@ -237,6 +237,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Accuracy", meta = (ClampMin = "1"))
 	float BlindFireSpreadMultiplier = 2.f;
 
+	/** Множитель разброса, пока ослеплён плевком (метка Blinded). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Accuracy", meta = (ClampMin = "1"))
+	float BlindedSpreadMultiplier = 3.3f;
+
 	/** Запаздывание прицела за движущейся целью, сек. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Accuracy", meta = (ClampMin = "0"))
 	float TrackingLag = 0.15f;

@@ -191,6 +191,58 @@ void UNoFearMonsterAttack_Leap::BeginRecovery(UNoFearMeleeComponent* Melee, ACha
 	Owner->LaunchCharacter(Away * BounceSpeed + FVector::UpVector * BounceUpSpeed, true, true);
 }
 
+// --- Прыжок сверху ---
+
+UNoFearMonsterAttack_Pounce::UNoFearMonsterAttack_Pounce()
+{
+	AttackName = TEXT("Pounce");
+	MinRange = 0.f;
+	MaxRange = 1500.f;
+	Cooldown = 8.f;
+	Weight = 0.f;
+	MaxHeightDifference = 700.f;
+	Damage = 15.f;
+	HitReach = 40.f;
+	HitRadius = 90.f;
+	WindupTime = 0.35f;
+	HitWindow = 2.5f;
+	RecoveryTime = 0.4f;
+	LungeSpeed = 1500.f;
+	LungeUpSpeed = 500.f;
+	// Летит на саму цель, а не останавливается перед ней.
+	LungeStopDistance = 0.f;
+	BounceSpeed = 0.f;
+	BounceUpSpeed = 0.f;
+	Pose = ENoFearPose::Lunge;
+	PoseIntensity = 1.2f;
+}
+
+void UNoFearMonsterAttack_Pounce::BeginStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target)
+{
+	if (!Owner || !Target)
+	{
+		return;
+	}
+	// Дуга в точку чуть ниже центра цели: ловчий падает ей на плечи.
+	const FVector Start = Owner->GetActorLocation();
+	const FVector Aim = Target->GetActorLocation() - FVector(0.f, 0.f, 20.f);
+	FVector Velocity;
+	const float GravityZ = Owner->GetCharacterMovement() ? Owner->GetCharacterMovement()->GetGravityZ() : 0.f;
+	if (UGameplayStatics::SuggestProjectileVelocity_CustomArc(Melee, Velocity, Start, Aim, GravityZ, ArcParam))
+	{
+		Owner->LaunchCharacter(Velocity, true, true);
+	}
+	else
+	{
+		Super::BeginStrike(Melee, Owner, Target);
+	}
+}
+
+bool UNoFearMonsterAttack_Pounce::TickStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target, float DeltaTime)
+{
+	return !bHitThisAttack && Super::TickStrike(Melee, Owner, Target, DeltaTime);
+}
+
 // --- Плевок ---
 
 UNoFearMonsterAttack_Spit::UNoFearMonsterAttack_Spit()
@@ -210,18 +262,52 @@ UNoFearMonsterAttack_Spit::UNoFearMonsterAttack_Spit()
 	ProjectileClass = ANoFearSpitProjectile::StaticClass();
 }
 
+FVector UNoFearMonsterAttack_Spit::GetMuzzle(const AActor* Owner) const
+{
+	return Owner->GetActorLocation() + Owner->GetActorForwardVector().GetSafeNormal2D() * MuzzleForward + FVector(0.f, 0.f, MuzzleUp);
+}
+
+bool UNoFearMonsterAttack_Spit::HasLineOfSight(const UNoFearMeleeComponent* Melee, const AActor* Owner, const AActor* Target) const
+{
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearSpitSight), false, Owner);
+	Params.AddIgnoredActor(Target);
+	const FVector Start = Owner->GetActorLocation() + FVector(0.f, 0.f, MuzzleUp);
+	return !Melee->GetWorld()->LineTraceTestByChannel(Start, Target->GetActorLocation(), ECC_Visibility, Params);
+}
+
+bool UNoFearMonsterAttack_Spit::CanLob(const UNoFearMeleeComponent* Melee, const AActor* Owner, const AActor* Target, FVector& OutVelocity) const
+{
+	const FVector Start = GetMuzzle(Owner);
+	const FVector Aim = Target->GetActorLocation();
+	if (!UGameplayStatics::SuggestProjectileVelocity_CustomArc(Melee, OutVelocity, Start, Aim, 0.f, LobArcParam))
+	{
+		return false;
+	}
+	FPredictProjectilePathParams PathParams(12.f, Start, OutVelocity, 4.f, ECC_Visibility, const_cast<AActor*>(Owner));
+	PathParams.ActorsToIgnore.Add(const_cast<AActor*>(Target));
+	PathParams.SimFrequency = 10.f;
+	FPredictProjectilePathResult PathResult;
+	if (!UGameplayStatics::PredictProjectilePath(Melee, PathParams, PathResult))
+	{
+		return false;
+	}
+	return FVector::Dist2D(PathResult.HitResult.ImpactPoint, Aim) <= LobLandTolerance;
+}
+
 bool UNoFearMonsterAttack_Spit::CanUse(const UNoFearMeleeComponent* Melee, const AActor* Target) const
 {
 	if (!Super::CanUse(Melee, Target))
 	{
 		return false;
 	}
-	// Плюёт, только если видит цель: иначе снаряд уйдёт в стену.
+	// Видит цель — плюёт прямо; не видит — только навесом, если дуга ложится рядом (иначе снаряд уйдёт в стену).
 	const AActor* Owner = Melee->GetOwner();
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearSpitSight), false, Owner);
-	Params.AddIgnoredActor(Target);
-	const FVector Start = Owner->GetActorLocation() + FVector(0.f, 0.f, MuzzleUp);
-	return !Melee->GetWorld()->LineTraceTestByChannel(Start, Target->GetActorLocation(), ECC_Visibility, Params);
+	if (HasLineOfSight(Melee, Owner, Target))
+	{
+		return true;
+	}
+	FVector Velocity;
+	return bLobOverCover && CanLob(Melee, Owner, Target, Velocity);
 }
 
 void UNoFearMonsterAttack_Spit::BeginStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target)
@@ -232,21 +318,25 @@ void UNoFearMonsterAttack_Spit::BeginStrike(UNoFearMeleeComponent* Melee, AChara
 		return;
 	}
 
-	const FVector Start = Owner->GetActorLocation() + Owner->GetActorForwardVector().GetSafeNormal2D() * MuzzleForward + FVector(0.f, 0.f, MuzzleUp);
+	const FVector Start = GetMuzzle(Owner);
 	FVector Aim = Target->GetActorLocation();
 	FVector Velocity;
-	if (!UGameplayStatics::SuggestProjectileVelocity_CustomArc(Melee, Velocity, Start, Aim, 0.f, ArcParam))
+	const bool bLob = bLobOverCover && !HasLineOfSight(Melee, Owner, Target) && CanLob(Melee, Owner, Target, Velocity);
+	if (!bLob)
 	{
-		return;
-	}
-	// Упреждение: куда цель успеет дойти за время полёта.
-	const float HorizontalSpeed = FMath::Max(Velocity.Size2D(), 1.f);
-	const float FlightTime = FVector::Dist2D(Start, Aim) / HorizontalSpeed;
-	const FVector TargetVelocity = Target->GetVelocity() * FVector(1.f, 1.f, 0.f);
-	if (LeadFactor > 0.f && !TargetVelocity.IsNearlyZero())
-	{
-		Aim += TargetVelocity * FlightTime * LeadFactor;
-		UGameplayStatics::SuggestProjectileVelocity_CustomArc(Melee, Velocity, Start, Aim, 0.f, ArcParam);
+		if (!UGameplayStatics::SuggestProjectileVelocity_CustomArc(Melee, Velocity, Start, Aim, 0.f, ArcParam))
+		{
+			return;
+		}
+		// Упреждение: куда цель успеет дойти за время полёта.
+		const float HorizontalSpeed = FMath::Max(Velocity.Size2D(), 1.f);
+		const float FlightTime = FVector::Dist2D(Start, Aim) / HorizontalSpeed;
+		const FVector TargetVelocity = Target->GetVelocity() * FVector(1.f, 1.f, 0.f);
+		if (LeadFactor > 0.f && !TargetVelocity.IsNearlyZero())
+		{
+			Aim += TargetVelocity * FlightTime * LeadFactor;
+			UGameplayStatics::SuggestProjectileVelocity_CustomArc(Melee, Velocity, Start, Aim, 0.f, ArcParam);
+		}
 	}
 
 	FActorSpawnParameters SpawnParams;
@@ -257,11 +347,13 @@ void UNoFearMonsterAttack_Spit::BeginStrike(UNoFearMeleeComponent* Melee, AChara
 	if (ANoFearSpitProjectile* Spit = Cast<ANoFearSpitProjectile>(Projectile))
 	{
 		Spit->DirectDamage = Damage * Melee->DamageScale;
+		Spit->bLobbed = bLob;
 		Spit->Launch(Velocity);
 	}
 	if (Projectile)
 	{
 		++ShotCount;
+		LobCount += bLob ? 1 : 0;
 	}
 }
 

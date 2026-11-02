@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "AI/NoFearMonsterAIController.h"
 class UCameraShakeBase;
+class UNoFearHealthComponent;
+struct FNoFearDamageInfo;
 
 #include "NoFearMonsterKinds.generated.h"
 
@@ -12,6 +14,16 @@ class UCameraShakeBase;
  * В кольцо стаи не встаёт и жетон ближнего боя не занимает: кружит на краю зрения цели, у фланга (StalkDistance) и прыгает,
  * когда цель отвлеклась (IsTargetDistracted): перезаряжается, стреляет или бьёт в другую сторону, стоит спиной,
  * сбита с ног, в слизи, прижата или ослеплена. Ждал дольше LeapPatience — прыгает и так.
+ * Ловчий (раздел 4.3 Docs/Monsters_Design.md):
+ * - Насест: ищет трассами уступ на 200–600 см выше цели в пределах 1500 см (FindPerch), бежит к подножию и забирается
+ *   короткими прыжками по 150–200 см. Сверху ждёт, пока цель отвлечётся или отстанет (или PerchPatience), и прыгает
+ *   на неё (UNoFearMonsterAttack_Pounce).
+ * - Прижатие: допрыгнул — цель лежит (метки Pinned, KnockedDown), не ходит и не стреляет, ловчий сидит сверху и рвёт
+ *   по 5 урона в 0.5 с. Вырваться: 8 нажатий Пробела за 3 с (12 при страхе от 60). Напарник снимает ловчего уроном
+ *   от 30, дробовиком или ударом вплотную: тот отлетает и оглушён 1.5 с. Союзники цели бегут на выручку
+ *   (ANoFearAIController, PinRescueRadius).
+ * - В полёте (прыжок, Pounce) спина ×1.5 (зона Flight); попадание от 15 урона сбивает его на землю.
+ * - Цель спряталась за укрытие — прыгает к ней сразу, не дожидаясь, пока отвлечётся.
  * Тело: CBP_Bot_Jumper.
  */
 UCLASS(Blueprintable)
@@ -97,15 +109,190 @@ public:
 	virtual bool IsRingFighter() const override { return false; }
 	virtual bool GetStandoffPoint(const FVector& TargetLocation, const FVector& PackSide, FVector& OutPoint) const override;
 
+	// --- Ловчий: насест ---
+
+	/** Искать уступ над целью и прыгать на неё сверху. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Perch")
+	bool bUsePerches = true;
+
+	/** Уступ ищет не дальше этого от цели, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Perch", meta = (ClampMin = "0"))
+	float PerchSearchRadius = 1500.f;
+
+	/** Уступ выше ног цели на столько, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Perch", meta = (ClampMin = "0"))
+	float PerchMinHeight = 200.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Perch", meta = (ClampMin = "0"))
+	float PerchMaxHeight = 600.f;
+
+	/** Цель ближе этого — насест не ищет, бьёт как прыгун, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Perch", meta = (ClampMin = "0"))
+	float PerchMinTargetDistance = 500.f;
+
+	/** Один прыжок по стене поднимает не выше этого, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Perch", meta = (ClampMin = "50"))
+	float ClimbHopHeight = 180.f;
+
+	/** На насесте ждёт не дольше столько секунд — потом прыгает и так. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Perch", meta = (ClampMin = "0"))
+	float PerchPatience = 8.f;
+
+	/** Найти уступ над целью и пойти на него. false — уступа нет или сейчас нельзя. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Monster|Perch")
+	bool TryPerch();
+
+	/** Прыгнуть на текущую цель (Pounce) откуда стоит. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Monster|Perch")
+	bool StartPounce();
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Perch")
+	bool IsPerched() const { return PerchState == EPerchState::Perched; }
+
+	/** Идёт к подножию или лезет наверх. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Perch")
+	bool IsClimbing() const { return PerchState == EPerchState::Approach || PerchState == EPerchState::Climb; }
+
+	/** Найденный уступ (верх) — для тестов и отладки. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Perch")
+	FVector GetPerchLocation() const { return PerchTop; }
+
+	/** Сколько раз забрался на насест, прыгнул сверху и прыгнул к спрятавшейся за укрытие цели. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Perch")
+	int32 GetPerchCount() const { return PerchCount; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Perch")
+	int32 GetPounceCount() const { return PounceCount; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Perch")
+	int32 GetCoverLeapCount() const { return CoverLeaps; }
+
+	// --- Ловчий: прижатие ---
+
+	/** Урон прижатой цели за раз и раз в столько секунд. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pin", meta = (ClampMin = "0"))
+	float PinDamage = 5.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pin", meta = (ClampMin = "0.05"))
+	float PinDamageInterval = 0.5f;
+
+	/** Сколько нажатий (Пробел) за PinEscapeWindow секунд нужно, чтобы вырваться; при страхе от PinAfraidFear — больше. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pin", meta = (ClampMin = "1"))
+	int32 PinEscapePresses = 8;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pin", meta = (ClampMin = "1"))
+	int32 PinEscapePressesAfraid = 12;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pin", meta = (ClampMin = "0", ClampMax = "100"))
+	float PinAfraidFear = 60.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pin", meta = (ClampMin = "0.5"))
+	float PinEscapeWindow = 3.f;
+
+	/** Сбить с прижатой цели: столько урона за прижатие, дробовик или удар не дальше KnockOffMeleeDistance. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pin", meta = (ClampMin = "0"))
+	float KnockOffDamage = 30.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pin", meta = (ClampMin = "0"))
+	float KnockOffMeleeDistance = 200.f;
+
+	/** Оглушение сбитого с цели, сек. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pin", meta = (ClampMin = "0"))
+	float KnockOffStunTime = 1.5f;
+
+	/** В полёте попадание от столько урона сбивает на землю и оглушает на FlightStunTime. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pin", meta = (ClampMin = "0"))
+	float FlightKnockDamage = 15.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pin", meta = (ClampMin = "0"))
+	float FlightStunTime = 1.f;
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Pin")
+	bool IsPinning() const { return PinVictim.IsValid(); }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Pin")
+	ACharacter* GetPinVictim() const { return PinVictim.Get(); }
+
+	/** Жертва нажала «вырваться» (Пробел). */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Monster|Pin")
+	void AddEscapePress();
+
+	/** Сколько нажатий нужно этой жертве и сколько сделано за окно, 0–1. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Pin")
+	int32 GetEscapeRequired() const;
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Pin")
+	float GetEscapeProgress() const;
+
+	/** Сбросить с жертвы: отлетает от From и оглушён. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Monster|Pin")
+	void ThrowOff(AActor* From);
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Pin")
+	int32 GetPinCount() const { return PinCount; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Pin")
+	int32 GetKnockOffCount() const { return KnockOffCount; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Pin")
+	int32 GetEscapeCount() const { return EscapeCount; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Pin")
+	int32 GetFlightKnockCount() const { return FlightKnockCount; }
+
+	/** Ловчий, который прижал Victim (или null). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Pin")
+	static ANoFearJumperAIController* FindPinner(const AActor* Victim);
+
+	/** Все ловчие, которые сейчас кого-то прижали. */
+	static void GetActivePinners(const UWorld* World, TArray<ANoFearJumperAIController*>& OutPinners);
+
 protected:
+	virtual void OnPossess(APawn* InPawn) override;
+	virtual void OnUnPossess() override;
 	virtual void UpdateBot() override;
 	virtual void UpdateMovementStance() override;
+	virtual void ConfigureMelee(UNoFearMeleeComponent* Melee) override;
 	virtual bool WantsFreeAttack(AActor* Target) override;
 	virtual void OnMeleeAttackFinished(AActor* Target) override;
 
 private:
+	enum class EPerchState : uint8
+	{
+		None,
+		Approach,
+		Climb,
+		Perched
+	};
+
 	/** Враг с оружием в руках, который сейчас целится в прыгуна. Возвращает направление его прицела. */
 	bool FindAimingThreat(FVector& OutAimDirection) const;
+
+	UFUNCTION()
+	void HandleAttackHit(AActor* Victim, float Damage);
+
+	UFUNCTION()
+	void HandleDamaged(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info);
+
+	/** Раз в 0.05 с, пока лезет, сидит на насесте или держит жертву. */
+	void TickCatcher();
+	void StartCatcherTimer();
+
+	/** Уступ над Target: верх (ноги на нём), подножие стены у моей стороны и край. */
+	bool FindPerch(const AActor* Target, FVector& OutTop, FVector& OutFoot) const;
+	void TickApproach(double Now);
+	void TickClimb(double Now);
+	void TickPerched(double Now);
+	void EndPerch(bool bFailed);
+
+	void BeginPin(ACharacter* Victim);
+	void HoldPin(double Now);
+	void ReleasePin();
+
+	void PauseBrain();
+	void ResumeBrain();
+	void Stun(const FVector& From, float Time);
+	bool IsPounceReady() const;
 
 	int32 DodgeCount = 0;
 	double NextDodgeTime = 0.0;
@@ -117,14 +304,50 @@ private:
 	TWeakObjectPtr<AActor> WaitTarget;
 	int32 OpportunityLeaps = 0;
 	int32 ImpatientLeaps = 0;
+	int32 CoverLeaps = 0;
+
+	TWeakObjectPtr<UNoFearHealthComponent> BoundHealth;
+	FTimerHandle CatcherTimer;
+	/** Дерево на паузе — поставил ловчий (насест, прыжок, прижатие). */
+	bool bLogicPausedByCatcher = false;
+
+	EPerchState PerchState = EPerchState::None;
+	FVector PerchTop = FVector::ZeroVector;
+	FVector PerchFoot = FVector::ZeroVector;
+	double PerchStateTime = 0.0;
+	double NextPerchSearchTime = 0.0;
+	double NextHopTime = 0.0;
+	bool bOverHopped = false;
+	double NoSightSince = -1.0;
+	int32 PerchCount = 0;
+	int32 PounceCount = 0;
+	bool bPouncing = false;
+	bool bKnockedFromAir = false;
+
+	TWeakObjectPtr<ACharacter> PinVictim;
+	FVector PinSide = FVector::ForwardVector;
+	double NextPinDamageTime = 0.0;
+	float PinDamageTaken = 0.f;
+	bool bCrouchedByPin = false;
+	bool bVictimFireWasBlocked = false;
+	TArray<double> EscapePresses;
+	int32 PinCount = 0;
+	int32 KnockOffCount = 0;
+	int32 EscapeCount = 0;
+	int32 FlightKnockCount = 0;
+
+	static TArray<TWeakObjectPtr<ANoFearJumperAIController>> ActivePinners;
 };
 
 /**
  * Плевун: держится на 800–1500 см и плюёт по дуге кислотой (UNoFearMonsterAttack_Spit): снаряд ранит при попадании
  * и оставляет лужу, которая жжёт стоящих в ней. Не стоит в очереди за жетоном и в кольцо стаи не встаёт: пока стая
  * окружает цель, стоит за кольцом со своей стороны (StandDistance) и прижимает цель огнём; между плевками
- * перебирается на своё место. Цель ближе RetreatStartDistance — отступает (ключ KeepAway, ветка дерева «Отступить»);
- * прижали — отбивается слабым ударом.
+ * перебирается на своё место. Есть союзник у цели (колосс в первую очередь) — встаёт за его спину (ScreenOffset).
+ * Цель ближе RetreatStartDistance — отступает (ключ KeepAway, ветка дерева «Отступить»); прижали — отбивается слабым ударом.
+ * Цель за укрытием — плюёт навесом. Прямое попадание облепляет слизью (замедление), в голову — слепит.
+ * Мешок (neck_01) пробит на замахе — лопается: плевок сорван, под плевуном лужа (жжёт людей, что подошли вплотную), SacPopDamage урона
+ * и оглушение SacPopStunTime.
  * Тело: CBP_Bot_Spitter.
  */
 UCLASS(Blueprintable)
@@ -162,9 +385,35 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Spitter", meta = (ClampMin = "0"))
 	float RelocateTime = 3.f;
 
+	/** Встаёт за союзником, который ближе к цели, на столько дальше него, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Spitter", meta = (ClampMin = "0"))
+	float ScreenOffset = 350.f;
+
+	/** Лопнувший мешок: урон себе. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Spitter|Sac", meta = (ClampMin = "0"))
+	float SacPopDamage = 20.f;
+
+	/** Лопнувший мешок: оглушение, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Spitter|Sac", meta = (ClampMin = "0"))
+	float SacPopStunTime = 1.5f;
+
+	/** Лужа под лопнувшим мешком. Пусто — берётся лужа снаряда плевка. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Spitter|Sac")
+	TSubclassOf<class ANoFearAcidPuddle> SacPuddleClass;
+
+	/** Сколько раз лопался мешок (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Spitter")
+	int32 GetSacPopCount() const { return SacPopCount; }
+
+	/** За кем встал в последний раз (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Spitter")
+	APawn* GetScreenAlly() const { return ScreenAlly.Get(); }
+
 	virtual bool GetStandoffPoint(const FVector& TargetLocation, const FVector& PackSide, FVector& OutPoint) const override;
 
 protected:
+	virtual void OnPossess(APawn* InPawn) override;
+	virtual void OnUnPossess() override;
 	virtual void UpdateBot() override;
 	virtual void WriteBlackboard() override;
 	virtual void ConfigureMelee(UNoFearMeleeComponent* Melee) override;
@@ -172,9 +421,17 @@ protected:
 	virtual void OnMeleeAttackFinished(AActor* Target) override;
 
 private:
+	UFUNCTION()
+	void HandleDamaged(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info);
+	void PopSac(const FNoFearDamageInfo& Info);
+
 	bool bKeepingAway = false;
+	bool bPoppingSac = false;
 	int32 RetreatCount = 0;
+	int32 SacPopCount = 0;
 	double LastAttackTime = -1.0e9;
+	TWeakObjectPtr<UNoFearHealthComponent> BoundHealth;
+	mutable TWeakObjectPtr<APawn> ScreenAlly;
 };
 
 /**

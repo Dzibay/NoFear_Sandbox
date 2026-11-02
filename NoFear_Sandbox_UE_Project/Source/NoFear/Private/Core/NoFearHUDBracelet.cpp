@@ -3,6 +3,8 @@
 
 #include "Core/NoFearHUD.h"
 
+#include "AI/NoFearMonsterKinds.h"
+#include "AI/NoFearOpportunitySubsystem.h"
 #include "Core/NoFearAISettings.h"
 #include "Core/NoFearBraceletComponent.h"
 #include "Core/NoFearFearComponent.h"
@@ -171,9 +173,96 @@ void ANoFearHUD::DrawBracelet()
 
 	bBraceletDrawn = true;
 
+	DrawPinEscape(SideX, Center.Y - 80.f * S);
+
 	if (Bracelet->HasRiftWarning())
 	{
 		DrawRiftWarning(Bracelet);
+	}
+}
+
+void ANoFearHUD::DrawPinEscape(float X, float Y)
+{
+	using namespace NoFearHUDBracelet;
+
+	const ANoFearJumperAIController* Pinner = ANoFearJumperAIController::FindPinner(GetOwningPawn());
+	if (!Pinner || !Canvas)
+	{
+		return;
+	}
+	const float S = GetUIScale();
+	const float Time = GetWorld() ? static_cast<float>(GetWorld()->GetTimeSeconds()) : 0.f;
+	const float Flash = 0.6f + 0.4f * FMath::Sin(Time * 16.f);
+	const FString Key = NSLOCTEXT("NoFearHUD", "SpaceKey", "Пробел").ToString();
+	const float KeyScale = 0.95f * S;
+	float KeyWidth = 0.f;
+	float KeyHeight = 0.f;
+	GetTextSize(Key, KeyWidth, KeyHeight, GetFont(), KeyScale);
+
+	// Пробел мигает; полоска — сколько нажатий набрано за окно.
+	DrawLabel(Key, X, Y - KeyHeight * 0.5f, Faded(FLinearColor::White, Flash), KeyScale, ELabelAlign::Left);
+	const float BarX = X + KeyWidth + 8.f * S;
+	DrawBar(BarX, Y - 4.f * S, 90.f * S, 8.f * S, Pinner->GetEscapeProgress(), Faded(FearPanicColor, 0.6f + 0.4f * Flash), 0.f, 1.f);
+	const float HintScale = 0.75f * S;
+	float HintHeight = 0.f;
+	float Unused = 0.f;
+	GetTextSize(BreakFreeText.ToString(), Unused, HintHeight, GetFont(), HintScale);
+	DrawLabel(BreakFreeText.ToString(), BarX + 98.f * S, Y - HintHeight * 0.5f, FLinearColor(0.9f, 0.9f, 0.9f, 0.9f), HintScale, ELabelAlign::Left);
+	bPinEscapeDrawn = true;
+}
+
+void ANoFearHUD::DrawSpitterOverlays()
+{
+	using namespace NoFearHUDBracelet;
+
+	const APawn* Pawn = GetOwningPawn();
+	if (!Pawn || !Canvas)
+	{
+		return;
+	}
+	const float W = Canvas->SizeX;
+	const float H = Canvas->SizeY;
+	const float Time = GetWorld() ? static_cast<float>(GetWorld()->GetTimeSeconds()) : 0.f;
+
+	// Слизь: зелёные подтёки сверху по краям, сползают и бледнеют к концу.
+	const float SlimeLeft = UNoFearOpportunitySubsystem::GetTimeRemaining(Pawn, ENoFearOpportunity::Slimed);
+	if (SlimeLeft > 0.f || UNoFearOpportunitySubsystem::HasTag(Pawn, ENoFearOpportunity::Slimed))
+	{
+		const float Alpha = SlimeLeft > 0.f ? FMath::Clamp(SlimeLeft / 1.5f, 0.f, 1.f) : 1.f;
+		for (int32 Index = 0; Index < 14; ++Index)
+		{
+			// Половина у левого края, половина у правого; длина и ширина «случайные», но стабильные.
+			const float Seed = FMath::Frac(FMath::Sin(Index * 12.9898f) * 43758.5453f);
+			const bool bLeft = Index % 2 == 0;
+			const float Offset = (0.01f + 0.16f * Seed) * W;
+			const float StreakX = bLeft ? Offset : W - Offset;
+			const float Width = (10.f + 26.f * FMath::Frac(Seed * 7.1f)) * GetUIScale();
+			const float Length = H * (0.15f + 0.45f * FMath::Frac(Seed * 3.3f)) + 20.f * FMath::Sin(Time * 0.7f + Index);
+			const FLinearColor Top = Faded(SlimeColor, Alpha);
+			const FLinearColor Bottom = Faded(SlimeColor, 0.f);
+			DrawColoredQuad(FVector2D(StreakX - Width * 0.5f, 0.f), FVector2D(StreakX + Width * 0.5f, 0.f),
+				FVector2D(StreakX + Width * 0.3f, Length), FVector2D(StreakX - Width * 0.3f, Length), Top, Top, Bottom, Bottom);
+			// Капля на конце подтёка.
+			DrawArc(FVector2D(StreakX, Length), 0.f, Width * 0.45f, -180.f, 180.f, Faded(SlimeColor, Alpha * 0.7f));
+		}
+		bSlimeOverlayDrawn = true;
+	}
+
+	// Ослепление: тёмные пятна по центру, закрывают прицел и редеют к концу.
+	const float BlindLeft = UNoFearOpportunitySubsystem::GetTimeRemaining(Pawn, ENoFearOpportunity::Blinded);
+	if (BlindLeft > 0.f || UNoFearOpportunitySubsystem::HasTag(Pawn, ENoFearOpportunity::Blinded))
+	{
+		const float Alpha = BlindLeft > 0.f ? FMath::Clamp(BlindLeft / 0.8f, 0.f, 1.f) : 1.f;
+		const FVector2D Center(W * 0.5f, H * 0.5f);
+		for (int32 Index = 0; Index < 7; ++Index)
+		{
+			const float Seed = FMath::Frac(FMath::Sin(Index * 78.233f) * 12345.678f);
+			const FVector2D Spot = Center + FVector2D((Seed - 0.5f) * W * 0.45f, (FMath::Frac(Seed * 5.7f) - 0.5f) * H * 0.4f);
+			const float Radius = H * (0.12f + 0.12f * FMath::Frac(Seed * 9.1f));
+			DrawArc(Spot, 0.f, Radius * 0.7f, -180.f, 180.f, Faded(BlindColor, Alpha));
+			DrawArc(Spot, Radius * 0.7f, Radius, -180.f, 180.f, Faded(BlindColor, Alpha * 0.5f));
+		}
+		bBlindOverlayDrawn = true;
 	}
 }
 

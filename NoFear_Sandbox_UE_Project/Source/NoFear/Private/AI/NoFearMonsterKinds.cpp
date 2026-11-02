@@ -1,6 +1,8 @@
 #include "AI/NoFearMonsterKinds.h"
 
+#include "AI/NoFearAcidPuddle.h"
 #include "AI/NoFearMeleeComponent.h"
+#include "AI/NoFearSpitProjectile.h"
 #include "AI/NoFearMonsterAttack.h"
 #include "AI/NoFearOpportunitySubsystem.h"
 #include "AI/NoFearBotSubsystem.h"
@@ -9,8 +11,12 @@
 #include "AI/NoFearTankShake.h"
 #include "AI/NoFearVulnerabilityComponent.h"
 #include "Animation/NoFearPoseComponent.h"
+#include "BrainComponent.h"
 #include "Camera/CameraShakeBase.h"
 #include "Components/AudioComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "Kismet/GameplayStatics.h"
+#include "Navigation/PathFollowingComponent.h"
 #include "Core/NoFearBraceletComponent.h"
 #include "Core/NoFearFearComponent.h"
 #include "EngineUtils.h"
@@ -26,8 +32,11 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Weapons/NoFearWeapon.h"
 #include "Weapons/NoFearWeaponComponent.h"
+#include "Weapons/NoFearWeaponData.h"
 
 // --- Прыгун ---
+
+TArray<TWeakObjectPtr<ANoFearJumperAIController>> ANoFearJumperAIController::ActivePinners;
 
 ANoFearJumperAIController::ANoFearJumperAIController(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -48,7 +57,17 @@ ANoFearJumperAIController::ANoFearJumperAIController(const FObjectInitializer& O
 	Swipe->RecoveryTime = 0.25f;
 	AttackSet.Add(Swipe);
 
-	// Ловчий: голова ×1.5 (от загонщика); любит облитых слизью, отставших и сбитых.
+	// С насеста — прыжок сверху. Сам не выбирается: запускает контроллер по имени.
+	UNoFearMonsterAttack_Pounce* Pounce = CreateDefaultSubobject<UNoFearMonsterAttack_Pounce>(TEXT("Pounce"));
+	AttackSet.Add(Pounce);
+
+	// Ловчий: голова ×1.5 (от загонщика), в полёте спина ×1.5; любит облитых слизью, отставших и сбитых.
+	FNoFearWeakZone Flight;
+	Flight.Name = TEXT("Flight");
+	Flight.Bones = { TEXT("spine_01"), TEXT("spine_02"), TEXT("spine_03") };
+	Flight.DamageMultiplier = 1.5f;
+	Flight.Condition = ENoFearWeakCondition::Flight;
+	WeakZones.Insert(Flight, 0);
 	KindName = TEXT("Jumper");
 	TargetWeights.Hero = 0.8f;
 	TargetWeights.Companion = 0.8f;
@@ -430,14 +449,71 @@ void ANoFearTankAIController::Tick(float DeltaSeconds)
 	MyPawn->CustomTimeDilation = Dilation;
 }
 
+void ANoFearJumperAIController::OnPossess(APawn* InPawn)
+{
+	Super::OnPossess(InPawn);
+
+	PerchState = EPerchState::None;
+	bPouncing = false;
+	bKnockedFromAir = false;
+	bLogicPausedByCatcher = false;
+	NextPerchSearchTime = GetNow() + 1.0;
+	if (UNoFearHealthComponent* Health = InPawn ? UNoFearHealthComponent::FindHealth(InPawn) : nullptr)
+	{
+		Health->OnDamaged.AddUniqueDynamic(this, &ANoFearJumperAIController::HandleDamaged);
+		BoundHealth = Health;
+	}
+}
+
+void ANoFearJumperAIController::OnUnPossess()
+{
+	// Дерево снимет с паузы база; здесь только отпустить жертву.
+	bLogicPausedByCatcher = false;
+	ReleasePin();
+	PerchState = EPerchState::None;
+	bPouncing = false;
+	GetWorldTimerManager().ClearTimer(CatcherTimer);
+	if (UNoFearMeleeComponent* Melee = GetMeleeComponent())
+	{
+		Melee->OnAttackHit.RemoveDynamic(this, &ANoFearJumperAIController::HandleAttackHit);
+	}
+	if (UNoFearHealthComponent* Health = BoundHealth.Get())
+	{
+		Health->OnDamaged.RemoveDynamic(this, &ANoFearJumperAIController::HandleDamaged);
+	}
+	BoundHealth.Reset();
+	Super::OnUnPossess();
+}
+
+void ANoFearJumperAIController::ConfigureMelee(UNoFearMeleeComponent* Melee)
+{
+	Super::ConfigureMelee(Melee);
+	if (Melee)
+	{
+		Melee->OnAttackHit.AddUniqueDynamic(this, &ANoFearJumperAIController::HandleAttackHit);
+	}
+}
+
 void ANoFearJumperAIController::UpdateBot()
 {
 	Super::UpdateBot();
 
+	const bool bBusy = IsPinning() || PerchState != EPerchState::None || bPouncing;
 	FVector AimDirection;
-	if (bDodgeWhenAimedAt && GetNow() >= NextDodgeTime && FindAimingThreat(AimDirection))
+	if (!bBusy && bDodgeWhenAimedAt && GetNow() >= NextDodgeTime && FindAimingThreat(AimDirection))
 	{
 		Dodge(AimDirection);
+	}
+
+	// Цель далеко, прыжок сверху готов — поискать уступ над ней.
+	if (bUsePerches && !bBusy && CurrentTarget.IsValid() && GetNow() >= NextPerchSearchTime && IsPounceReady())
+	{
+		const float Distance = GetTargetDistance2D();
+		if (Distance > PerchMinTargetDistance && Distance <= PerchSearchRadius + 500.f)
+		{
+			NextPerchSearchTime = GetNow() + 2.0;
+			TryPerch();
+		}
 	}
 }
 
@@ -530,8 +606,10 @@ void ANoFearJumperAIController::UpdateMovementStance()
 {
 	Super::UpdateMovementStance();
 	// К цели — спринтом: в свою очередь или без стаи. На место в строю и в кольце бежит вместе со всеми.
+	// К подножию насеста — тоже спринтом.
 	FVector PackGoal;
-	if (CurrentTarget.IsValid() && !IsCircling() && !IsScattering() && (HasAttackToken() || !GetPackGoal(PackGoal)))
+	if (PerchState == EPerchState::Approach
+		|| (CurrentTarget.IsValid() && !IsCircling() && !IsScattering() && (HasAttackToken() || !GetPackGoal(PackGoal))))
 	{
 		SetMovementFlags(false, false, false, true);
 	}
@@ -614,9 +692,21 @@ bool ANoFearJumperAIController::WantsFreeAttack(AActor* Target)
 	{
 		return false;
 	}
+	// Цель только что спряталась за укрытие — прыгнуть к ней сразу, пока не устроилась.
+	const FNoFearKnownActor* Knowledge = KnownActors.Find(Target);
+	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	const UNoFearMonsterAttack* Leap = Melee ? Melee->FindAttack(TEXT("Leap")) : nullptr;
+	const bool bTargetHidden = Knowledge && !Knowledge->bVisible && Now - Knowledge->LastSeenTime <= 3.0
+		&& Leap && GetTargetDistance2D() <= Leap->MaxRange + 150.f;
 	if (IsTargetDistracted(Target))
 	{
 		++OpportunityLeaps;
+		bLeapCommitted = true;
+	}
+	else if (bTargetHidden)
+	{
+		++OpportunityLeaps;
+		++CoverLeaps;
 		bLeapCommitted = true;
 	}
 	else if (Now - WaitStartTime >= LeapPatience)
@@ -633,6 +723,728 @@ void ANoFearJumperAIController::OnMeleeAttackFinished(AActor* Target)
 	bLeapCommitted = false;
 	NextLeapTime = GetNow() + LeapRest;
 	WaitStartTime = NextLeapTime;
+	bKnockedFromAir = false;
+	if (bPouncing)
+	{
+		// Прыгнул сверху: прижал — держит, промахнулся — снова думает сам.
+		bPouncing = false;
+		if (!IsPinning())
+		{
+			ResumeBrain();
+		}
+	}
+}
+
+// --- Ловчий: насест ---
+
+bool ANoFearJumperAIController::IsPounceReady() const
+{
+	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	const UNoFearMonsterAttack* Pounce = Melee ? Melee->FindAttack(TEXT("Pounce")) : nullptr;
+	return Pounce && GetWorld() && Pounce->NextUseTime <= GetWorld()->GetTimeSeconds();
+}
+
+void ANoFearJumperAIController::PauseBrain()
+{
+	UBrainComponent* Brain = GetBrainComponent();
+	if (Brain && !Brain->IsPaused())
+	{
+		Brain->PauseLogic(TEXT("Catcher"));
+		bLogicPausedByCatcher = true;
+	}
+}
+
+void ANoFearJumperAIController::ResumeBrain()
+{
+	if (!bLogicPausedByCatcher)
+	{
+		return;
+	}
+	bLogicPausedByCatcher = false;
+	APawn* MyPawn = GetPawn();
+	UBrainComponent* Brain = GetBrainComponent();
+	if (Brain && Brain->IsPaused() && !IsPortalControlled() && !UNoFearHealthComponent::IsActorIncapacitated(MyPawn))
+	{
+		Brain->ResumeLogic(TEXT("Catcher over"));
+		// Пошатнулся, пока дерево стояло на паузе ловчего, — дальше паузу держит пошатывание.
+		if (UNoFearPoseComponent::IsActorStaggered(MyPawn))
+		{
+			BeginStagger();
+		}
+	}
+	UpdateMovementStance();
+}
+
+void ANoFearJumperAIController::StartCatcherTimer()
+{
+	if (!GetWorldTimerManager().IsTimerActive(CatcherTimer))
+	{
+		GetWorldTimerManager().SetTimer(CatcherTimer, this, &ANoFearJumperAIController::TickCatcher, 0.05f, true);
+	}
+}
+
+void ANoFearJumperAIController::Stun(const FVector& From, float Time)
+{
+	const ANoFearCharacter* MyCharacter = Cast<ANoFearCharacter>(GetPawn());
+	UNoFearPoseComponent* Pose = MyCharacter ? MyCharacter->GetPoseComponent() : nullptr;
+	if (!Pose || Time <= 0.f)
+	{
+		return;
+	}
+	Pose->Stagger((MyCharacter->GetActorLocation() - From).GetSafeNormal2D(), Time);
+	Pose->OnHitReaction.Broadcast(Pose, true);
+}
+
+bool ANoFearJumperAIController::TryPerch()
+{
+	ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	const AActor* Target = CurrentTarget.Get();
+	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	const UBrainComponent* Brain = GetBrainComponent();
+	const UCharacterMovementComponent* Movement = MyCharacter ? MyCharacter->GetCharacterMovement() : nullptr;
+	if (!Movement || !Target || Movement->IsFalling() || IsPinning() || bPouncing || PerchState != EPerchState::None
+		|| (Brain && Brain->IsPaused()) || IsPortalControlled() || (Melee && Melee->IsAttacking())
+		|| UNoFearPoseComponent::IsActorStaggered(MyCharacter) || UNoFearHealthComponent::IsActorDead(MyCharacter))
+	{
+		return false;
+	}
+	FVector Top;
+	FVector Foot;
+	if (!FindPerch(Target, Top, Foot))
+	{
+		NextPerchSearchTime = GetNow() + 4.0;
+		return false;
+	}
+	PerchTop = Top;
+	PerchFoot = Foot;
+	PerchState = EPerchState::Approach;
+	PerchStateTime = GetNow();
+	NoSightSince = -1.0;
+	PauseBrain();
+	StopMovement();
+	MoveToLocation(PerchFoot, 40.f, false, true, true, false);
+	UpdateMovementStance();
+	StartCatcherTimer();
+	return true;
+}
+
+bool ANoFearJumperAIController::FindPerch(const AActor* Target, FVector& OutTop, FVector& OutFoot) const
+{
+	const ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	const UWorld* World = GetWorld();
+	if (!MyCharacter || !Target || !World)
+	{
+		return false;
+	}
+	const float MyRadius = MyCharacter->GetCapsuleComponent()->GetScaledCapsuleRadius();
+	const float MyHalf = MyCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	const ACharacter* TargetCharacter = Cast<ACharacter>(Target);
+	const float TargetHalf = TargetCharacter ? TargetCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 90.f;
+	const FVector TargetLocation = Target->GetActorLocation();
+	const FVector TargetFeet = TargetLocation - FVector(0.f, 0.f, TargetHalf);
+	const FVector MyLocation = MyCharacter->GetActorLocation();
+
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearPerch), false, MyCharacter);
+	Params.AddIgnoredActor(Target);
+	const FCollisionObjectQueryParams Statics(ECC_WorldStatic);
+	// Земля у подножия бывает и подвижной геометрией (пол из мешей).
+	FCollisionObjectQueryParams GroundObjects(ECC_WorldStatic);
+	GroundObjects.AddObjectTypesToQuery(ECC_WorldDynamic);
+	const UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+
+	float BestDistance = UE_BIG_NUMBER;
+	bool bFound = false;
+	// Кольца вокруг цели: сверху вниз трассой ищем ровный верх на нужной высоте.
+	for (float Ring = 400.f; Ring <= PerchSearchRadius; Ring += 300.f)
+	{
+		for (int32 Step = 0; Step < 16; ++Step)
+		{
+			const FVector Dir = FVector::ForwardVector.RotateAngleAxis(Step * 22.5f, FVector::UpVector);
+			const FVector Column = TargetFeet + Dir * Ring;
+			FHitResult Hit;
+			const FVector TraceStart(Column.X, Column.Y, TargetFeet.Z + PerchMaxHeight + 150.f);
+			const FVector TraceEnd(Column.X, Column.Y, TargetFeet.Z + PerchMinHeight - 20.f);
+			if (!World->LineTraceSingleByObjectType(Hit, TraceStart, TraceEnd, Statics, Params) || Hit.bStartPenetrating
+				|| Hit.ImpactNormal.Z < 0.85f)
+			{
+				continue;
+			}
+			const FVector Top = Hit.ImpactPoint;
+			const float Height = Top.Z - TargetFeet.Z;
+			if (Height < PerchMinHeight || Height > PerchMaxHeight)
+			{
+				continue;
+			}
+			// Встанет наверху и увидит оттуда цель.
+			const FVector Stand = Top + FVector(0.f, 0.f, MyHalf + 5.f);
+			if (World->OverlapBlockingTestByChannel(Stand, FQuat::Identity, ECC_Pawn, FCollisionShape::MakeCapsule(MyRadius, MyHalf), Params)
+				|| World->LineTraceTestByChannel(Stand + FVector(0.f, 0.f, MyHalf * 0.5f), TargetLocation, ECC_Visibility, Params))
+			{
+				continue;
+			}
+			// Подножие: от верха к ловчему, пока земля не уйдёт вниз на 150+ — там стена.
+			const FVector ToMe = (MyLocation - Top).GetSafeNormal2D();
+			if (ToMe.IsNearlyZero())
+			{
+				continue;
+			}
+			bool bHasFoot = false;
+			FVector Foot = FVector::ZeroVector;
+			for (float Along = 50.f; Along <= 700.f; Along += 50.f)
+			{
+				const FVector Probe = Top + ToMe * Along;
+				FHitResult Ground;
+				if (!World->LineTraceSingleByObjectType(Ground, Probe + FVector(0.f, 0.f, 50.f), Probe - FVector(0.f, 0.f, PerchMaxHeight + 400.f), GroundObjects, Params))
+				{
+					break;
+				}
+				if (Top.Z - Ground.ImpactPoint.Z >= 150.f)
+				{
+					Foot = Ground.ImpactPoint + ToMe * (MyRadius + 10.f);
+					bHasFoot = true;
+					break;
+				}
+			}
+			if (!bHasFoot)
+			{
+				continue;
+			}
+			if (NavSys)
+			{
+				FNavLocation NavFoot;
+				if (!NavSys->ProjectPointToNavigation(Foot, NavFoot, FVector(150.f, 150.f, 250.f)))
+				{
+					continue;
+				}
+				Foot = NavFoot.Location;
+			}
+			const float Distance = FVector::Dist2D(MyLocation, Foot);
+			if (Distance < BestDistance)
+			{
+				BestDistance = Distance;
+				OutTop = Top;
+				OutFoot = Foot;
+				bFound = true;
+			}
+		}
+	}
+	return bFound;
+}
+
+void ANoFearJumperAIController::EndPerch(bool bFailed)
+{
+	PerchState = EPerchState::None;
+	StopMovement();
+	NextPerchSearchTime = GetNow() + (bFailed ? 4.0 : 2.0);
+	ResumeBrain();
+}
+
+void ANoFearJumperAIController::TickCatcher()
+{
+	APawn* MyPawn = GetPawn();
+	const double Now = GetNow();
+	if (!MyPawn || UNoFearHealthComponent::IsActorDead(MyPawn))
+	{
+		bLogicPausedByCatcher = false;
+		ReleasePin();
+		PerchState = EPerchState::None;
+		bPouncing = false;
+		GetWorldTimerManager().ClearTimer(CatcherTimer);
+		return;
+	}
+	// Пошатнулся (сбили, оглушили) — бросает всё, дальше ведёт база.
+	if (UNoFearPoseComponent::IsActorStaggered(MyPawn) && (IsPinning() || PerchState != EPerchState::None))
+	{
+		ReleasePin();
+		PerchState = EPerchState::None;
+		ResumeBrain();
+	}
+
+	if (IsPinning())
+	{
+		HoldPin(Now);
+	}
+	switch (PerchState)
+	{
+	case EPerchState::Approach:
+		TickApproach(Now);
+		break;
+	case EPerchState::Climb:
+		TickClimb(Now);
+		break;
+	case EPerchState::Perched:
+		TickPerched(Now);
+		break;
+	default:
+		break;
+	}
+	if (!IsPinning() && PerchState == EPerchState::None && !bPouncing)
+	{
+		GetWorldTimerManager().ClearTimer(CatcherTimer);
+	}
+}
+
+void ANoFearJumperAIController::TickApproach(double Now)
+{
+	const APawn* MyPawn = GetPawn();
+	if (!CurrentTarget.IsValid() || Now - PerchStateTime > 6.0)
+	{
+		EndPerch(true);
+		return;
+	}
+	const float Distance = FVector::Dist2D(MyPawn->GetActorLocation(), PerchFoot);
+	const bool bIdle = GetMoveStatus() == EPathFollowingStatus::Idle;
+	if (Distance <= 90.f || (bIdle && Distance <= 200.f))
+	{
+		StopMovement();
+		PerchState = EPerchState::Climb;
+		PerchStateTime = Now;
+		NextHopTime = Now;
+		bOverHopped = false;
+		return;
+	}
+	if (bIdle)
+	{
+		MoveToLocation(PerchFoot, 40.f, false, true, true, false);
+	}
+}
+
+void ANoFearJumperAIController::TickClimb(double Now)
+{
+	ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	UCharacterMovementComponent* Movement = MyCharacter ? MyCharacter->GetCharacterMovement() : nullptr;
+	if (!Movement || !CurrentTarget.IsValid() || Now - PerchStateTime > 5.0)
+	{
+		EndPerch(true);
+		return;
+	}
+	const FVector MyLocation = MyCharacter->GetActorLocation();
+	const float Remaining = PerchTop.Z - (MyLocation.Z - MyCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+	if (Movement->IsMovingOnGround() && Remaining <= 30.f)
+	{
+		// Наверху.
+		Movement->StopMovementImmediately();
+		PerchState = EPerchState::Perched;
+		PerchStateTime = Now;
+		NoSightSince = -1.0;
+		++PerchCount;
+		return;
+	}
+	// Подпрыгивает с земли или на вершине прошлого прыжка; ноги выше края — один толчок вперёд, дальше ждёт приземления.
+	if (Now < NextHopTime || (Movement->IsFalling() && (Movement->Velocity.Z > 0.f || (Remaining <= 30.f && bOverHopped))))
+	{
+		return;
+	}
+	const FVector ToTop = (PerchTop - MyLocation).GetSafeNormal2D();
+	if (Remaining > 30.f)
+	{
+		const float Gravity = FMath::Max(-Movement->GetGravityZ(), 1.f);
+		const float Hop = FMath::Min(ClimbHopHeight, Remaining + 40.f);
+		MyCharacter->LaunchCharacter(ToTop * 120.f + FVector::UpVector * FMath::Sqrt(2.f * Gravity * Hop), true, true);
+		NextHopTime = Now + 0.2;
+		bOverHopped = false;
+	}
+	else
+	{
+		// Ноги выше края — перескочить на верх, не перелетев уступ.
+		const float Forward = FMath::Clamp(FVector::Dist2D(PerchTop, MyLocation) * 2.5f, 150.f, 450.f);
+		MyCharacter->LaunchCharacter(ToTop * Forward + FVector::UpVector * 250.f, true, true);
+		NextHopTime = Now + 0.5;
+		bOverHopped = true;
+	}
+	if (const ANoFearCharacter* NoFearCharacter = Cast<ANoFearCharacter>(MyCharacter))
+	{
+		if (UNoFearPoseComponent* Pose = NoFearCharacter->GetPoseComponent())
+		{
+			Pose->PlayPose(ENoFearPose::Lunge, 0.25f, 0.5f);
+		}
+	}
+}
+
+void ANoFearJumperAIController::TickPerched(double Now)
+{
+	const ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	AActor* Target = CurrentTarget.Get();
+	if (!MyCharacter || !Target || UNoFearHealthComponent::IsActorIncapacitated(Target))
+	{
+		EndPerch(false);
+		return;
+	}
+	// Сбросили с уступа.
+	const float Feet = MyCharacter->GetActorLocation().Z - MyCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	if (Feet < PerchTop.Z - 80.f)
+	{
+		EndPerch(false);
+		return;
+	}
+	SetFocus(Target);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearPerchSight), false, MyCharacter);
+	Params.AddIgnoredActor(Target);
+	const bool bSees = !GetWorld()->LineTraceTestByChannel(MyCharacter->GetPawnViewLocation(), Target->GetActorLocation(), ECC_Visibility, Params);
+	const float Distance = FVector::Dist(MyCharacter->GetActorLocation(), Target->GetActorLocation());
+	if (bSees)
+	{
+		NoSightSince = -1.0;
+	}
+	else if (NoSightSince < 0.0)
+	{
+		NoSightSince = Now;
+	}
+	// Цель ушла далеко или скрылась надолго — слезает.
+	if (Distance > PerchSearchRadius + 300.f || (NoSightSince >= 0.0 && Now - NoSightSince > 3.0))
+	{
+		EndPerch(false);
+		return;
+	}
+	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	const UNoFearMonsterAttack* Pounce = Melee ? Melee->FindAttack(TEXT("Pounce")) : nullptr;
+	if (!bSees || !Pounce || !IsPounceReady() || Distance > Pounce->MaxRange)
+	{
+		return;
+	}
+	if (IsTargetDistracted(Target) || UNoFearOpportunitySubsystem::HasTag(Target, ENoFearOpportunity::Isolated)
+		|| Now - PerchStateTime >= PerchPatience)
+	{
+		StartPounce();
+	}
+}
+
+bool ANoFearJumperAIController::StartPounce()
+{
+	UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	AActor* Target = CurrentTarget.Get();
+	if (!Melee || !Target || IsPinning() || !Melee->StartAttackByName(Target, TEXT("Pounce"), true))
+	{
+		return false;
+	}
+	PerchState = EPerchState::None;
+	bPouncing = true;
+	bKnockedFromAir = false;
+	++PounceCount;
+	StopMovement();
+	PauseBrain();
+	StartCatcherTimer();
+	return true;
+}
+
+// --- Ловчий: прижатие ---
+
+ANoFearJumperAIController* ANoFearJumperAIController::FindPinner(const AActor* Victim)
+{
+	if (!Victim)
+	{
+		return nullptr;
+	}
+	for (const TWeakObjectPtr<ANoFearJumperAIController>& Weak : ActivePinners)
+	{
+		ANoFearJumperAIController* Pinner = Weak.Get();
+		if (Pinner && Pinner->PinVictim.Get() == Victim)
+		{
+			return Pinner;
+		}
+	}
+	return nullptr;
+}
+
+void ANoFearJumperAIController::GetActivePinners(const UWorld* World, TArray<ANoFearJumperAIController*>& OutPinners)
+{
+	OutPinners.Reset();
+	for (const TWeakObjectPtr<ANoFearJumperAIController>& Weak : ActivePinners)
+	{
+		ANoFearJumperAIController* Pinner = Weak.Get();
+		if (Pinner && Pinner->GetWorld() == World && Pinner->IsPinning())
+		{
+			OutPinners.Add(Pinner);
+		}
+	}
+}
+
+void ANoFearJumperAIController::HandleAttackHit(AActor* Victim, float Damage)
+{
+	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	const UNoFearMonsterAttack* Attack = Melee ? Melee->GetCurrentAttack() : nullptr;
+	ACharacter* VictimCharacter = Cast<ACharacter>(Victim);
+	if (!Attack || Attack->AttackName != TEXT("Pounce") || bKnockedFromAir || IsPinning() || !VictimCharacter
+		|| !UNoFearHealthComponent::FindHealth(VictimCharacter) || UNoFearHealthComponent::IsActorIncapacitated(VictimCharacter)
+		|| FindPinner(VictimCharacter))
+	{
+		return;
+	}
+	BeginPin(VictimCharacter);
+}
+
+void ANoFearJumperAIController::BeginPin(ACharacter* Victim)
+{
+	ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	if (!MyCharacter || !Victim)
+	{
+		return;
+	}
+	const double Now = GetNow();
+	PinVictim = Victim;
+	++PinCount;
+	PinDamageTaken = 0.f;
+	EscapePresses.Reset();
+	NextPinDamageTime = Now + PinDamageInterval;
+	PinSide = (MyCharacter->GetActorLocation() - Victim->GetActorLocation()).GetSafeNormal2D();
+	if (PinSide.IsNearlyZero())
+	{
+		PinSide = -Victim->GetActorForwardVector().GetSafeNormal2D();
+	}
+	ActivePinners.RemoveAll([](const TWeakObjectPtr<ANoFearJumperAIController>& Weak) { return !Weak.IsValid(); });
+	ActivePinners.AddUnique(this);
+
+	UNoFearOpportunitySubsystem::AddTag(Victim, ENoFearOpportunity::Pinned, 0.f);
+	UNoFearOpportunitySubsystem::AddTag(Victim, ENoFearOpportunity::KnockedDown, 1.2f);
+
+	// Жертва на земле: присела (капсула ниже), не ходит и не стреляет.
+	if (UCharacterMovementComponent* VictimMovement = Victim->GetCharacterMovement())
+	{
+		bCrouchedByPin = !Victim->bIsCrouched;
+		if (bCrouchedByPin)
+		{
+			Victim->Crouch();
+			VictimMovement->Crouch(false);
+		}
+		VictimMovement->StopMovementImmediately();
+		VictimMovement->DisableMovement();
+	}
+	if (AAIController* VictimAI = Cast<AAIController>(Victim->GetController()))
+	{
+		VictimAI->StopMovement();
+	}
+	if (const ANoFearCharacter* VictimNoFear = Cast<ANoFearCharacter>(Victim))
+	{
+		if (UNoFearWeaponComponent* Weapons = VictimNoFear->GetWeaponComponent())
+		{
+			bVictimFireWasBlocked = Weapons->IsFireBlocked();
+			Weapons->StopFire();
+			Weapons->SetFireBlocked(true);
+		}
+	}
+	// Мирный под ловчим — в ужасе.
+	if (Cast<ANoFearCivilianAIController>(Victim->GetController()))
+	{
+		if (UNoFearFearComponent* Fear = UNoFearFearComponent::FindFear(Victim))
+		{
+			Fear->AddFearFrom(100.f, 100.f, MyCharacter->GetActorLocation(), MyCharacter, true);
+		}
+	}
+	UNoFearBotSubsystem::ReportDanger(this, ENoFearDangerType::Fight, MyCharacter, Victim->GetActorLocation(),
+		UNoFearBotSubsystem::FightNoticeRadius, MyCharacter->GetActorLocation());
+
+	if (UCharacterMovementComponent* Movement = MyCharacter->GetCharacterMovement())
+	{
+		Movement->StopMovementImmediately();
+		Movement->DisableMovement();
+	}
+	StopMovement();
+	PauseBrain();
+	StartCatcherTimer();
+	HoldPin(Now);
+}
+
+void ANoFearJumperAIController::HoldPin(double Now)
+{
+	ACharacter* Victim = PinVictim.Get();
+	ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	if (!Victim || !MyCharacter || UNoFearHealthComponent::IsActorIncapacitated(Victim) || UNoFearHealthComponent::IsActorDead(MyCharacter))
+	{
+		ReleasePin();
+		ResumeBrain();
+		return;
+	}
+	if (UCharacterMovementComponent* VictimMovement = Victim->GetCharacterMovement(); VictimMovement && VictimMovement->MovementMode != MOVE_None)
+	{
+		VictimMovement->StopMovementImmediately();
+		VictimMovement->DisableMovement();
+	}
+	if (const ANoFearCharacter* VictimNoFear = Cast<ANoFearCharacter>(Victim))
+	{
+		if (UNoFearWeaponComponent* Weapons = VictimNoFear->GetWeaponComponent(); Weapons && !Weapons->IsFireBlocked())
+		{
+			Weapons->StopFire();
+			Weapons->SetFireBlocked(true);
+		}
+	}
+
+	// Сидит на жертве лицом к ней.
+	const float VictimHalf = Victim->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	const float MyHalf = MyCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	const FVector Seat = Victim->GetActorLocation() + PinSide * 35.f + FVector::UpVector * (VictimHalf + MyHalf * 0.5f);
+	MyCharacter->SetActorLocationAndRotation(Seat, (-PinSide).Rotation(), false, nullptr, ETeleportType::TeleportPhysics);
+	if (UCharacterMovementComponent* Movement = MyCharacter->GetCharacterMovement(); Movement && Movement->MovementMode != MOVE_None)
+	{
+		Movement->StopMovementImmediately();
+		Movement->DisableMovement();
+	}
+	SetFocus(Victim);
+
+	if (Now >= NextPinDamageTime)
+	{
+		NextPinDamageTime = Now + PinDamageInterval;
+		UGameplayStatics::ApplyDamage(Victim, PinDamage, this, MyCharacter, UDamageType::StaticClass());
+		if (const ANoFearCharacter* NoFearCharacter = Cast<ANoFearCharacter>(MyCharacter))
+		{
+			if (UNoFearPoseComponent* Pose = NoFearCharacter->GetPoseComponent())
+			{
+				Pose->PlayPose(ENoFearPose::Swing, 0.3f, 0.8f);
+			}
+		}
+	}
+}
+
+void ANoFearJumperAIController::ReleasePin()
+{
+	ACharacter* Victim = PinVictim.Get();
+	PinVictim.Reset();
+	ActivePinners.RemoveAll([this](const TWeakObjectPtr<ANoFearJumperAIController>& Weak) { return !Weak.IsValid() || Weak.Get() == this; });
+	EscapePresses.Reset();
+	if (Victim)
+	{
+		UNoFearOpportunitySubsystem::RemoveTag(Victim, ENoFearOpportunity::Pinned);
+		if (!UNoFearHealthComponent::IsActorDead(Victim))
+		{
+			if (UCharacterMovementComponent* VictimMovement = Victim->GetCharacterMovement(); VictimMovement && VictimMovement->MovementMode == MOVE_None)
+			{
+				VictimMovement->SetMovementMode(MOVE_Walking);
+			}
+			if (bCrouchedByPin && !UNoFearHealthComponent::IsActorIncapacitated(Victim))
+			{
+				Victim->UnCrouch();
+			}
+			const ANoFearCharacter* VictimNoFear = Cast<ANoFearCharacter>(Victim);
+			UNoFearWeaponComponent* Weapons = VictimNoFear ? VictimNoFear->GetWeaponComponent() : nullptr;
+			const UNoFearBraceletComponent* Bracelet = UNoFearBraceletComponent::FindBracelet(Victim);
+			if (Weapons && !bVictimFireWasBlocked && !(Bracelet && Bracelet->IsInStupor()))
+			{
+				Weapons->SetFireBlocked(false);
+			}
+		}
+	}
+	bCrouchedByPin = false;
+	ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	UCharacterMovementComponent* Movement = MyCharacter ? MyCharacter->GetCharacterMovement() : nullptr;
+	if (Movement && Movement->MovementMode == MOVE_None && !UNoFearHealthComponent::IsActorDead(MyCharacter))
+	{
+		Movement->SetMovementMode(MOVE_Falling);
+	}
+}
+
+int32 ANoFearJumperAIController::GetEscapeRequired() const
+{
+	const AActor* Victim = PinVictim.Get();
+	float Fear = 0.f;
+	if (const UNoFearBraceletComponent* Bracelet = Victim ? UNoFearBraceletComponent::FindBracelet(Victim) : nullptr)
+	{
+		Fear = Bracelet->GetFear();
+	}
+	else if (const UNoFearFearComponent* FearComponent = Victim ? UNoFearFearComponent::FindFear(Victim) : nullptr)
+	{
+		Fear = FearComponent->GetFear();
+	}
+	return Fear >= PinAfraidFear ? PinEscapePressesAfraid : PinEscapePresses;
+}
+
+float ANoFearJumperAIController::GetEscapeProgress() const
+{
+	if (!IsPinning())
+	{
+		return 0.f;
+	}
+	const double Now = GetNow();
+	int32 Count = 0;
+	for (const double Time : EscapePresses)
+	{
+		Count += Now - Time <= PinEscapeWindow ? 1 : 0;
+	}
+	return FMath::Clamp(static_cast<float>(Count) / FMath::Max(GetEscapeRequired(), 1), 0.f, 1.f);
+}
+
+void ANoFearJumperAIController::AddEscapePress()
+{
+	const ACharacter* Victim = PinVictim.Get();
+	if (!Victim)
+	{
+		return;
+	}
+	const double Now = GetNow();
+	EscapePresses.Add(Now);
+	EscapePresses.RemoveAll([this, Now](double Time) { return Now - Time > PinEscapeWindow; });
+	if (EscapePresses.Num() < GetEscapeRequired())
+	{
+		return;
+	}
+	// Вырвался: сбросил ловчего с себя.
+	++EscapeCount;
+	const FVector From = Victim->GetActorLocation();
+	ReleasePin();
+	ResumeBrain();
+	if (ACharacter* MyCharacter = Cast<ACharacter>(GetPawn()))
+	{
+		MyCharacter->LaunchCharacter(PinSide * 450.f + FVector::UpVector * 300.f, true, true);
+	}
+	Stun(From, 1.f);
+}
+
+void ANoFearJumperAIController::ThrowOff(AActor* From)
+{
+	ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	const ACharacter* Victim = PinVictim.Get();
+	if (!MyCharacter || !Victim)
+	{
+		return;
+	}
+	const FVector FromLocation = From && From != Victim ? From->GetActorLocation() : Victim->GetActorLocation();
+	FVector Away = (MyCharacter->GetActorLocation() - FromLocation).GetSafeNormal2D();
+	if (Away.IsNearlyZero())
+	{
+		Away = PinSide;
+	}
+	++KnockOffCount;
+	ReleasePin();
+	ResumeBrain();
+	MyCharacter->LaunchCharacter(Away * 600.f + FVector::UpVector * 350.f, true, true);
+	Stun(FromLocation, KnockOffStunTime);
+}
+
+void ANoFearJumperAIController::HandleDamaged(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info)
+{
+	ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	if (!MyCharacter || !Component || Component->IsDead())
+	{
+		return;
+	}
+	AActor* Offender = Info.InstigatorController ? Info.InstigatorController->GetPawn() : Info.DamageCauser.Get();
+	const FVector From = Offender ? Offender->GetActorLocation()
+		: (Info.bHasSource ? Info.SourceLocation : MyCharacter->GetActorLocation() - MyCharacter->GetActorForwardVector() * 100.f);
+
+	// Сидит на жертве: снимает накопленный урон, дробовик или удар вплотную.
+	if (IsPinning())
+	{
+		PinDamageTaken += Info.Amount;
+		const ANoFearWeapon* Weapon = Cast<ANoFearWeapon>(Info.DamageCauser.Get());
+		const bool bShotgun = Weapon && Weapon->GetWeaponData() && Weapon->GetWeaponData()->WeaponType == ENoFearWeaponType::Shotgun;
+		const bool bMelee = Offender && !Weapon && FVector::Dist(Offender->GetActorLocation(), MyCharacter->GetActorLocation()) <= KnockOffMeleeDistance;
+		if (PinDamageTaken >= KnockOffDamage || bShotgun || bMelee)
+		{
+			ThrowOff(Offender);
+		}
+		return;
+	}
+
+	// Сбит в полёте: падает камнем и оглушён.
+	UCharacterMovementComponent* Movement = MyCharacter->GetCharacterMovement();
+	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	const UNoFearMonsterAttack* Attack = Melee ? Melee->GetCurrentAttack() : nullptr;
+	if (Attack && Attack->IsA<UNoFearMonsterAttack_Leap>() && Movement && Movement->IsFalling() && !bKnockedFromAir
+		&& Info.Amount >= FlightKnockDamage)
+	{
+		bKnockedFromAir = true;
+		++FlightKnockCount;
+		Movement->Velocity = FVector(0.f, 0.f, -800.f);
+		Stun(From, FlightStunTime);
+	}
 }
 
 // --- Плевун ---
@@ -683,6 +1495,104 @@ ANoFearSpitterAIController::ANoFearSpitterAIController(const FObjectInitializer&
 	OpportunityBonuses.Add(ENoFearOpportunity::Marked, 1.5f);
 }
 
+void ANoFearSpitterAIController::OnPossess(APawn* InPawn)
+{
+	Super::OnPossess(InPawn);
+	bPoppingSac = false;
+	if (UNoFearHealthComponent* Health = InPawn ? UNoFearHealthComponent::FindHealth(InPawn) : nullptr)
+	{
+		Health->OnDamaged.AddUniqueDynamic(this, &ANoFearSpitterAIController::HandleDamaged);
+		BoundHealth = Health;
+	}
+}
+
+void ANoFearSpitterAIController::OnUnPossess()
+{
+	if (UNoFearHealthComponent* Health = BoundHealth.Get())
+	{
+		Health->OnDamaged.RemoveDynamic(this, &ANoFearSpitterAIController::HandleDamaged);
+	}
+	BoundHealth.Reset();
+	Super::OnUnPossess();
+}
+
+void ANoFearSpitterAIController::HandleDamaged(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info)
+{
+	// Открытый мешок (зона SacOpen есть только на замахе плевка) пробит — лопается.
+	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	if (!bPoppingSac && Info.WeakZone == TEXT("SacOpen") && Melee && Melee->IsAttacking() && !UNoFearHealthComponent::IsActorDead(GetPawn()))
+	{
+		PopSac(Info);
+	}
+}
+
+void ANoFearSpitterAIController::PopSac(const FNoFearDamageInfo& Info)
+{
+	ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	UWorld* World = GetWorld();
+	if (!MyCharacter || !World)
+	{
+		return;
+	}
+	TGuardValue<bool> Guard(bPoppingSac, true);
+	++SacPopCount;
+
+	if (UNoFearMeleeComponent* Melee = GetMeleeComponent())
+	{
+		Melee->CancelAttack();
+	}
+
+	// Лужа под самим плевуном: жжёт людей, что подошли вплотную (своих лужа не трогает).
+	TSubclassOf<ANoFearAcidPuddle> PuddleClass = SacPuddleClass;
+	if (!PuddleClass)
+	{
+		for (const UNoFearMonsterAttack* Attack : AttackSet)
+		{
+			const UNoFearMonsterAttack_Spit* Spit = Cast<UNoFearMonsterAttack_Spit>(Attack);
+			const ANoFearSpitProjectile* Projectile = Spit && Spit->ProjectileClass ? Spit->ProjectileClass->GetDefaultObject<ANoFearSpitProjectile>() : nullptr;
+			if (Projectile && Projectile->PuddleClass)
+			{
+				PuddleClass = Projectile->PuddleClass;
+				break;
+			}
+		}
+	}
+	if (PuddleClass)
+	{
+		FHitResult Ground;
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearSacPuddle), false, MyCharacter);
+		const FVector Start = MyCharacter->GetActorLocation();
+		const FVector End = Start - FVector(0.f, 0.f, 400.f);
+		FCollisionObjectQueryParams GroundObjects;
+		GroundObjects.AddObjectTypesToQuery(ECC_WorldStatic);
+		GroundObjects.AddObjectTypesToQuery(ECC_WorldDynamic);
+		const FVector Location = World->LineTraceSingleByObjectType(Ground, Start, End, GroundObjects, Params)
+			? Ground.ImpactPoint
+			: Start - FVector(0.f, 0.f, MyCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.Owner = MyCharacter;
+		SpawnParams.Instigator = MyCharacter;
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		World->SpawnActor<ANoFearAcidPuddle>(PuddleClass, Location + FVector(0.f, 0.f, 1.f), FRotator::ZeroRotator, SpawnParams);
+	}
+
+	if (SacPopDamage > 0.f)
+	{
+		UGameplayStatics::ApplyDamage(MyCharacter, SacPopDamage, Info.InstigatorController, Info.DamageCauser, UDamageType::StaticClass());
+	}
+
+	if (!UNoFearHealthComponent::IsActorDead(MyCharacter) && SacPopStunTime > 0.f)
+	{
+		const ANoFearCharacter* NoFearCharacter = Cast<ANoFearCharacter>(MyCharacter);
+		if (UNoFearPoseComponent* Pose = NoFearCharacter ? NoFearCharacter->GetPoseComponent() : nullptr)
+		{
+			const FVector From = Info.bHasSource ? Info.SourceLocation : MyCharacter->GetActorLocation() + MyCharacter->GetActorForwardVector() * 100.f;
+			Pose->Stagger((MyCharacter->GetActorLocation() - From).GetSafeNormal2D(), SacPopStunTime);
+			Pose->OnHitReaction.Broadcast(Pose, true);
+		}
+	}
+}
+
 void ANoFearSpitterAIController::ConfigureMelee(UNoFearMeleeComponent* Melee)
 {
 	Super::ConfigureMelee(Melee);
@@ -727,6 +1637,41 @@ bool ANoFearSpitterAIController::GetStandoffPoint(const FVector& TargetLocation,
 	{
 		return false;
 	}
+	// Союзник ближе к цели — встать за его спину (колосс — в первую очередь, иначе ближайший к цели).
+	ScreenAlly.Reset();
+	const FVector MyLocation = MyPawn->GetActorLocation();
+	APawn* BestAlly = nullptr;
+	float BestScore = TNumericLimits<float>::Max();
+	for (ANoFearCharacter* Candidate : TActorRange<ANoFearCharacter>(GetWorld()))
+	{
+		const ANoFearMonsterAIController* Ally = Candidate && Candidate != MyPawn ? Cast<ANoFearMonsterAIController>(Candidate->GetController()) : nullptr;
+		if (!Ally || Ally->IsA<ANoFearSpitterAIController>() || UNoFearHealthComponent::IsActorDead(Candidate)
+			|| !UNoFearTeamLibrary::AreFriendly(MyPawn, Candidate))
+		{
+			continue;
+		}
+		const float AllyToTarget = FVector::Dist2D(Candidate->GetActorLocation(), TargetLocation);
+		if (AllyToTarget > StandDistance || AllyToTarget < 100.f)
+		{
+			continue;
+		}
+		const float Score = AllyToTarget - (Ally->IsA<ANoFearTankAIController>() ? 100000.f : 0.f);
+		if (Score < BestScore)
+		{
+			BestScore = Score;
+			BestAlly = Candidate;
+		}
+	}
+	if (BestAlly)
+	{
+		const FVector Away = (BestAlly->GetActorLocation() - TargetLocation).GetSafeNormal2D();
+		const float Distance = FMath::Max(FVector::Dist2D(BestAlly->GetActorLocation(), TargetLocation) + ScreenOffset, RetreatStopDistance + 50.f);
+		OutPoint = TargetLocation + Away * Distance;
+		OutPoint.Z = MyLocation.Z;
+		ScreenAlly = BestAlly;
+		return true;
+	}
+
 	// За кольцом со стороны стаи; несколько плевунов расходятся веером (±25°), каждый в свою сторону.
 	const float Spread = (static_cast<int32>(MyPawn->GetUniqueID() % 3) - 1) * 25.f;
 	OutPoint = TargetLocation + PackSide.RotateAngleAxis(Spread, FVector::UpVector) * StandDistance;

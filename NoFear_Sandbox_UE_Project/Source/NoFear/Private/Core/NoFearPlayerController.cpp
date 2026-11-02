@@ -2,6 +2,7 @@
 
 #include "AI/NoFearBotSubsystem.h"
 #include "AI/NoFearCompanionAIController.h"
+#include "AI/NoFearMonsterKinds.h"
 #include "Core/NoFearBraceletComponent.h"
 #include "Core/NoFearCharacter.h"
 #include "Core/NoFearFearComponent.h"
@@ -395,6 +396,13 @@ void ANoFearPlayerController::SetupInputComponent()
 		BreathAction = NewObject<UInputAction>(this, TEXT("IA_NoFearHoldBreath"));
 		BreathAction->ValueType = EInputActionValueType::Boolean;
 	}
+	if (!BreakFreeAction)
+	{
+		BreakFreeAction = NewObject<UInputAction>(this, TEXT("IA_NoFearBreakFree"));
+		BreakFreeAction->ValueType = EInputActionValueType::Boolean;
+		// Пробел остаётся и прыжком.
+		BreakFreeAction->bConsumeInput = false;
+	}
 	if (!CompanionInputContext)
 	{
 		CompanionInputContext = NewObject<UInputMappingContext>(this, TEXT("IMC_NoFearCompanion"));
@@ -404,6 +412,8 @@ void ANoFearPlayerController::SetupInputComponent()
 		CompanionInputContext->MapKey(StabilizeAction, EKeys::Gamepad_DPad_Down);
 		CompanionInputContext->MapKey(BreathAction, EKeys::LeftAlt);
 		CompanionInputContext->MapKey(BreathAction, EKeys::Gamepad_LeftThumbstick);
+		CompanionInputContext->MapKey(BreakFreeAction, EKeys::SpaceBar);
+		CompanionInputContext->MapKey(BreakFreeAction, EKeys::Gamepad_FaceButton_Bottom);
 	}
 
 	if (UEnhancedInputComponent* EnhancedInput = Cast<UEnhancedInputComponent>(InputComponent))
@@ -420,6 +430,20 @@ void ANoFearPlayerController::SetupInputComponent()
 		EnhancedInput->BindAction(BreathAction, ETriggerEvent::Started, this, &ANoFearPlayerController::OnBreathPressed);
 		EnhancedInput->BindAction(BreathAction, ETriggerEvent::Completed, this, &ANoFearPlayerController::OnBreathReleased);
 		EnhancedInput->BindAction(BreathAction, ETriggerEvent::Canceled, this, &ANoFearPlayerController::OnBreathReleased);
+		EnhancedInput->BindAction(BreakFreeAction, ETriggerEvent::Started, this, &ANoFearPlayerController::OnBreakFreeInput);
+	}
+}
+
+void ANoFearPlayerController::OnBreakFreeInput()
+{
+	BreakFree();
+}
+
+void ANoFearPlayerController::BreakFree()
+{
+	if (ANoFearJumperAIController* Pinner = ANoFearJumperAIController::FindPinner(GetPawn()))
+	{
+		Pinner->AddEscapePress();
 	}
 }
 
