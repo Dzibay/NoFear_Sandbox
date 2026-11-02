@@ -557,16 +557,16 @@ void ANoFearHUD::DrawItemWheel()
 			Fill.A = 0.55f;
 		}
 		DrawWedge(Center, Inner, SectorOuter, From, To, Fill);
-		DrawArc(Center, SectorOuter - 4.f * S, SectorOuter, From, To, WithAlpha(ItemColor, bFilled ? 0.9f : 0.35f));
+		DrawArc(Center, SectorOuter - 4.f * S, SectorOuter, From, To, NoFearHUDInventory::WithAlpha(ItemColor, bFilled ? 0.9f : 0.35f));
 
 		// Номер сектора — у внутреннего края.
-		const FVector2D NumberCenter = PointOnCircle(Center, Angle, Inner + 16.f * S);
+		const FVector2D NumberCenter = NoFearHUDInventory::PointOnCircle(Center, Angle, Inner + 16.f * S);
 		DrawLabel(FString::FromInt(Slot + 1), NumberCenter.X, NumberCenter.Y - 8.f * S, FLinearColor(1.f, 0.85f, 0.3f, bFilled ? 0.9f : 0.5f), 0.8f * S, ELabelAlign::Center);
 
-		const FVector2D LabelCenter = PointOnCircle(Center, Angle, (Inner + Outer) * 0.5f + 12.f * S);
+		const FVector2D LabelCenter = NoFearHUDInventory::PointOnCircle(Center, Angle, (Inner + Outer) * 0.5f + 12.f * S);
 		if (!bFilled)
 		{
-			DrawLabel(TEXT("—"), LabelCenter.X, LabelCenter.Y - 10.f * S, WithAlpha(EmptyColor, 0.8f), 1.1f * S, ELabelAlign::Center);
+			DrawLabel(TEXT("—"), LabelCenter.X, LabelCenter.Y - 10.f * S, NoFearHUDInventory::WithAlpha(EmptyColor, 0.8f), 1.1f * S, ELabelAlign::Center);
 			continue;
 		}
 
@@ -656,7 +656,7 @@ void ANoFearHUD::DrawItemWheel()
 		float ActionWidth = 0.f;
 		float ActionHeight = 0.f;
 		GetTextSize(Action, ActionWidth, ActionHeight, GetFont(), 1.1f * S);
-		DrawLabel(Action, Center.X, Y, bSelectedFilled ? FLinearColor::White : WithAlpha(EmptyColor, 0.9f), 1.1f * S, ELabelAlign::Center);
+		DrawLabel(Action, Center.X, Y, bSelectedFilled ? FLinearColor::White : NoFearHUDInventory::WithAlpha(EmptyColor, 0.9f), 1.1f * S, ELabelAlign::Center);
 		Y += ActionHeight + 2.f * S;
 	}
 	const TCHAR* Hint = Selection == INDEX_NONE ? TEXT("Мышь — выбрать, отпустить Q — применить") : TEXT("Вернуть мышь в центр — отменить");
