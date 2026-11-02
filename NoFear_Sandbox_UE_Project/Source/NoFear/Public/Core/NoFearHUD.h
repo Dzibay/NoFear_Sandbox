@@ -650,6 +650,8 @@ private:
 	void DrawPortalFreeProgress();
 	/** Кейс героя: NoFearHUDInventory.cpp. */
 	void DrawInventory();
+	/** Экран кейса (I): сетка, колесо, предмет на курсоре, карточка и меню. NoFearHUDInventory.cpp. */
+	void DrawCaseScreen();
 	/** Дуга кольца From..To, разбитая на куски не больше 15°, чтобы оставалась гладкой. */
 	void DrawArc(const FVector2D& Center, float Inner, float Outer, float From, float To, const FLinearColor& Color);
 	void DrawOrderWheel();

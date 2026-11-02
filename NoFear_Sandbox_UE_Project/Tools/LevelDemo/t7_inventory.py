@@ -198,7 +198,12 @@ def scenario():
     yield 0.3
     got = press_e()
     yield 0.2
+    # Места нет — открывается экран кейса с предметом на курсоре; сам предмет лежит, пока его не положат.
     check('no room keeps pickup', got == p and p in pickups() and p.get_count() == 10 and case.count_item(item('Shells')) == 960)
+    check('no room opens screen', case.is_screen_open() and case.is_holding_pickup() and case.get_held_count() == 10)
+    case.close_screen()
+    yield 0.1
+    check('closed leaves on ground', not case.is_screen_open() and not case.is_holding() and p in pickups() and p.get_count() == 10)
     x = spawn('CaseExpansion', 1, 120)
     yield 1.5
     aim(x)
@@ -216,7 +221,8 @@ def scenario():
     yield 0.3
     got = press_e()
     yield 0.2
-    check('partial pickup', got == big and big in pickups() and big.get_count() == 400 - room and case.count_item(item('Shells')) == 960 + room,
+    check('partial pickup', got == big and big in pickups() and big.get_count() == 400 - room and case.count_item(item('Shells')) == 960 + room
+          and not case.is_screen_open(),
           'left %d, case %d' % (big.get_count() if big in pickups() else -1, case.count_item(item('Shells'))))
     # Что осталось лежать — убрать.
     for q in pickups():

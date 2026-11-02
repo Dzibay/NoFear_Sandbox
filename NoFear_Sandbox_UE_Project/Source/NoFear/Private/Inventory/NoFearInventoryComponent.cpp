@@ -37,7 +37,9 @@ namespace
 
 UNoFearInventoryComponent::UNoFearInventoryComponent()
 {
-	PrimaryComponentTick.bCanEverTick = false;
+	// Тикает только у героя игрока: курсор экрана кейса и контекст ввода с I.
+	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.bStartWithTickEnabled = false;
 
 	GridSizes = { FIntPoint(8, 5), FIntPoint(9, 6), FIntPoint(10, 7) };
 	StartingItems = {
@@ -77,6 +79,11 @@ void UNoFearInventoryComponent::BeginPlay()
 
 void UNoFearInventoryComponent::HandleControllerChanged()
 {
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	if (bScreenOpen && (!Pawn || !Pawn->IsPlayerControlled()))
+	{
+		CloseScreen();
+	}
 	TryActivate();
 }
 
@@ -90,6 +97,7 @@ void UNoFearInventoryComponent::TryActivate()
 	bCaseActive = true;
 	ExpansionLevel = 0;
 	WheelSlots.Init(0, WheelSlotCount);
+	SetComponentTickEnabled(true);
 
 	// Новое тело начинает игру раньше, чем в него вселяется игрок, и успевает получить StartingWeapons: их заменяет кейс.
 	if (UNoFearWeaponComponent* Weapons = GetWeaponComponent())
@@ -629,12 +637,21 @@ ANoFearPickup* UNoFearInventoryComponent::DropEntry(int32 Id, int32 Count)
 		Entry.Count -= DropCount;
 	}
 	NotifyChanged();
+	return SpawnDropped(Item, DropCount, Magazine);
+}
 
+ANoFearPickup* UNoFearInventoryComponent::SpawnDropped(UNoFearItemData* Item, int32 Count, int32 MagazineAmmo) const
+{
+	const AActor* Owner = GetOwner();
+	if (!Owner || !Item || Count <= 0)
+	{
+		return nullptr;
+	}
 	// Перед героем на уровне пояса, с толчком вперёд: предмет падает и катится.
 	const FVector Forward = Owner->GetActorForwardVector();
 	const FVector Location = Owner->GetActorLocation() + Forward * DropDistance + FVector(0.f, 0.f, 10.f);
 	const FVector Velocity = Owner->GetVelocity() + Forward * 150.f + FVector(0.f, 0.f, 120.f);
-	return ANoFearPickup::SpawnPickup(GetWorld(), Item, DropCount, Magazine, FTransform(Owner->GetActorRotation(), Location), Velocity);
+	return ANoFearPickup::SpawnPickup(GetWorld(), Item, Count, MagazineAmmo, FTransform(Owner->GetActorRotation(), Location), Velocity);
 }
 
 void UNoFearInventoryComponent::ClearCase()
@@ -672,7 +689,8 @@ int32 UNoFearInventoryComponent::GetWheelSlot(int32 Slot) const
 
 bool UNoFearInventoryComponent::AssignWheelSlot(int32 Slot, int32 EntryId)
 {
-	if (!WheelSlots.IsValidIndex(Slot) || FindEntryIndex(EntryId) == INDEX_NONE)
+	const int32 Index = FindEntryIndex(EntryId);
+	if (!WheelSlots.IsValidIndex(Slot) || Index == INDEX_NONE || !IsWheelKind(Entries[Index].Item))
 	{
 		return false;
 	}
@@ -695,6 +713,16 @@ void UNoFearInventoryComponent::ClearWheelSlot(int32 Slot)
 		WheelSlots[Slot] = 0;
 		NotifyChanged();
 	}
+}
+
+int32 UNoFearInventoryComponent::FindWheelSlotOf(int32 EntryId) const
+{
+	return EntryId != 0 ? WheelSlots.IndexOfByKey(EntryId) : INDEX_NONE;
+}
+
+bool UNoFearInventoryComponent::IsWheelItem(const UNoFearItemData* Item)
+{
+	return IsWheelKind(Item);
 }
 
 // ---------------------------------------------------------------------------

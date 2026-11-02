@@ -459,4 +459,8 @@ void ANoFearCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 	{
 		GrenadeComponent->SetupPlayerInput(PlayerInputComponent);
 	}
+	if (InventoryComponent)
+	{
+		InventoryComponent->SetupPlayerInput(PlayerInputComponent);
+	}
 }

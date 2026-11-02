@@ -142,7 +142,11 @@ bool ANoFearPickup::TryPickUp(APawn* User)
 	const int32 Added = Case->AddItem(Item, Total, MagazineAmmo);
 	if (Added <= 0)
 	{
-		// Экран кейса с предметом в руке — этап 2; пока только сообщение.
+		// Не влезло ничего — экран кейса с предметом на курсоре; закрыли экран — предмет остался лежать.
+		if (Case->HoldPickup(this))
+		{
+			return true;
+		}
 		Case->PushNotice(LOCTEXT("NoRoom", "Нет места в кейсе"));
 		return false;
 	}

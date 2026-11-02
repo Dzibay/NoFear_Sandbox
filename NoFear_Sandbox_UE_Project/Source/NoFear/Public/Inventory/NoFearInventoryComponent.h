@@ -6,9 +6,83 @@
 
 class ANoFearPickup;
 class ANoFearWeapon;
+class APlayerController;
+class UInputComponent;
 class UNoFearInventoryComponent;
 class UNoFearItemData;
 class UNoFearWeaponComponent;
+
+/** Пункт меню ПКМ на экране кейса. */
+UENUM(BlueprintType)
+enum class ENoFearCaseAction : uint8
+{
+	/** Взять ствол в руки. */
+	Equip,
+	/** В первый свободный сектор колеса. */
+	AssignWheel,
+	ClearWheel,
+	/** Половину стопки — на курсор. */
+	Split,
+	Drop,
+};
+
+/** Что будет, если положить предмет с курсора сейчас. */
+enum class ENoFearCaseTarget : uint8
+{
+	/** Внутри панели, но не на клетке и не на секторе: ничего. */
+	None,
+	/** На клетки сетки. */
+	Grid,
+	/** Долить в такую же неполную стопку под курсором. */
+	Merge,
+	/** Назначить в сектор колеса; предмет остаётся на своём месте. */
+	WheelSlot,
+	/** За краем панели — выбросить. */
+	Drop,
+};
+
+struct FNoFearCaseTarget
+{
+	ENoFearCaseTarget Kind = ENoFearCaseTarget::None;
+	/** Левая верхняя клетка предмета (Grid). */
+	FIntPoint Cell = FIntPoint::ZeroValue;
+	int32 Slot = INDEX_NONE;
+	int32 MergeId = 0;
+	/** Сюда можно: клетки свободны, сектор принимает такой предмет. */
+	bool bValid = false;
+};
+
+/** Разметка экрана кейса в пикселях вьюпорта: по ней рисует HUD и по ней курсор попадает в клетки и сектора. */
+struct NOFEAR_API FNoFearCaseLayout
+{
+	float Scale = 1.f;
+	FVector2D ViewportSize = FVector2D(1920.f, 1080.f);
+	FIntPoint GridSize = FIntPoint(1, 1);
+	/** Левый верхний угол сетки. */
+	FVector2D GridOrigin = FVector2D::ZeroVector;
+	float Cell = 56.f;
+	FVector2D WheelCenter = FVector2D::ZeroVector;
+	/** От центра колеса до центров секторов. */
+	float WheelRadius = 150.f;
+	float SlotSize = 84.f;
+	/** Подложка: курсор за её краем — выбросить. */
+	FVector2D PanelMin = FVector2D::ZeroVector;
+	FVector2D PanelMax = FVector2D::ZeroVector;
+	float MenuWidth = 240.f;
+	float MenuItemHeight = 34.f;
+
+	/** Сетка слева, колесо справа, всё по центру экрана. Нулевой размер вьюпорта (-nullrhi) — как 1920×1080. */
+	static FNoFearCaseLayout Make(const FVector2D& InViewportSize, FIntPoint InGridSize);
+
+	/** Точка в клетках сетки, дробная: (0, 0) — левый верхний угол сетки. */
+	FVector2D ToGrid(const FVector2D& Point) const { return (Point - GridOrigin) / Cell; }
+	FVector2D GetCellMin(FIntPoint InCell) const { return GridOrigin + FVector2D(InCell) * Cell; }
+	bool IsOnGrid(const FVector2D& Point) const;
+	bool IsInsidePanel(const FVector2D& Point) const;
+	/** Сектор 0 сверху, дальше по часовой стрелке. */
+	FVector2D GetSlotCenter(int32 Slot) const;
+	int32 GetSlotAt(const FVector2D& Point) const;
+};
 
 /** Сколько и чего: стартовый набор кейса. */
 USTRUCT(BlueprintType)
@@ -106,6 +180,14 @@ public:
 	/** Сколько секунд видна строка «Подобрано…» / «Нет места». */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Inventory", meta = (ClampMin = "0"))
 	float NoticeDuration = 2.5f;
+
+	/** Скорость игры, пока открыт экран кейса. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Inventory|Screen", meta = (ClampMin = "0.05", ClampMax = "1"))
+	float ScreenTimeDilation = 0.3f;
+
+	/** Отошёл от предмета, который держит на курсоре с земли, дальше этого, см — предмет остаётся лежать. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Inventory|Screen", meta = (ClampMin = "0"))
+	float PickupHoldDistance = 400.f;
 
 	// --- Кейс ---
 
@@ -219,6 +301,149 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory")
 	void ClearWheelSlot(int32 Slot);
 
+	/** Сектор, в котором предмет, или INDEX_NONE. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory")
+	int32 FindWheelSlotOf(int32 EntryId) const;
+
+	/** В колесо можно только стволы, гранаты и медицину. */
+	static bool IsWheelItem(const UNoFearItemData* Item);
+
+	// --- Экран кейса (I) ---
+
+	/** Ввод экрана: I на кейс и контекст самого экрана. Вызывает ANoFearCharacter::SetupPlayerInputComponent. */
+	void SetupPlayerInput(UInputComponent* PlayerInputComponent);
+
+	/** Открыть экран: время замедляется, появляется курсор, стрельба и обзор отключены, ходить можно. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory|Screen")
+	bool OpenScreen();
+
+	/** Закрыть: предмет на курсоре возвращается на место, а взятый с земли остаётся лежать. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory|Screen")
+	void CloseScreen();
+
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory|Screen")
+	void ToggleScreen();
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	bool IsScreenOpen() const { return bScreenOpen; }
+
+	/** Открыть экран с предметом с земли на курсоре: в кейсе нет места. Положили — он исчезает с земли. */
+	bool HoldPickup(ANoFearPickup* Pickup);
+
+	/** Курсор в пикселях вьюпорта. Мышь его двигает сама; проверки ставят его так. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory|Screen")
+	void SetScreenCursor(FVector2D Position) { ScreenCursor = Position; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	FVector2D GetScreenCursor() const { return ScreenCursor; }
+
+	/** ЛКМ нажата: взять предмет под курсором, положить тот, что на курсоре, или выбрать пункт меню. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory|Screen")
+	void ScreenPress();
+
+	/** ЛКМ отпущена: перетащили — положить; отпустили на том же месте — предмет остаётся на курсоре до следующего щелчка. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory|Screen")
+	void ScreenRelease();
+
+	/** ПКМ: меню предмета под курсором, очистить сектор под курсором, повернуть предмет на курсоре. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory|Screen")
+	void ScreenContext();
+
+	/** R: повернуть предмет на курсоре или под курсором. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory|Screen")
+	void ScreenRotate();
+
+	/** Esc: закрыть меню, иначе вернуть предмет с курсора, иначе закрыть экран. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory|Screen")
+	void ScreenBack();
+
+	/** 1–8 (Slot 0–7): назначить в сектор предмет под курсором или на курсоре; уже там — убрать. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory|Screen")
+	void ScreenSlotKey(int32 Slot);
+
+	/** Разметка экрана для текущего вьюпорта и сетки. */
+	FNoFearCaseLayout GetScreenLayout() const;
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	FVector2D GetCellCenter(FIntPoint Cell) const;
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	FVector2D GetWheelSlotCenter(int32 Slot) const;
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	FVector2D GetMenuItemCenter(int32 Index) const;
+
+	/** Точка далеко за краем панели — туда тащат, чтобы выбросить. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	FVector2D GetOutsidePoint() const;
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	bool IsHolding() const { return HeldSource != EHeldSource::None; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	UNoFearItemData* GetHeldItem() const { return IsHolding() ? HeldItem.Get() : nullptr; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	int32 GetHeldCount() const;
+
+	/** Предмет кейса, который переносят (или от которого отделили стопку на курсоре), или 0. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	int32 GetHeldEntryId() const { return HeldSource == EHeldSource::Entry || HeldSource == EHeldSource::Split ? HeldEntryId : 0; }
+
+	/** На курсоре предмет с земли. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	bool IsHoldingPickup() const { return HeldSource == EHeldSource::Pickup; }
+
+	/** На курсоре часть стопки, ещё не положенная в кейс. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	bool IsHoldingSplit() const { return HeldSource == EHeldSource::Split; }
+
+	/** Сектор колеса, из которого взят предмет; INDEX_NONE — взят с сетки. Вынесли за край — сектор очищается, предмет остаётся в кейсе. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	int32 GetHeldWheelSlot() const { return HeldSource == EHeldSource::Entry ? HeldWheelSlot : INDEX_NONE; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	bool IsHeldRotated() const { return bHeldRotated; }
+
+	/** Сколько клеток занимает предмет на курсоре с учётом поворота. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	FIntPoint GetHeldSize() const;
+
+	/** Где на предмете курсор, в клетках от его левого верхнего угла. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	FVector2D GetHeldGrab() const { return HeldGrab; }
+
+	/** Патроны в магазине ствола на курсоре; -1 — не ствол или полный. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	int32 GetHeldMagazine() const;
+
+	/** Что будет, если положить сейчас. */
+	FNoFearCaseTarget GetHeldTarget() const;
+
+	/** Предмет на клетке под курсором или 0. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	int32 GetHoveredEntryId() const;
+
+	/** Сектор колеса под курсором или INDEX_NONE. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	int32 GetHoveredWheelSlot() const;
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	bool IsMenuOpen() const { return bMenuOpen; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	TArray<ENoFearCaseAction> GetMenuActions() const { return bMenuOpen ? MenuActions : TArray<ENoFearCaseAction>(); }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Screen")
+	int32 GetMenuEntryId() const { return bMenuOpen ? MenuEntryId : 0; }
+
+	FVector2D GetMenuPosition() const { return MenuPosition; }
+
+	/** Пункт меню под курсором или INDEX_NONE. */
+	int32 GetHoveredMenuItem() const;
+
+	static FText GetCaseActionName(ENoFearCaseAction Action);
+
 	// --- Сообщения HUD ---
 
 	void PushNotice(const FText& Text);
@@ -234,10 +459,46 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 private:
+	/** Откуда предмет на курсоре. */
+	enum class EHeldSource : uint8
+	{
+		None,
+		/** Предмет кейса: лежит на своём месте, пока его не положат в другое. */
+		Entry,
+		/** Отделённая часть стопки HeldEntryId: в кейсе её уже нет. */
+		Split,
+		/** Предмет с земли HeldPickup: лежит там, пока его не положат в кейс. */
+		Pickup,
+	};
+
 	void TryActivate();
 	void GrantStartingItems();
+
+	APlayerController* GetOwnerPlayerController() const;
+	/** Вернуть контекст ввода с I, если его сняли (персонаж GASP пересобирает контексты при вселении). */
+	void EnsureCaseInput(APlayerController* PC) const;
+	void UpdateScreenCursor(APlayerController* PC);
+
+	/** Взять предмет кейса на курсор, курсор там, где за него взялись. */
+	void HoldEntry(int32 Id, int32 FromWheelSlot = INDEX_NONE);
+	/** Положить предмет с курсора туда, куда указывает GetHeldTarget. false — туда нельзя, он остаётся на курсоре. */
+	bool PlaceHeld();
+	/** Вернуть предмет с курсора: свой — на место, отделённую часть — в стопку, предмет с земли остаётся лежать. */
+	void ReturnHeld();
+	void ClearHeld();
+	/** Курсор в клетках с учётом того, где за предмет взялись: левый верхний угол предмета. */
+	FIntPoint GetHeldOrigin(const FNoFearCaseLayout& Layout) const;
+
+	void OpenMenu(int32 EntryId);
+	void CloseMenu();
+	void RunMenuAction(ENoFearCaseAction Action);
+
+	/** Предмет на землю перед героем с толчком вперёд. */
+	ANoFearPickup* SpawnDropped(UNoFearItemData* Item, int32 Count, int32 MagazineAmmo) const;
 
 	/** Автораскладка. bApply false — только посчитать, сколько влезет. */
 	int32 AddInternal(UNoFearItemData* Item, int32 Count, int32 MagazineAmmo, bool bApply);
@@ -267,4 +528,37 @@ private:
 
 	FText NoticeText;
 	double NoticeTime = -100.0;
+
+	// --- Экран кейса ---
+
+	bool bScreenOpen = false;
+	float TimeDilationBeforeScreen = 1.f;
+	bool bCursorShownBeforeScreen = false;
+	/** Контроллер, у которого экран забрал курсор и обзор: ему и вернуть. */
+	TWeakObjectPtr<APlayerController> ScreenController;
+
+	FVector2D ScreenCursor = FVector2D::ZeroVector;
+	/** Где была мышь в прошлом кадре: курсор берёт её позицию, только когда она сдвинулась. */
+	FVector2D LastMousePosition = FVector2D(-1.f, -1.f);
+	/** Где нажали ЛКМ: отпустили далеко — это перетаскивание. */
+	FVector2D PressCursor = FVector2D::ZeroVector;
+	/** Нажатие уже положило предмет или выбрало пункт меню — отпускание ничего не делает. */
+	bool bPressConsumed = false;
+
+	EHeldSource HeldSource = EHeldSource::None;
+	int32 HeldEntryId = 0;
+	UPROPERTY(Transient)
+	TObjectPtr<UNoFearItemData> HeldItem;
+	int32 HeldCount = 0;
+	int32 HeldMagazine = -1;
+	bool bHeldRotated = false;
+	FVector2D HeldGrab = FVector2D::ZeroVector;
+	/** Взяли из сектора колеса; INDEX_NONE — с сетки. */
+	int32 HeldWheelSlot = INDEX_NONE;
+	TWeakObjectPtr<ANoFearPickup> HeldPickup;
+
+	bool bMenuOpen = false;
+	int32 MenuEntryId = 0;
+	FVector2D MenuPosition = FVector2D::ZeroVector;
+	TArray<ENoFearCaseAction> MenuActions;
 };
