@@ -13,6 +13,18 @@ struct FInputActionValue;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNoFearWeaponChangedSignature, ANoFearWeapon*, NewWeapon, ANoFearWeapon*, OldWeapon);
 
+class UNoFearWeaponComponent;
+
+/** Страховка боевой стойки: после тика меша возвращает WantsToAim, даже если меш в этом кадре анимацию не считал. */
+struct FNoFearReadyStancePostTick : public FTickFunction
+{
+	UNoFearWeaponComponent* Target = nullptr;
+
+	virtual void ExecuteTick(float DeltaTime, ELevelTick TickType, ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent) override;
+	virtual FString DiagnosticMessage() override;
+	virtual FName DiagnosticContext(bool bDetailed) override;
+};
+
 /**
  * Оружие персонажа: список стволов, переключение, ввод игрока.
  * Уже добавлен в ANoFearCharacter; боты вызывают StartFire/StopFire напрямую.
@@ -71,6 +83,25 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapons|Animation", meta = (EditCondition = "bDriveArmRecoil"))
 	FName HandRecoilVariable = TEXT("Hand_R_Rotations");
+
+	/**
+	 * Боевая стойка игрока. Без ПКМ GASP держит оружие внизу (пистолет у ноги, винтовка поперёк живота), а стрельба
+	 * идёт из этой позы. Пока зажат огонь и ещё ReadyStanceHold секунд после последнего выстрела компонент пишет герою
+	 * в CharacterInputState WantsToStrafe (корпус развёрнут по камере) и на время расчёта анимации WantsToAim:
+	 * оружие поднято перед собой, прицельное смещение ведёт ствол за взглядом. Сразу после анимации WantsToAim
+	 * возвращается к настоящему, поэтому прицельная камера не включается: она остаётся на ПКМ. Разброс и отдача
+	 * не меняются: это стрельба от бедра поднятым оружием, а не прицеливание.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapons|Ready")
+	bool bReadyStance = true;
+
+	/** Сколько секунд после последнего выстрела (или RaiseWeapon) оружие остаётся поднятым. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapons|Ready", meta = (EditCondition = "bReadyStance", ClampMin = "0.0"))
+	float ReadyStanceHold = 2.5f;
+
+	/** Переменная персонажа со структурой ввода GASP; поля WantsToAim_<GUID> ищутся по началу имени. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapons|Ready", meta = (EditCondition = "bReadyStance"))
+	FName InputStateProperty = TEXT("CharacterInputState");
 
 	// --- Ввод игрока ---
 
@@ -171,6 +202,14 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
 	bool IsAiming() const { return bWantsToAim; }
 
+	/** Оружие поднято боевой стойкой (не ПКМ-прицелом): огонь зажат или с выстрела прошло меньше ReadyStanceHold. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Weapon")
+	bool IsReadyStance() const { return bReadyStanceActive; }
+
+	/** Поднять оружие перед собой на Duration секунд (меньше нуля — ReadyStanceHold). Работает только у игрока. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Weapon")
+	void RaiseWeapon(float Duration = -1.f);
+
 	/**
 	 * Руки заняты (бросок гранаты): спуск отпущен, оружие в руках спрятано, стрельба, перезарядка и смена оружия
 	 * не работают. Снятие возвращает оружие и позу по нему.
@@ -212,6 +251,7 @@ public:
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void RegisterComponentTickFunctions(bool bRegister) override;
 
 private:
 	/** Общая точка для EquipWeapon/HolsterWeapon. Index == INDEX_NONE — остаться без оружия. */
@@ -221,6 +261,19 @@ private:
 	void CompleteSwitch(int32 NewIndex);
 
 	void UpdateArmRecoilVariables();
+
+	/** Решает, поднято ли оружие, и пишет WantsToAim в структуру ввода GASP героя. */
+	void UpdateReadyStance();
+
+	/** Поле bool структуры ввода GASP по началу имени (WantsToAim_<GUID>): прочитать и записать. */
+	bool ReadInputFlag(const TCHAR* Prefix) const;
+	void WriteInputFlag(const TCHAR* Prefix, bool bValue);
+
+	/** Анимация посчитана (или кадр кончился без неё): WantsToAim снова настоящий (ПКМ), иначе камера тоже ушла бы в прицельную. */
+	void HandleBoneTransformsFinalized();
+
+	friend struct FNoFearReadyStancePostTick;
+	FNoFearReadyStancePostTick ReadyPostTick;
 
 	void OnSwitchWeaponInput(const FInputActionValue& Value);
 	void OnAimInput(const FInputActionValue& Value);
@@ -234,6 +287,16 @@ private:
 	int32 LastEquippedIndex = 0;
 	bool bWantsToAim = false;
 	bool bOwnerDead = false;
+
+	// Боевая стойка: спуск зажат, до какого времени мира оружие поднято по RaiseWeapon, поднято ли сейчас.
+	bool bTriggerHeld = false;
+	double RaisedUntil = -100.0;
+	bool bReadyStanceActive = false;
+	/** WantsToAim поднят ради позы и ждёт возврата после расчёта анимации. */
+	bool bAimForcedForPose = false;
+	/** WantsToStrafe героя до стойки: возвращается, когда она кончилась. */
+	bool bSavedStrafe = false;
+	FDelegateHandle BoneTransformsFinalizedHandle;
 
 	/** Последняя заказанная поза: Blueprint персонажа может сбросить OverlayState сам, тогда тик вернёт её. */
 	mutable FName DesiredOverlayState;

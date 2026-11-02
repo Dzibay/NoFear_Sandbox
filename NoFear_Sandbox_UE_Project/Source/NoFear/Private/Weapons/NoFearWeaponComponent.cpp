@@ -10,6 +10,7 @@
 #include "InputActionValue.h"
 #include "Inventory/NoFearInventoryComponent.h"
 #include "TimerManager.h"
+#include "UObject/UnrealType.h"
 #include "Weapons/NoFearWeapon.h"
 #include "Weapons/NoFearWeaponData.h"
 
@@ -38,7 +39,49 @@ UNoFearWeaponComponent::UNoFearWeaponComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.TickGroup = TG_PrePhysics;
+	// Включается только на время боевой стойки (UpdateReadyStance). Идёт после тика меша в той же группе: камера
+	// героя (GameplayCameras) считается позже, в TG_PostPhysics, и к этому времени WantsToAim уже настоящий.
+	ReadyPostTick.bCanEverTick = true;
+	ReadyPostTick.bStartWithTickEnabled = false;
+	ReadyPostTick.TickGroup = TG_PrePhysics;
 	WeaponClass = ANoFearWeapon::StaticClass();
+}
+
+void FNoFearReadyStancePostTick::ExecuteTick(float DeltaTime, ELevelTick TickType, ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+{
+	if (IsValid(Target))
+	{
+		Target->HandleBoneTransformsFinalized();
+	}
+}
+
+FString FNoFearReadyStancePostTick::DiagnosticMessage()
+{
+	return TEXT("NoFearWeaponComponent::ReadyStancePostTick");
+}
+
+FName FNoFearReadyStancePostTick::DiagnosticContext(bool bDetailed)
+{
+	return FName(TEXT("NoFearReadyStancePostTick"));
+}
+
+void UNoFearWeaponComponent::RegisterComponentTickFunctions(bool bRegister)
+{
+	Super::RegisterComponentTickFunctions(bRegister);
+
+	if (bRegister)
+	{
+		if (SetupActorComponentTickFunction(&ReadyPostTick))
+		{
+			ReadyPostTick.Target = this;
+			// Регистрация включает тик сама (состояние по умолчанию - включён); нужен он только в стойке.
+			ReadyPostTick.SetTickFunctionEnable(false);
+		}
+	}
+	else if (ReadyPostTick.IsTickFunctionRegistered())
+	{
+		ReadyPostTick.UnRegisterTickFunction();
+	}
 }
 
 void UNoFearWeaponComponent::BeginPlay()
@@ -46,10 +89,19 @@ void UNoFearWeaponComponent::BeginPlay()
 	Super::BeginPlay();
 
 	const ACharacter* Character = Cast<ACharacter>(GetOwner());
-	if ((bDriveArmRecoil || bDriveOverlayState) && Character && Character->GetMesh())
+	if ((bDriveArmRecoil || bDriveOverlayState || bReadyStance) && Character && Character->GetMesh())
 	{
 		// Пишем переменные отдачи и позу до того, как меш начнёт считать анимацию в этом кадре.
 		Character->GetMesh()->PrimaryComponentTick.AddPrerequisite(this, PrimaryComponentTick);
+		// Структуру ввода Blueprint персонажа переписывает в своём тике: боевая стойка должна лечь поверх.
+		AddTickPrerequisiteActor(GetOwner());
+		if (bReadyStance)
+		{
+			// Страховка после расчёта анимации: меш мог её не считать (без рендера), тогда колбэк ниже не придёт.
+			ReadyPostTick.AddPrerequisite(Character->GetMesh(), Character->GetMesh()->PrimaryComponentTick);
+			BoneTransformsFinalizedHandle = Character->GetMesh()->RegisterOnBoneTransformsFinalizedDelegate(
+				FOnBoneTransformsFinalizedMultiCast::FDelegate::CreateUObject(this, &UNoFearWeaponComponent::HandleBoneTransformsFinalized));
+		}
 		if (bDriveOverlayState)
 		{
 			// Пересоздание анимации (пост-процесс поз в BeginPlay персонажа) сбрасывает слои позы к Default.
@@ -88,6 +140,15 @@ void UNoFearWeaponComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		World->GetTimerManager().ClearTimer(SwitchTimer);
 	}
 	bSwitching = false;
+
+	if (BoneTransformsFinalizedHandle.IsValid())
+	{
+		if (const ACharacter* Character = Cast<ACharacter>(GetOwner()); Character && Character->GetMesh())
+		{
+			Character->GetMesh()->UnregisterOnBoneTransformsFinalizedDelegate(BoneTransformsFinalizedHandle);
+		}
+		BoneTransformsFinalizedHandle.Reset();
+	}
 
 	for (ANoFearWeapon* Weapon : Weapons)
 	{
@@ -352,6 +413,7 @@ void UNoFearWeaponComponent::StartFire()
 	{
 		return;
 	}
+	bTriggerHeld = true;
 	if (ANoFearWeapon* Weapon = GetCurrentWeapon())
 	{
 		Weapon->StartFire();
@@ -369,6 +431,7 @@ void UNoFearWeaponComponent::SetFireBlocked(bool bBlocked)
 
 void UNoFearWeaponComponent::StopFire()
 {
+	bTriggerHeld = false;
 	// Отпускаем спуск у всех стволов: вдруг кнопку отпустили во время смены оружия.
 	for (ANoFearWeapon* Weapon : Weapons)
 	{
@@ -443,6 +506,7 @@ void UNoFearWeaponComponent::HandleControllerChanged()
 {
 	StopFire();
 	SetAiming(false);
+	RaisedUntil = -100.0;
 }
 
 void UNoFearWeaponComponent::HandleOwnerDeath()
@@ -460,6 +524,8 @@ void UNoFearWeaponComponent::HandleOwnerDeath()
 	bSwitching = false;
 	PendingIndex = INDEX_NONE;
 	bWantsToAim = false;
+	bTriggerHeld = false;
+	RaisedUntil = -100.0;
 
 	// Оружие, которое в этот момент убиралось или доставалось, остаётся там, где было.
 	for (ANoFearWeapon* Weapon : Weapons)
@@ -581,6 +647,109 @@ void UNoFearWeaponComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 		UpdateArmRecoilVariables();
 	}
 	EnforceOverlayState();
+	UpdateReadyStance();
+}
+
+void UNoFearWeaponComponent::RaiseWeapon(float Duration)
+{
+	if (const UWorld* World = GetWorld())
+	{
+		RaisedUntil = FMath::Max(RaisedUntil, World->GetTimeSeconds() + (Duration >= 0.f ? Duration : ReadyStanceHold));
+	}
+}
+
+void UNoFearWeaponComponent::UpdateReadyStance()
+{
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	const UWorld* World = GetWorld();
+	const ANoFearWeapon* Weapon = GetCurrentWeapon();
+
+	bool bReady = false;
+	// Боты ведут WantsToAim сами (ANoFearAIController::SetMovementFlags), стойка нужна только игроку.
+	// Во время лечения руки заняты бинтом: оружие не поднимаем, даже если только что стреляли.
+	const UNoFearInventoryComponent* Case = UNoFearInventoryComponent::FindCase(GetOwner());
+	if (bReadyStance && World && Pawn && Pawn->IsPlayerControlled() && Weapon && !bOwnerDead && !bHandsBusy && !(Case && Case->IsHealing()))
+	{
+		const ENoFearWeaponState State = Weapon->GetWeaponState();
+		const double Now = World->GetTimeSeconds();
+		bReady = State != ENoFearWeaponState::Holstered && State != ENoFearWeaponState::Holstering && State != ENoFearWeaponState::Equipping
+			&& (bTriggerHeld || Now < RaisedUntil || Now - Weapon->GetLastFireTime() < ReadyStanceHold);
+	}
+
+	if (bReady)
+	{
+		// Каждый тик: Blueprint персонажа переписывает структуру сам, ПКМ при отпускании сбрасывает флаг.
+		if (!bReadyStanceActive)
+		{
+			bSavedStrafe = ReadInputFlag(TEXT("WantsToStrafe"));
+		}
+		WriteInputFlag(TEXT("WantsToStrafe"), true);
+		WriteInputFlag(TEXT("WantsToAim"), true);
+		bAimForcedForPose = true;
+		// Обычно флаг возвращает конец расчёта анимации меша; тик конца кадра - на случай, когда меш её не считал.
+		if (!ReadyPostTick.IsTickFunctionEnabled())
+		{
+			ReadyPostTick.SetTickFunctionEnable(true);
+		}
+	}
+	else if (bReadyStanceActive)
+	{
+		// Стойка кончилась: возвращаем то, чего хочет игрок (ПКМ может быть всё ещё зажата).
+		WriteInputFlag(TEXT("WantsToStrafe"), bSavedStrafe);
+		WriteInputFlag(TEXT("WantsToAim"), bWantsToAim);
+		bAimForcedForPose = false;
+		ReadyPostTick.SetTickFunctionEnable(false);
+	}
+	bReadyStanceActive = bReady;
+}
+
+void UNoFearWeaponComponent::HandleBoneTransformsFinalized()
+{
+	if (bAimForcedForPose)
+	{
+		bAimForcedForPose = false;
+		WriteInputFlag(TEXT("WantsToAim"), bWantsToAim);
+	}
+}
+
+bool UNoFearWeaponComponent::ReadInputFlag(const TCHAR* Prefix) const
+{
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	const FStructProperty* StateProperty = Pawn ? FindFProperty<FStructProperty>(Pawn->GetClass(), InputStateProperty) : nullptr;
+	if (!StateProperty)
+	{
+		return false;
+	}
+
+	const void* State = StateProperty->ContainerPtrToValuePtr<void>(Pawn);
+	for (TFieldIterator<FBoolProperty> It(StateProperty->Struct); It; ++It)
+	{
+		// Поля пользовательской структуры называются вроде WantsToAim_7_3A4AA0AA... — сравниваем по началу.
+		if (It->GetName().StartsWith(Prefix))
+		{
+			return It->GetPropertyValue_InContainer(State);
+		}
+	}
+	return false;
+}
+
+void UNoFearWeaponComponent::WriteInputFlag(const TCHAR* Prefix, bool bValue)
+{
+	APawn* Pawn = Cast<APawn>(GetOwner());
+	const FStructProperty* StateProperty = Pawn ? FindFProperty<FStructProperty>(Pawn->GetClass(), InputStateProperty) : nullptr;
+	if (!StateProperty)
+	{
+		return;
+	}
+
+	void* State = StateProperty->ContainerPtrToValuePtr<void>(Pawn);
+	for (TFieldIterator<FBoolProperty> It(StateProperty->Struct); It; ++It)
+	{
+		if (It->GetName().StartsWith(Prefix))
+		{
+			It->SetPropertyValue_InContainer(State, bValue);
+		}
+	}
 }
 
 void UNoFearWeaponComponent::HandleAnimInitialized()
