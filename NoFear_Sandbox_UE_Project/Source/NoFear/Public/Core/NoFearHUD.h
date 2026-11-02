@@ -209,6 +209,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text")
 	FText RespawnInText = NSLOCTEXT("NoFearHUD", "RespawnIn", "Возрождение через {0} с");
 
+	/** Под надписью о гибели, когда возрождения нет (bAutoRespawn выключен): Enter начинает уровень заново. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text")
+	FText RestartText = NSLOCTEXT("NoFearHUD", "RestartPrompt", "[Enter] Начать заново");
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text")
 	FText ReloadingText = NSLOCTEXT("NoFearHUD", "Reloading", "ПЕРЕЗАРЯДКА");
 
@@ -678,6 +682,8 @@ private:
 	void DrawPortalFreeProgress();
 	/** Кейс героя: NoFearHUDInventory.cpp. */
 	void DrawInventory();
+	/** Кольцо лечения бинтом или аптечкой посреди экрана, пока идёт UseTime. NoFearHUDInventory.cpp. */
+	void DrawHealing(const class UNoFearInventoryComponent* Case);
 	/** Экран кейса (I): сетка, колесо, предмет на курсоре, карточка и меню. NoFearHUDInventory.cpp. */
 	void DrawCaseScreen();
 	/** Колесо предметов (Q): восемь секторов кейса посреди экрана, выбранный — цветом предмета. NoFearHUDInventory.cpp. */

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # T14: колесо предметов на Q (Docs/Inventory_Design.md, этап 3). Зажатая Q замедляет время до 0.3 и прячет мышь
 # от камеры, мышь выбирает один из восьми секторов, отпущенная Q применяет его: ствол в руки, граната на G,
-# медицина (заглушка этапа 4), ловушка на пол; мышь в центре — отмена. Колёсико листает стволы колеса,
+# медицина (лечение — t15), ловушка на пол; мышь в центре — отмена. Колёсико листает стволы колеса,
 # стабилизация браслета — на B, пока колесо открыто, экран кейса, стрельба и колёсико заперты.
 import os
 exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 't_lib.py'), encoding='utf-8').read())
@@ -228,12 +228,17 @@ def scenario():
           '%s, slot %s' % (gc.get_grenade_item().get_name() if gc.get_grenade_item() else None, slot_item(case, g2slot)))
     yield 3.0
 
-    # --- медицина: этап 4, пока не тратится
+    # --- медицина: сектор запускает лечение, бинт тратится только по его завершении (подробно в t15)
     bslot = layout(case).split().index('Bandage')
     band = item('Bandage')
     n = case.count_item(band)
+    h = pawn.get_health_component()
+    h.set_health(h.get_health() - 50.0)
     yield from choose(case, bslot)
-    check('bandage not spent', case.count_item(band) == n and not case.use_wheel_slot(bslot), 'count %d' % case.count_item(band))
+    check('bandage starts healing', case.is_healing() and case.get_healing_item() == band and case.count_item(band) == n,
+          'healing %s, count %d' % (case.is_healing(), case.count_item(band)))
+    case.cancel_healing(False)
+    check('cancelled bandage stays', not case.is_healing() and case.count_item(band) == n)
 
     # --- ловушка из колеса на пол перед героем
     wire = item('Tripwire')

@@ -41,8 +41,10 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FNoFearCompanionsChangedSignature);
 
 /**
  * Контроллер игрока. Всегда в команде Player.
- * Ведёт смерть и возрождение: после гибели пешки (ANoFearCharacter вызывает NotifyPawnDied) через RespawnDelay секунд
- * создаётся новая пешка на PlayerStart, а если его на уровне нет — там, где игрок появился в первый раз.
+ * Ведёт смерть: после гибели пешки (ANoFearCharacter вызывает NotifyPawnDied) HUD пишет «ВЫ ПОГИБЛИ», а спустя
+ * RestartPromptDelay секунд Enter начинает уровень заново (bRestartLevelOnDeath). Возрождения нет. С bAutoRespawn
+ * (тесты, режимы с жизнями) через RespawnDelay секунд создаётся новая пешка на PlayerStart, а если его на уровне
+ * нет — там, где игрок появился в первый раз.
  * Держит список напарников (не больше MaxCompanions) и взаимодействие клавишей E (IA_Interact):
  * каждый кадр выбирает ближайший к центру экрана UNoFearInteractableComponent в пределах его дистанции.
  *
@@ -69,9 +71,9 @@ public:
 	// IGenericTeamAgentInterface
 	virtual FGenericTeamId GetGenericTeamId() const override;
 
-	/** Возрождать игрока автоматически. Выключено — экран смерти висит, пока не вызван RespawnPlayer. */
+	/** Возрождать игрока автоматически. Выключено (умолчание) — экран смерти висит, пока не вызван RespawnPlayer или не начат уровень заново. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Respawn")
-	bool bAutoRespawn = true;
+	bool bAutoRespawn = false;
 
 	/** Через сколько секунд после смерти игрок возрождается. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Respawn", meta = (ClampMin = "0"))
@@ -98,6 +100,22 @@ public:
 	/** Возродить сейчас. Живого игрока не трогает. Старое тело остаётся лежать до своего исчезновения. */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Respawn")
 	void RespawnPlayer();
+
+	/** После гибели без возрождения клавиша Enter (Start на геймпаде) начинает уровень заново. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Respawn")
+	bool bRestartLevelOnDeath = true;
+
+	/** Через сколько секунд после гибели появляется «[Enter] Начать заново» и клавиша начинает работать. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Respawn", meta = (ClampMin = "0"))
+	float RestartPromptDelay = 1.5f;
+
+	/** Можно ли начать заново: игрок погиб, возрождения нет, прошло RestartPromptDelay. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Respawn")
+	bool CanRestartAfterDeath() const;
+
+	/** Загрузить текущий уровень заново, если CanRestartAfterDeath. false — рано или нельзя. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Respawn")
+	bool RestartAfterDeath();
 
 	/** Консоль: нанести себе урон, чтобы проверить HUD. Пример: NoFearHurt 30. */
 	UFUNCTION(Exec)
@@ -138,6 +156,10 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "NoFear|Bracelet")
 	UNoFearBraceletComponent* GetBracelet() const { return Bracelet; }
+
+	/** Начать уровень заново после гибели. Не задано — создаётся на Enter / Start. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Respawn")
+	TObjectPtr<UInputAction> RestartAction;
 
 	/** Стабилизация браслетом. Не задано — создаётся на Q / крестовину вниз. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Bracelet")
@@ -346,6 +368,7 @@ protected:
 	void OnStabilizeInput();
 	void OnBreathPressed();
 	void OnBreakFreeInput();
+	void OnRestartInput();
 	void OnBreathReleased();
 	void OpenOrderWheel();
 	/** bIssue — отдать выбранный приказ. */
@@ -411,6 +434,8 @@ private:
 	FTimerHandle RespawnTimer;
 	bool bWaitingForRespawn = false;
 	double RespawnTime = 0.0;
+	/** Когда игрок погиб (время мира). */
+	double DiedTime = 0.0;
 
 	/** Где игрок появился в первый раз: запасная точка возрождения. */
 	FTransform RespawnTransform;

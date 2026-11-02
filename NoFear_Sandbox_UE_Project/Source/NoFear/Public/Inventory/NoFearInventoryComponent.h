@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Core/NoFearHealthComponent.h"
 #include "Inventory/NoFearItemContainerComponent.h"
 #include "NoFearInventoryComponent.generated.h"
 
@@ -27,6 +28,8 @@ enum class ENoFearCaseAction : uint8
 	Take,
 	/** Из кейса в открытое хранилище автораскладкой. */
 	Store,
+	/** Бинт, аптечка: экран закрывается, начинается лечение. */
+	Use,
 };
 
 /** Что будет, если положить предмет с курсора сейчас. */
@@ -254,7 +257,7 @@ public:
 	static bool IsWheelItem(const UNoFearItemData* Item);
 
 	/**
-	 * Применить сектор колеса: ствол — в руки, граната — её бросает G, медицина — лечиться (этап 4),
+	 * Применить сектор колеса: ствол — в руки, граната — её бросает G, медицина — StartHealing,
 	 * капкан и растяжка — PlaceItem. false — сектор пуст или предмет сейчас не применить.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory")
@@ -291,6 +294,36 @@ public:
 	/** Курсор колеса в сырых единицах мыши, Y вверх. Мышь двигает его сама; проверки ставят его так. */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory|Wheel")
 	void SetItemWheelCursor(FVector2D Cursor);
+
+	// --- Лечение (бинт, аптечка) ---
+
+	/**
+	 * Начать лечение предметом из кейса: UseTime секунд герой идёт шагом и не стреляет, потом получает HealAmount
+	 * здоровья (bHealToFull — до полного), и предмет тратится. Урон, спринт, ЛКМ, ПКМ, R, G, X, колесо предметов
+	 * или экран кейса прерывают лечение, предмет тогда остаётся. false — предмета нет, здоровье полное, герой упал,
+	 * бежит или уже лечится.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory|Healing")
+	bool StartHealing(UNoFearItemData* Item);
+
+	/** Прервать лечение, предмет не тратится. bNotice — строка «Лечение прервано». */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory|Healing")
+	void CancelHealing(bool bNotice = true);
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Healing")
+	bool IsHealing() const { return HealingItem != nullptr; }
+
+	/** Чем лечится герой или nullptr. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Healing")
+	UNoFearItemData* GetHealingItem() const { return HealingItem; }
+
+	/** Сколько лечения прошло, 0–1. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Healing")
+	float GetHealingProgress() const;
+
+	/** Сколько секунд лечения осталось. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Healing")
+	float GetHealingTimeRemaining() const;
 
 	// --- Экран кейса (I) ---
 
@@ -512,6 +545,8 @@ private:
 	void EnsureCaseInput(APlayerController* PC) const;
 	/** Снять заглушки колеса предметов. */
 	void RemoveItemWheelInput(APlayerController* PC) const;
+	/** Снять заглушки лечения. */
+	void RemoveHealingInput(APlayerController* PC) const;
 	void UpdateScreenCursor(APlayerController* PC);
 
 	/** Взять предмет кейса или хранилища на курсор, курсор там, где за него взялись. */
@@ -548,8 +583,17 @@ private:
 	void UpdateItemWheel(APlayerController* PC);
 	/** Гранаты, которые бросает G, кончились — G бросает другие гранаты из кейса, по порядку секторов колеса. */
 	void RefreshGrenadeChoice();
-	/** Лечение медициной — этап 4; пока предмет не тратится. */
-	bool StartHealing(UNoFearItemData* Item);
+	/** Идёт лечение: шагом, без спринта; упал, сменился контроллер, предмет пропал — прервать; время вышло — FinishHealing. */
+	void UpdateHealing(APlayerController* PC);
+	/** Прибавить здоровье и потратить предмет. */
+	void FinishHealing();
+	/** Сбросить лечение: вернуть шаг и снять заглушки. */
+	void EndHealing();
+	UFUNCTION()
+	void HandleHealingDamaged(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info);
+	/** Флаг CharacterInputState у тела GASP (WantsToWalk, WantsToSprint). false — у тела такого поля нет. */
+	bool GetInputStateFlag(const TCHAR* Prefix, bool& bOutValue) const;
+	void SetInputStateFlag(const TCHAR* Prefix, bool bValue) const;
 
 	TArray<int32> WheelSlots;
 	int32 ExpansionLevel = 0;
@@ -566,6 +610,17 @@ private:
 	float TimeDilationBeforeWheel = 1.f;
 	/** Контроллер, у которого колесо забрало обзор: ему и вернуть. */
 	TWeakObjectPtr<APlayerController> WheelController;
+
+	// --- Лечение ---
+
+	UPROPERTY(Transient)
+	TObjectPtr<UNoFearItemData> HealingItem;
+	double HealingStartTime = 0.0;
+	float HealingDuration = 0.f;
+	/** Шагом ли шёл герой до лечения: вернуть после. bHealingWalkSaved — флаг у тела нашёлся. */
+	bool bWalkBeforeHealing = false;
+	bool bHealingWalkSaved = false;
+	TWeakObjectPtr<APlayerController> HealingController;
 
 	// --- Экран кейса ---
 

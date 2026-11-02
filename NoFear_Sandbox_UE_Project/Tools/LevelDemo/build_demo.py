@@ -415,6 +415,49 @@ box('Cell3_S2', f, 60.75, 273.5, 62, 274.5, 3, group=WALL)
 box('Cell3_CorrW', f, 58.25, 246, 59.25, 273.5, 3, group=WALL)
 box('Cell3_CorrE', f, 60.75, 246, 61.75, 273.5, 3, group=WALL)
 
+# ---------------------------------------------------------------- 6c. предметы на земле (Docs/Inventory_Design.md)
+# Герой стартует с пистолетом, 24 патронами и бинтом; остальное лежит по уровню. Пары «ствол и патроны к нему» лежат рядом,
+# у ящиков и укрытий: места открытые, вне Z6/Z7 и дворика к востоку от деревни.
+F = 'Z8_Items'
+loose = []
+
+
+def loose_item(name, x, y, count=0, yaw=0.0):
+    # Падает на пол при старте (physics): точка на 30 см выше, чтобы не врасти в плиту.
+    a = eas.spawn_actor_from_class(unreal.NoFearPickup, V(x, y, 0.3), R(yaw))
+    place(a, 'Item_%s_%d' % (name, len(loose) + 1), F)
+    a.set_item(EAL.load_asset('/Game/Items/DA_Item_%s.DA_Item_%s' % (name, name)), count, -1)
+    loose.append(a)
+    return a
+
+
+# Деревня: первые патроны и бинты на пути от старта, дробовик у восточного ящика.
+loose_item('PistolAmmo', 16.5, -2, 24)
+loose_item('Bandage', 18, 3.2, 2, 30)
+loose_item('Shotgun', 32.2, -3.4, 0, 100)
+loose_item('Shells', 32.2, -4.6, 8, 20)
+# Резерв: автомат с патронами у ящика, аптечка в палатке.
+loose_item('Rifle', 50, -14.8, 0, 90)
+loose_item('RifleAmmo', 49.9, -13.6, 30, 10)
+loose_item('Medkit', 56.6, -17, 0, 0)
+# Застава и рейдеры.
+loose_item('Grenade', 88.8, -6.8, 2)
+loose_item('Bandage', 133.5, 1.9, 2, 45)
+loose_item('RifleAmmo', 133.5, 0.7, 30, 80)
+# Руины и двор.
+loose_item('Medkit', 154, 102.5)
+loose_item('Grenade', 157.3, 102.5, 2)
+loose_item('CaseExpansion', 155, 110.5)
+loose_item('Shells', 147.4, 157.5, 12, 15)
+loose_item('Bandage', 143, 157.5, 2, 70)
+# Склад и арена.
+loose_item('PistolAmmo', 160.6, 223.7, 24)
+loose_item('Medkit', 156.8, 223.7)
+loose_item('Grenade', 60, 222.8, 2)
+loose_item('Bandage', 60, 226.4, 3, 12)
+for a in loose:
+    log('item %s %s at %s' % (a.get_actor_label(), a.get_editor_property('item').get_name(), a.get_actor_location()))
+
 # ---------------------------------------------------------------- 7. боты
 ROLE = unreal.NoFearSquadRole
 TEAM = unreal.NoFearTeam

@@ -72,6 +72,7 @@ void ANoFearHUD::DrawInventory()
 		return;
 	}
 	const float S = GetUIScale();
+	DrawHealing(Case);
 
 	// Сообщение «Подобрано: …» / «Нет места в кейсе» — над слотами оружия.
 	float Alpha = 0.f;
@@ -147,6 +148,29 @@ void ANoFearHUD::DrawInventory()
 		DrawLabel(Text, Left, LineY, FLinearColor(1.f, 1.f, 1.f, EntryId > 0 ? 0.9f : 0.45f), TextScale, ELabelAlign::Left);
 		LineY += 16.f * S;
 	}
+}
+
+void ANoFearHUD::DrawHealing(const UNoFearInventoryComponent* Case)
+{
+	const UNoFearItemData* Item = Case ? Case->GetHealingItem() : nullptr;
+	if (!Item || !Canvas)
+	{
+		return;
+	}
+
+	// Кольцо как у поднятия напарника: прошедшая доля лечения и сколько секунд осталось.
+	const float S = GetUIScale();
+	const FVector2D Center(Canvas->SizeX * 0.5f, Canvas->SizeY * 0.5f);
+	const float Radius = 30.f * S;
+	DrawRing(Center, Radius, 1.f, FLinearColor(0.f, 0.f, 0.f, 0.5f), 7.f * S);
+	DrawRing(Center, Radius, Case->GetHealingProgress(), HealthColor, 4.f * S);
+
+	const FString Text = FText::Format(NSLOCTEXT("NoFearHUDInventory", "Healing", "{0}: {1} с"), Item->DisplayName,
+		FText::AsNumber(FMath::CeilToInt(Case->GetHealingTimeRemaining()))).ToString();
+	float TextWidth = 0.f;
+	float TextHeight = 0.f;
+	GetTextSize(Text, TextWidth, TextHeight, GetFont(), 1.f * S);
+	DrawLabel(Text, Center.X, Center.Y - Radius - 12.f * S - TextHeight, HealthColor, 1.f * S, ELabelAlign::Center);
 }
 
 void ANoFearHUD::DrawCaseScreen()

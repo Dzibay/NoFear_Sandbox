@@ -1,5 +1,5 @@
 // Колесо предметов (Q): пока Q зажата, время замедлено, мышь выбирает один из восьми секторов колеса кейса,
-// отпущенная Q применяет его — ствол в руки, граната на G, медицина (этап 4), ловушка на пол. Мышь в центре — отмена.
+// отпущенная Q применяет его — ствол в руки, граната на G, медицина лечит (NoFearHealing.cpp), ловушка на пол. Мышь в центре — отмена.
 // Здесь же колёсико мыши, листающее стволы колеса, и выбор гранаты, которую бросает G.
 // Секторы колеса и сетка — в NoFearInventoryComponent.cpp, ввод Q — в NoFearInventoryScreen.cpp, рисует ANoFearHUD::DrawItemWheel.
 
@@ -35,6 +35,8 @@ bool UNoFearInventoryComponent::OpenItemWheel()
 		return false;
 	}
 
+	// Колесо обрывает лечение, предмет остаётся.
+	CancelHealing(true);
 	bItemWheelOpen = true;
 	WheelController = PC;
 	ItemWheelCursor = FVector2D::ZeroVector;
@@ -245,13 +247,6 @@ void UNoFearInventoryComponent::RefreshGrenadeChoice()
 	{
 		Grenades->SetGrenadeItem(Next);
 	}
-}
-
-bool UNoFearInventoryComponent::StartHealing(UNoFearItemData* Item)
-{
-	// Лечение со временем и прерыванием — этап 4. Пока предмет не тратится.
-	PushNotice(FText::Format(LOCTEXT("HealingStub", "{0}: лечение ещё не готово"), Item->DisplayName));
-	return false;
 }
 
 // ---------------------------------------------------------------------------

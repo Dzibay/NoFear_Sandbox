@@ -85,6 +85,24 @@ float ANoFearPlayerController::GetRespawnTimeRemaining() const
 	return FMath::Max(0.f, static_cast<float>(RespawnTime - World->GetTimeSeconds()));
 }
 
+bool ANoFearPlayerController::CanRestartAfterDeath() const
+{
+	const UWorld* World = GetWorld();
+	return bRestartLevelOnDeath && !bAutoRespawn && bWaitingForRespawn && World
+		&& World->GetTimeSeconds() - DiedTime >= RestartPromptDelay;
+}
+
+bool ANoFearPlayerController::RestartAfterDeath()
+{
+	if (!CanRestartAfterDeath())
+	{
+		return false;
+	}
+	// Уровень грузится с нуля: пешки, предметы и ящики такие же, как при первом запуске.
+	UGameplayStatics::OpenLevel(this, FName(*UGameplayStatics::GetCurrentLevelName(this, true)));
+	return true;
+}
+
 void ANoFearPlayerController::OnUnPossess()
 {
 	CloseOrderWheel(false);
@@ -138,7 +156,8 @@ void ANoFearPlayerController::NotifyPawnDied(const FNoFearDamageInfo& Info)
 	StopRevive();
 	StopCalming();
 	bWaitingForRespawn = true;
-	RespawnTime = GetWorld()->GetTimeSeconds() + RespawnDelay;
+	DiedTime = GetWorld()->GetTimeSeconds();
+	RespawnTime = DiedTime + RespawnDelay;
 	// Камера остаётся на теле, можно оглядеться; двигаться мёртвый не должен.
 	SetIgnoreMoveInput(true);
 
@@ -403,6 +422,11 @@ void ANoFearPlayerController::SetupInputComponent()
 		// Пробел остаётся и прыжком.
 		BreakFreeAction->bConsumeInput = false;
 	}
+	if (!RestartAction)
+	{
+		RestartAction = NewObject<UInputAction>(this, TEXT("IA_NoFearRestart"));
+		RestartAction->ValueType = EInputActionValueType::Boolean;
+	}
 	if (!CompanionInputContext)
 	{
 		CompanionInputContext = NewObject<UInputMappingContext>(this, TEXT("IMC_NoFearCompanion"));
@@ -414,6 +438,8 @@ void ANoFearPlayerController::SetupInputComponent()
 		CompanionInputContext->MapKey(BreathAction, EKeys::Gamepad_LeftThumbstick);
 		CompanionInputContext->MapKey(BreakFreeAction, EKeys::SpaceBar);
 		CompanionInputContext->MapKey(BreakFreeAction, EKeys::Gamepad_FaceButton_Bottom);
+		CompanionInputContext->MapKey(RestartAction, EKeys::Enter);
+		CompanionInputContext->MapKey(RestartAction, EKeys::Gamepad_Special_Right);
 	}
 
 	if (UEnhancedInputComponent* EnhancedInput = Cast<UEnhancedInputComponent>(InputComponent))
@@ -431,12 +457,18 @@ void ANoFearPlayerController::SetupInputComponent()
 		EnhancedInput->BindAction(BreathAction, ETriggerEvent::Completed, this, &ANoFearPlayerController::OnBreathReleased);
 		EnhancedInput->BindAction(BreathAction, ETriggerEvent::Canceled, this, &ANoFearPlayerController::OnBreathReleased);
 		EnhancedInput->BindAction(BreakFreeAction, ETriggerEvent::Started, this, &ANoFearPlayerController::OnBreakFreeInput);
+		EnhancedInput->BindAction(RestartAction, ETriggerEvent::Started, this, &ANoFearPlayerController::OnRestartInput);
 	}
 }
 
 void ANoFearPlayerController::OnBreakFreeInput()
 {
 	BreakFree();
+}
+
+void ANoFearPlayerController::OnRestartInput()
+{
+	RestartAfterDeath();
 }
 
 void ANoFearPlayerController::BreakFree()

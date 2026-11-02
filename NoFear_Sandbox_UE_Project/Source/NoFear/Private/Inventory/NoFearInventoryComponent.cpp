@@ -80,6 +80,7 @@ void UNoFearInventoryComponent::HandleControllerChanged()
 	{
 		CloseItemWheel(false);
 		CloseScreen();
+		CancelHealing(false);
 	}
 	TryActivate();
 }

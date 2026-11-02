@@ -1000,6 +1000,10 @@ void ANoFearHUD::DrawDeathScreen()
 		const FText Countdown = FText::Format(RespawnInText, FText::AsNumber(Seconds));
 		DrawLabel(Countdown.ToString(), CenterX, TitleY + TitleHeight + 16.f * S, FLinearColor(1.f, 1.f, 1.f, Alpha), 1.5f * S, ELabelAlign::Center);
 	}
+	else if (PlayerController && PlayerController->CanRestartAfterDeath())
+	{
+		DrawLabel(RestartText.ToString(), CenterX, TitleY + TitleHeight + 16.f * S, FLinearColor(1.f, 1.f, 1.f, Alpha), 1.5f * S, ELabelAlign::Center);
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -50,6 +50,8 @@ namespace
 		UInputAction* Interact = nullptr;
 		/** Q: колесо предметов, пока зажата. */
 		UInputAction* ItemWheel = nullptr;
+		/** Клавиши действий, пока идёт лечение: нажатие прерывает его. */
+		UInputAction* HealCancel = nullptr;
 		UInputAction* Slots[UNoFearInventoryComponent::WheelSlotCount] = {};
 		/** Заглушки: клавиши героя, которые на экране ничего не должны делать. */
 		UInputAction* Block = nullptr;
@@ -60,6 +62,8 @@ namespace
 		UInputMappingContext* ScreenMapping = nullptr;
 		/** Пока открыто колесо предметов: только заглушки, ходить можно. */
 		UInputMappingContext* WheelMapping = nullptr;
+		/** Пока идёт лечение: выстрел, прицел, перезарядка, граната и кобура прерывают его, колёсико не листает стволы. */
+		UInputMappingContext* HealMapping = nullptr;
 	};
 
 	UInputAction* MakeAction(const TCHAR* Name, EInputActionValueType Type)
@@ -94,6 +98,7 @@ namespace
 		Input.Back = MakeAction(TEXT("IA_NoFearCaseBack"), EInputActionValueType::Boolean);
 		Input.Interact = MakeAction(TEXT("IA_NoFearCaseInteract"), EInputActionValueType::Boolean);
 		Input.ItemWheel = MakeAction(TEXT("IA_NoFearItemWheel"), EInputActionValueType::Boolean);
+		Input.HealCancel = MakeAction(TEXT("IA_NoFearHealCancel"), EInputActionValueType::Boolean);
 		for (int32 Slot = 0; Slot < UNoFearInventoryComponent::WheelSlotCount; ++Slot)
 		{
 			Input.Slots[Slot] = MakeAction(*FString::Printf(TEXT("IA_NoFearCaseSlot%d"), Slot + 1), EInputActionValueType::Boolean);
@@ -141,6 +146,23 @@ namespace
 			Wheel->MapKey(Input.Block, Key);
 		}
 		Input.WheelMapping = Wheel;
+
+		// Лечение: клавиша действия не доходит до оружия (приоритет 100) и обрывает лечение. Ходить можно.
+		UInputMappingContext* Heal = MakeMapping(TEXT("IMC_NoFearHealing"));
+		const FKey HealCancelKeys[] = {
+			EKeys::LeftMouseButton, EKeys::RightMouseButton, EKeys::R, EKeys::G, EKeys::X,
+			EKeys::Gamepad_RightTrigger, EKeys::Gamepad_LeftTrigger,
+		};
+		for (const FKey& Key : HealCancelKeys)
+		{
+			Heal->MapKey(Input.HealCancel, Key);
+		}
+		const FKey HealBlocked[] = { EKeys::MouseWheelAxis, EKeys::MouseScrollUp, EKeys::MouseScrollDown };
+		for (const FKey& Key : HealBlocked)
+		{
+			Heal->MapKey(Input.Block, Key);
+		}
+		Input.HealMapping = Heal;
 		return Input;
 	}
 
@@ -373,6 +395,13 @@ void UNoFearInventoryComponent::SetupPlayerInput(UInputComponent* PlayerInputCom
 			Case->CloseItemWheel(false);
 		}
 	});
+	Input->BindActionInstanceLambda(Actions.HealCancel, ETriggerEvent::Started, [WeakThis](const FInputActionInstance&)
+	{
+		if (UNoFearInventoryComponent* Case = WeakThis.Get())
+		{
+			Case->CancelHealing(true);
+		}
+	});
 	for (int32 Slot = 0; Slot < WheelSlotCount; ++Slot)
 	{
 		Input->BindActionInstanceLambda(Actions.Slots[Slot], ETriggerEvent::Started, [WeakThis, Slot](const FInputActionInstance&)
@@ -412,6 +441,10 @@ void UNoFearInventoryComponent::EnsureCaseInput(APlayerController* PC) const
 	{
 		Input->AddMappingContext(Actions.WheelMapping, ScreenMappingPriority);
 	}
+	if (HealingItem && !Input->HasMappingContext(Actions.HealMapping))
+	{
+		Input->AddMappingContext(Actions.HealMapping, ScreenMappingPriority);
+	}
 }
 
 void UNoFearInventoryComponent::RemoveItemWheelInput(APlayerController* PC) const
@@ -419,6 +452,14 @@ void UNoFearInventoryComponent::RemoveItemWheelInput(APlayerController* PC) cons
 	if (UEnhancedInputLocalPlayerSubsystem* Input = GetInputSubsystem(PC))
 	{
 		Input->RemoveMappingContext(GetCaseInput().WheelMapping);
+	}
+}
+
+void UNoFearInventoryComponent::RemoveHealingInput(APlayerController* PC) const
+{
+	if (UEnhancedInputLocalPlayerSubsystem* Input = GetInputSubsystem(PC))
+	{
+		Input->RemoveMappingContext(GetCaseInput().HealMapping);
 	}
 }
 
@@ -438,6 +479,8 @@ bool UNoFearInventoryComponent::OpenScreen()
 		return false;
 	}
 
+	// Экран обрывает лечение, предмет остаётся.
+	CancelHealing(true);
 	bScreenOpen = true;
 	ScreenController = PC;
 	TimeDilationBeforeScreen = UGameplayStatics::GetGlobalTimeDilation(this);
@@ -590,6 +633,7 @@ void UNoFearInventoryComponent::EndPlay(const EEndPlayReason::Type EndPlayReason
 {
 	CloseItemWheel(false);
 	CloseScreen();
+	CancelHealing(false);
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -601,6 +645,10 @@ void UNoFearInventoryComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 	if (bItemWheelOpen)
 	{
 		UpdateItemWheel(PC);
+	}
+	if (HealingItem)
+	{
+		UpdateHealing(PC);
 	}
 	if (bScreenOpen)
 	{
@@ -1314,6 +1362,10 @@ void UNoFearInventoryComponent::OpenMenu(UNoFearItemContainerComponent* Storage,
 		{
 			MenuActions.Add(ENoFearCaseAction::Equip);
 		}
+		if (Entry.Item && Entry.Item->Kind == ENoFearItemKind::Medicine)
+		{
+			MenuActions.Add(ENoFearCaseAction::Use);
+		}
 		if (GetOpenContainer())
 		{
 			MenuActions.Add(ENoFearCaseAction::Store);
@@ -1399,6 +1451,16 @@ void UNoFearInventoryComponent::RunMenuAction(ENoFearCaseAction Action)
 		}
 		break;
 
+	case ENoFearCaseAction::Use:
+		if (bOwn && Entry.Item && Entry.Item->Kind == ENoFearItemKind::Medicine)
+		{
+			// Лечение идёт при закрытом экране: он замедляет время и забирает мышь.
+			UNoFearItemData* Medicine = Entry.Item;
+			CloseScreen();
+			StartHealing(Medicine);
+		}
+		break;
+
 	case ENoFearCaseAction::AssignWheel:
 		if (const int32 Free = WheelSlots.IndexOfByKey(0); bOwn && Free != INDEX_NONE)
 		{
@@ -1473,6 +1535,7 @@ FText UNoFearInventoryComponent::GetCaseActionName(ENoFearCaseAction Action)
 	switch (Action)
 	{
 	case ENoFearCaseAction::Equip: return LOCTEXT("ActionEquip", "Взять в руки");
+	case ENoFearCaseAction::Use: return LOCTEXT("ActionUse", "Использовать");
 	case ENoFearCaseAction::AssignWheel: return LOCTEXT("ActionAssign", "В колесо");
 	case ENoFearCaseAction::ClearWheel: return LOCTEXT("ActionClear", "Убрать из колеса");
 	case ENoFearCaseAction::Split: return LOCTEXT("ActionSplit", "Разделить");

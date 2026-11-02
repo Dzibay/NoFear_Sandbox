@@ -81,7 +81,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FNoFearRevivedSignature, UNoFearHea
  * - Урон по зонам тела: голова и «слабые» кости умножают урон (кости ищутся вверх по скелету, поэтому
  *   множитель `upperarm_l` действует и на предплечье, и на кисть).
  * - Огонь по своим выключен (команды — UNoFearTeamLibrary), пока не включён bAllowFriendlyFire.
- * - Восстановление здоровья со временем (по умолчанию только у игрока).
+ * - Восстановление здоровья со временем: RegenRate здоровья в секунду (по умолчанию 0 — нет; героя лечат бинт и аптечка кейса).
  * - Смерть: событие OnDeath. Реакцию (рэгдолл, ИИ, респаун) делают ANoFearCharacter и подписчики.
  * - Ранение (bCanBeDowned): смертельный удар не убивает, а роняет. Упавший истекает кровью DownedDuration секунд,
  *   его можно поднять (Revive) — встаёт с ReviveHealthFraction здоровья. Включают игроку и напарнику.
@@ -118,9 +118,9 @@ public:
 
 	// --- Восстановление ---
 
-	/** Здоровья в секунду. 0 — не восстанавливается. */
+	/** Здоровья в секунду. 0 (умолчание) — не восстанавливается: героя лечат бинт и аптечка кейса, а бот или монстр сам не отлёживается. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Health|Regeneration", meta = (ClampMin = "0"))
-	float RegenRate = 5.f;
+	float RegenRate = 0.f;
 
 	/** Сколько секунд без урона до начала восстановления. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Health|Regeneration", meta = (ClampMin = "0"))
