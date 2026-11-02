@@ -28,6 +28,8 @@
 #include "Weapons/NoFearGrenadeComponent.h"
 #include "Weapons/NoFearGrenadeData.h"
 #include "Weapons/NoFearWeaponComponent.h"
+#include "World/NoFearHideSpot.h"
+#include "World/NoFearLightSubsystem.h"
 
 namespace
 {
@@ -534,7 +536,14 @@ float ANoFearAIController::ComputeDetectionRate(const AActor* Target, const FNoF
 		Rate *= SuspiciousRateMultiplier;
 	}
 
-	return Rate * ComputeExposure(Target) * DetectionSpeedMultiplier;
+	// В темноте замечают медленнее; монстры видят лучше людей (корень из коэффициента).
+	float Darkness = UNoFearLightSubsystem::GetDetectionFactor(GetWorld(), Target->GetActorLocation());
+	if (Cast<ANoFearMonsterAIController>(this))
+	{
+		Darkness = FMath::Sqrt(Darkness);
+	}
+
+	return Rate * Darkness * ComputeExposure(Target) * DetectionSpeedMultiplier;
 }
 
 float ANoFearAIController::ComputeExposure(const AActor* Target) const
@@ -901,8 +910,31 @@ void ANoFearAIController::BeginSearch(const FVector& Origin, const FVector& Velo
 	SearchLingerUntil = 0.0;
 	SearchPoints.Reset();
 
+	SearchSpots.Reset();
+	ActiveSearchSpot.Reset();
+
 	SetInvestigateLocation(Origin);
 	GenerateSearchPoints(Origin, Velocity, NumPoints);
+
+	if (bSearchHideSpots && MaxHideSpotsSearched > 0)
+	{
+		// Со свежим шумом — всегда, остальные — с шансом; не больше MaxHideSpotsSearched, шумные первыми.
+		TArray<ANoFearHideSpot*> Spots;
+		ANoFearHideSpot::FindSpotsNear(GetWorld(), Origin, HideSpotSearchRadius, Spots);
+		TArray<ANoFearHideSpot*> Chosen;
+		for (ANoFearHideSpot* Spot : Spots)
+		{
+			if (Spot && (Spot->WasHeardRecently() || FMath::FRand() < HideSpotSearchChance))
+			{
+				Chosen.Add(Spot);
+			}
+		}
+		Chosen.StableSort([](const ANoFearHideSpot& A, const ANoFearHideSpot& B) { return A.WasHeardRecently() && !B.WasHeardRecently(); });
+		for (int32 Index = 0; Index < Chosen.Num() && Index < MaxHideSpotsSearched; ++Index)
+		{
+			SearchSpots.Add(Chosen[Index]);
+		}
+	}
 }
 
 void ANoFearAIController::EndSearch()
@@ -910,6 +942,8 @@ void ANoFearAIController::EndSearch()
 	bSearching = false;
 	SearchLingerUntil = 0.0;
 	SearchPoints.Reset();
+	SearchSpots.Reset();
+	ActiveSearchSpot.Reset();
 }
 
 void ANoFearAIController::PumpSearch()
@@ -930,6 +964,28 @@ void ANoFearAIController::PumpSearch()
 	if (BlackboardComp->IsVectorValueSet(FNoFearBotKeys::InvestigateLocation))
 	{
 		return;
+	}
+	// Дошёл до шкафа — обыскивает (дверца распахивается, сидящего выбрасывает наружу); затем следующий шкаф.
+	if (ANoFearHideSpot* Spot = ActiveSearchSpot.Get())
+	{
+		ActiveSearchSpot.Reset();
+		if (GetPawn() && FVector::Dist2D(GetPawn()->GetActorLocation(), Spot->GetSearchLocation()) <= 250.f && Spot->SearchBy(GetPawn()))
+		{
+			++HideSpotsSearched;
+			SearchLingerUntil = 0.0;
+		}
+	}
+	while (SearchSpots.Num() > 0)
+	{
+		ANoFearHideSpot* Next = SearchSpots[0].Get();
+		SearchSpots.RemoveAt(0);
+		if (Next)
+		{
+			ActiveSearchSpot = Next;
+			SetInvestigateLocation(Next->GetSearchLocation());
+			SearchLingerUntil = 0.0;
+			return;
+		}
 	}
 	if (SearchPoints.Num() > 0)
 	{

@@ -20,10 +20,13 @@
 #include "Weapons/NoFearWeapon.h"
 #include "Weapons/NoFearWeaponComponent.h"
 #include "Weapons/NoFearWeaponData.h"
+#include "World/NoFearBarricade.h"
 
 ANoFearShooterAIController::ANoFearShooterAIController(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+	// Заколоченные проёмы для людей закрыты; монстры идут сквозь доски и бьют их.
+	DefaultNavigationFilterClass = UNoFearHumanNavFilter::StaticClass();
 	LeashRadius = 1500.f;
 
 	// Стрелки зовут своих в бою и замечают тела погибших своих.

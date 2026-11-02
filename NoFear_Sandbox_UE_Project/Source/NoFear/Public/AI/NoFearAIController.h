@@ -10,6 +10,7 @@
 class ANoFearAIController;
 class ANoFearCharacter;
 class ANoFearGrenade;
+class ANoFearHideSpot;
 class UAISenseConfig_Hearing;
 class UAISenseConfig_Sight;
 class UBehaviorTree;
@@ -341,6 +342,26 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Targeting")
 	bool bInvestigateLostTarget = true;
 
+	/** Поиск потерянной цели включает шкафы-укрытия поблизости (ANoFearHideSpot::SearchBy). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Targeting")
+	bool bSearchHideSpots = false;
+
+	/** Шкафы ищутся не дальше этого от места, где пропала цель, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Targeting", meta = (EditCondition = "bSearchHideSpots", ClampMin = "0"))
+	float HideSpotSearchRadius = 600.f;
+
+	/** Больше стольких шкафов за один поиск не обыскивает. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Targeting", meta = (EditCondition = "bSearchHideSpots", ClampMin = "0"))
+	int32 MaxHideSpotsSearched = 2;
+
+	/** Шанс обыскать шкаф без свежего шума; со свежим шумом (WasHeardRecently) обыскивает всегда. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Targeting", meta = (EditCondition = "bSearchHideSpots", ClampMin = "0", ClampMax = "1"))
+	float HideSpotSearchChance = 0.4f;
+
+	/** Сколько шкафов обыскал за всё время (отладка и тесты). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	int32 GetHideSpotsSearched() const { return HideSpotsSearched; }
+
 	/** Без цели услышал выстрел врага — пойти проверить. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI|Targeting")
 	bool bInvestigateNoises = true;
@@ -570,6 +591,7 @@ protected:
 	void NoteSuspicion(const FVector& Location, bool bInvestigate);
 
 	/** Потерял цель: проверить место, где она пропала, и NumPoints точек рядом (по направлению её движения и за укрытиями). */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|AI")
 	void BeginSearch(const FVector& Origin, const FVector& Velocity, int32 NumPoints);
 	void EndSearch();
 	void PumpSearch();
@@ -650,6 +672,11 @@ private:
 	/** Когда закончить стоять на месте после последней точки (0 — таймер не запущен). */
 	double SearchLingerUntil = 0.0;
 	TArray<FVector> SearchPoints;
+
+	/** Шкафы, которые ещё предстоит обыскать в этом поиске, и тот, к которому идёт сейчас. */
+	TArray<TWeakObjectPtr<ANoFearHideSpot>> SearchSpots;
+	TWeakObjectPtr<ANoFearHideSpot> ActiveSearchSpot;
+	int32 HideSpotsSearched = 0;
 
 	double NextCorpseScanTime = 0.0;
 	double NextAlarmTime = 0.0;

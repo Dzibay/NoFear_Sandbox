@@ -55,6 +55,8 @@ ANoFearMonsterAIController::ANoFearMonsterAIController(const FObjectInitializer&
 	// Бежит к цели лицом по ходу; прицела и стрейфа у монстра нет.
 	bStrafeInCombat = false;
 	bWalkWhenCalm = true;
+	// Потеряв цель, заглядывает и в шкафы рядом.
+	bSearchHideSpots = true;
 	LeashRadius = 0.f;
 	// Дома нет: цель, о которой знает стая, гонит далеко и помнит долго.
 	MaxTargetDistance = 8000.f;

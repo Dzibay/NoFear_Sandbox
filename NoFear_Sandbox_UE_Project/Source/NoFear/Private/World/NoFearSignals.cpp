@@ -18,7 +18,7 @@
 
 namespace
 {
-	UNoFearLightSubsystem* GetLightSubsystem(const UObject* Context)
+	UNoFearLightSubsystem* GetSignalsLightSubsystem(const UObject* Context)
 	{
 		const UWorld* World = Context ? Context->GetWorld() : nullptr;
 		return World ? World->GetSubsystem<UNoFearLightSubsystem>() : nullptr;
@@ -244,7 +244,7 @@ void ANoFearSiren::BeginPlay()
 	Super::BeginPlay();
 	PlaceParts();
 	Audio->SetSound(WailSound);
-	if (UNoFearLightSubsystem* Subsystem = GetLightSubsystem(this))
+	if (UNoFearLightSubsystem* Subsystem = GetSignalsLightSubsystem(this))
 	{
 		CircuitHandle = Subsystem->OnCircuitChanged.AddUObject(this, &ANoFearSiren::HandleCircuitChanged);
 	}
@@ -252,7 +252,7 @@ void ANoFearSiren::BeginPlay()
 
 void ANoFearSiren::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	if (UNoFearLightSubsystem* Subsystem = GetLightSubsystem(this))
+	if (UNoFearLightSubsystem* Subsystem = GetSignalsLightSubsystem(this))
 	{
 		Subsystem->OnCircuitChanged.Remove(CircuitHandle);
 	}
@@ -261,7 +261,7 @@ void ANoFearSiren::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 bool ANoFearSiren::IsPowered() const
 {
-	const UNoFearLightSubsystem* Subsystem = GetLightSubsystem(this);
+	const UNoFearLightSubsystem* Subsystem = GetSignalsLightSubsystem(this);
 	return Subsystem ? Subsystem->IsCircuitPowered(Circuit) : Circuit.IsNone();
 }
 

@@ -6,6 +6,7 @@
 #include "Core/NoFearTeam.h"
 #include "Engine/World.h"
 #include "GameFramework/Controller.h"
+#include "World/NoFearLightSubsystem.h"
 
 namespace
 {
@@ -108,10 +109,15 @@ float UNoFearFearComponent::AddFear(float Amount, float Cap, FVector InSourceLoc
 	{
 		return 0.f;
 	}
-	const float Scale = GetGainScale();
+	float Scale = GetGainScale();
 	if (Scale <= 0.f)
 	{
 		return 0.f;
+	}
+	// В темноте страх растёт быстрее.
+	if (const AActor* Body = Cast<AController>(GetOwner()) ? Cast<AController>(GetOwner())->GetPawn() : GetOwner())
+	{
+		Scale *= UNoFearLightSubsystem::GetDarknessFearFactor(this, Body->GetActorLocation());
 	}
 
 	// Испуг держит страх: пока он повторяется, спад не начинается, даже если страх уже выше потолка события.

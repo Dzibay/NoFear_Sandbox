@@ -2,6 +2,7 @@
 #include "Core/NoFearPerf.h"
 
 #include "AI/NoFearCalmComponent.h"
+#include "World/NoFearBarricade.h"
 #include "AI/NoFearFleeLibrary.h"
 #include "Animation/NoFearPoseComponent.h"
 #include "BehaviorTree/BehaviorTree.h"
@@ -32,6 +33,8 @@ namespace
 ANoFearCivilianAIController::ANoFearCivilianAIController(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+	// Заколоченные проёмы для людей закрыты; монстры идут сквозь доски и бьют их.
+	DefaultNavigationFilterClass = UNoFearHumanNavFilter::StaticClass();
 	bCanAttack = false;
 	bInvestigateLostTarget = false;
 	bInvestigateNoises = false;
