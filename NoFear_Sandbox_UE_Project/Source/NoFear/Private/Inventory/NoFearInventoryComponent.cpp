@@ -13,12 +13,6 @@
 
 #define LOCTEXT_NAMESPACE "NoFearInventory"
 
-FIntPoint FNoFearInventoryEntry::GetSize() const
-{
-	const FIntPoint Size = Item ? Item->GetGridSize() : FIntPoint(1, 1);
-	return bRotated ? FIntPoint(Size.Y, Size.X) : Size;
-}
-
 namespace
 {
 	FNoFearItemStack MakeStack(const TCHAR* Path, int32 Count)
@@ -41,6 +35,7 @@ UNoFearInventoryComponent::UNoFearInventoryComponent()
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.bStartWithTickEnabled = false;
 
+	DisplayName = LOCTEXT("CaseName", "Кейс");
 	GridSizes = { FIntPoint(8, 5), FIntPoint(9, 6), FIntPoint(10, 7) };
 	StartingItems = {
 		MakeStack(TEXT("/Game/Items/DA_Item_Pistol.DA_Item_Pistol"), 1),
@@ -119,27 +114,6 @@ void UNoFearInventoryComponent::TryActivate()
 	}
 }
 
-void UNoFearInventoryComponent::GrantStartingItems()
-{
-	for (const FNoFearItemStack& Stack : StartingItems)
-	{
-		UNoFearItemData* Item = Stack.Item.LoadSynchronous();
-		if (!Item)
-		{
-			if (!Stack.Item.IsNull())
-			{
-				UE_LOG(LogTemp, Warning, TEXT("NoFearInventory: стартовый предмет %s не найден"), *Stack.Item.ToString());
-			}
-			continue;
-		}
-		const int32 Added = AddItem(Item, Stack.Count);
-		if (Added < Stack.Count)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("NoFearInventory: стартовый предмет %s не влез в кейс (%d из %d)"), *Item->GetName(), Added, Stack.Count);
-		}
-	}
-}
-
 UNoFearWeaponComponent* UNoFearInventoryComponent::GetWeaponComponent() const
 {
 	return GetOwner() ? GetOwner()->FindComponentByClass<UNoFearWeaponComponent>() : nullptr;
@@ -170,140 +144,15 @@ bool UNoFearInventoryComponent::AddExpansion()
 	return true;
 }
 
-void UNoFearInventoryComponent::BuildOccupancy(TArray<int32>& OutGrid, int32 IgnoreId) const
+bool UNoFearInventoryComponent::CanHoldItem(const UNoFearItemData* Item) const
 {
-	const FIntPoint GridSize = GetGridSize();
-	OutGrid.Init(0, GridSize.X * GridSize.Y);
-	for (const FNoFearInventoryEntry& Entry : Entries)
-	{
-		if (Entry.Id != IgnoreId)
-		{
-			MarkArea(OutGrid, Entry.Cell, Entry.GetSize(), Entry.Id);
-		}
-	}
-}
-
-void UNoFearInventoryComponent::MarkArea(TArray<int32>& Grid, FIntPoint Cell, FIntPoint Size, int32 Id) const
-{
-	const FIntPoint GridSize = GetGridSize();
-	for (int32 Y = FMath::Max(Cell.Y, 0); Y < FMath::Min(Cell.Y + Size.Y, GridSize.Y); ++Y)
-	{
-		for (int32 X = FMath::Max(Cell.X, 0); X < FMath::Min(Cell.X + Size.X, GridSize.X); ++X)
-		{
-			Grid[Y * GridSize.X + X] = Id;
-		}
-	}
-}
-
-bool UNoFearInventoryComponent::IsAreaFree(const TArray<int32>& Grid, FIntPoint Cell, FIntPoint Size) const
-{
-	const FIntPoint GridSize = GetGridSize();
-	if (Cell.X < 0 || Cell.Y < 0 || Cell.X + Size.X > GridSize.X || Cell.Y + Size.Y > GridSize.Y)
-	{
-		return false;
-	}
-	for (int32 Y = Cell.Y; Y < Cell.Y + Size.Y; ++Y)
-	{
-		for (int32 X = Cell.X; X < Cell.X + Size.X; ++X)
-		{
-			if (Grid[Y * GridSize.X + X] != 0)
-			{
-				return false;
-			}
-		}
-	}
-	return true;
-}
-
-bool UNoFearInventoryComponent::FindFreeCell(const TArray<int32>& Grid, FIntPoint ItemSize, FIntPoint& OutCell, bool& bOutRotated) const
-{
-	const FIntPoint GridSize = GetGridSize();
-	// Сначала как есть, потом повёрнутым: сверху вниз, слева направо.
-	for (int32 Pass = 0; Pass < 2; ++Pass)
-	{
-		const bool bRotated = Pass == 1;
-		if (bRotated && ItemSize.X == ItemSize.Y)
-		{
-			break;
-		}
-		const FIntPoint Size = bRotated ? FIntPoint(ItemSize.Y, ItemSize.X) : ItemSize;
-		for (int32 Y = 0; Y + Size.Y <= GridSize.Y; ++Y)
-		{
-			for (int32 X = 0; X + Size.X <= GridSize.X; ++X)
-			{
-				if (IsAreaFree(Grid, FIntPoint(X, Y), Size))
-				{
-					OutCell = FIntPoint(X, Y);
-					bOutRotated = bRotated;
-					return true;
-				}
-			}
-		}
-	}
-	return false;
-}
-
-bool UNoFearInventoryComponent::CanPlaceAt(const UNoFearItemData* Item, FIntPoint Cell, bool bRotated, int32 IgnoreId) const
-{
-	if (!Item || Item->Kind == ENoFearItemKind::CaseExpansion)
-	{
-		return false;
-	}
-	TArray<int32> Grid;
-	BuildOccupancy(Grid, IgnoreId);
-	const FIntPoint Size = Item->GetGridSize();
-	return IsAreaFree(Grid, Cell, bRotated ? FIntPoint(Size.Y, Size.X) : Size);
+	// Расширение не лежит в клетках кейса — оно его увеличивает (AddInternal).
+	return Super::CanHoldItem(Item) && Item->Kind != ENoFearItemKind::CaseExpansion;
 }
 
 // ---------------------------------------------------------------------------
 // Что лежит
 // ---------------------------------------------------------------------------
-
-int32 UNoFearInventoryComponent::FindEntryIndex(int32 Id) const
-{
-	if (Id == 0)
-	{
-		return INDEX_NONE;
-	}
-	return Entries.IndexOfByPredicate([Id](const FNoFearInventoryEntry& Entry) { return Entry.Id == Id; });
-}
-
-bool UNoFearInventoryComponent::GetEntry(int32 Id, FNoFearInventoryEntry& OutEntry) const
-{
-	const int32 Index = FindEntryIndex(Id);
-	if (Index == INDEX_NONE)
-	{
-		return false;
-	}
-	OutEntry = Entries[Index];
-	return true;
-}
-
-int32 UNoFearInventoryComponent::GetEntryAt(FIntPoint Cell) const
-{
-	for (const FNoFearInventoryEntry& Entry : Entries)
-	{
-		const FIntPoint Size = Entry.GetSize();
-		if (Cell.X >= Entry.Cell.X && Cell.X < Entry.Cell.X + Size.X && Cell.Y >= Entry.Cell.Y && Cell.Y < Entry.Cell.Y + Size.Y)
-		{
-			return Entry.Id;
-		}
-	}
-	return 0;
-}
-
-int32 UNoFearInventoryComponent::CountItem(const UNoFearItemData* Item) const
-{
-	int32 Total = 0;
-	for (const FNoFearInventoryEntry& Entry : Entries)
-	{
-		if (Item && Entry.Item == Item)
-		{
-			Total += Entry.Count;
-		}
-	}
-	return Total;
-}
 
 int32 UNoFearInventoryComponent::FindEntryForWeapon(const ANoFearWeapon* Weapon) const
 {
@@ -317,83 +166,22 @@ int32 UNoFearInventoryComponent::FindEntryForWeapon(const ANoFearWeapon* Weapon)
 	return 0;
 }
 
-int32 UNoFearInventoryComponent::GetRoomFor(UNoFearItemData* Item, int32 Count) const
-{
-	// Без bApply AddInternal ничего не меняет, только считает.
-	return const_cast<UNoFearInventoryComponent*>(this)->AddInternal(Item, Count, -1, false);
-}
-
 // ---------------------------------------------------------------------------
 // Изменения
 // ---------------------------------------------------------------------------
 
-int32 UNoFearInventoryComponent::AddItem(UNoFearItemData* Item, int32 Count, int32 MagazineAmmo)
-{
-	return AddInternal(Item, Count, MagazineAmmo, true);
-}
-
 int32 UNoFearInventoryComponent::AddInternal(UNoFearItemData* Item, int32 Count, int32 MagazineAmmo, bool bApply)
 {
-	if (!bCaseActive || !Item || Count <= 0)
+	if (bCaseActive && Item && Count > 0 && Item->Kind == ENoFearItemKind::CaseExpansion)
 	{
-		return 0;
-	}
-
-	if (Item->Kind == ENoFearItemKind::CaseExpansion)
-	{
-		const int32 Steps = FMath::Min(Count, GetMaxExpansionLevel() - ExpansionLevel);
+		const int32 Steps = FMath::Max(FMath::Min(Count, GetMaxExpansionLevel() - ExpansionLevel), 0);
 		for (int32 Step = 0; bApply && Step < Steps; ++Step)
 		{
 			AddExpansion();
 		}
-		return FMath::Max(Steps, 0);
+		return Steps;
 	}
-
-	const int32 MaxStack = Item->GetMaxStack();
-	int32 Left = Count;
-
-	// Сначала доливаем неполные стопки.
-	for (FNoFearInventoryEntry& Entry : Entries)
-	{
-		if (Left <= 0)
-		{
-			break;
-		}
-		if (Entry.Item == Item && Entry.Count < MaxStack)
-		{
-			const int32 Added = FMath::Min(Left, MaxStack - Entry.Count);
-			if (bApply)
-			{
-				Entry.Count += Added;
-			}
-			Left -= Added;
-		}
-	}
-
-	// Остаток — новыми стопками на свободные клетки.
-	TArray<int32> Grid;
-	BuildOccupancy(Grid);
-	while (Left > 0)
-	{
-		FIntPoint Cell;
-		bool bRotated = false;
-		if (!FindFreeCell(Grid, Item->GetGridSize(), Cell, bRotated))
-		{
-			break;
-		}
-		const int32 Added = FMath::Min(Left, MaxStack);
-		const int32 Id = bApply ? CreateEntry(Item, Added, Cell, bRotated, MagazineAmmo, bAutoAssignWheel) : INDEX_NONE;
-		const FIntPoint Size = Item->GetGridSize();
-		MarkArea(Grid, Cell, bRotated ? FIntPoint(Size.Y, Size.X) : Size, Id);
-		Left -= Added;
-	}
-
-	const int32 Total = Count - Left;
-	if (bApply && Total > 0)
-	{
-		NotifyChanged();
-	}
-	return Total;
+	return Super::AddInternal(Item, Count, MagazineAmmo, bApply);
 }
 
 int32 UNoFearInventoryComponent::AddItemOrDrop(UNoFearItemData* Item, int32 Count, int32 MagazineAmmo)
@@ -411,35 +199,19 @@ int32 UNoFearInventoryComponent::AddItemOrDrop(UNoFearItemData* Item, int32 Coun
 	return Added;
 }
 
-int32 UNoFearInventoryComponent::PlaceItemAt(UNoFearItemData* Item, int32 Count, FIntPoint Cell, bool bRotated, int32 MagazineAmmo)
+void UNoFearInventoryComponent::HandleEntryAdded(int32 Index, bool bIncoming)
 {
-	if (!bCaseActive || !Item || Count <= 0 || !CanPlaceAt(Item, Cell, bRotated))
-	{
-		return 0;
-	}
-	const int32 Id = CreateEntry(Item, FMath::Min(Count, Item->GetMaxStack()), Cell, bRotated, MagazineAmmo, bAutoAssignWheel);
-	NotifyChanged();
-	return Id;
-}
-
-int32 UNoFearInventoryComponent::CreateEntry(UNoFearItemData* Item, int32 Count, FIntPoint Cell, bool bRotated, int32 MagazineAmmo, bool bAssignWheel)
-{
-	FNoFearInventoryEntry Entry;
-	Entry.Id = NextId++;
-	Entry.Item = Item;
-	Entry.Count = Count;
-	Entry.Cell = Cell;
-	Entry.bRotated = bRotated;
-
+	UNoFearItemData* Item = Entries[Index].Item;
 	if (Item->Kind == ENoFearItemKind::Weapon)
 	{
 		UNoFearWeaponComponent* Weapons = GetWeaponComponent();
 		if (Weapons && Item->WeaponData)
 		{
-			Entry.Weapon = Weapons->AddWeaponInstance(Item->WeaponData, MagazineAmmo);
-			if (Entry.Weapon)
+			ANoFearWeapon* Weapon = Weapons->AddWeaponInstance(Item->WeaponData, Entries[Index].MagazineAmmo);
+			Entries[Index].Weapon = Weapon;
+			if (Weapon)
 			{
-				Entry.Weapon->SetAmmoSource(this, Item->AmmoItem);
+				Weapon->SetAmmoSource(this, Item->AmmoItem);
 			}
 		}
 		else
@@ -447,13 +219,10 @@ int32 UNoFearInventoryComponent::CreateEntry(UNoFearItemData* Item, int32 Count,
 			UE_LOG(LogTemp, Warning, TEXT("NoFearInventory: у %s нет WeaponData — ствол в руки не возьмётся"), *Item->GetName());
 		}
 	}
-
-	Entries.Add(Entry);
-	if (bAssignWheel)
+	if (bIncoming && bAutoAssignWheel)
 	{
-		AutoAssignWheel(Entry);
+		AutoAssignWheel(Entries[Index]);
 	}
-	return Entry.Id;
 }
 
 void UNoFearInventoryComponent::AutoAssignWheel(const FNoFearInventoryEntry& Entry)
@@ -484,15 +253,8 @@ void UNoFearInventoryComponent::AutoAssignWheel(const FNoFearInventoryEntry& Ent
 	}
 }
 
-void UNoFearInventoryComponent::ReleaseEntryAt(int32 Index)
+void UNoFearInventoryComponent::HandleEntryRemoved(const FNoFearInventoryEntry& Entry)
 {
-	if (!Entries.IsValidIndex(Index))
-	{
-		return;
-	}
-	const FNoFearInventoryEntry Entry = Entries[Index];
-	Entries.RemoveAt(Index);
-
 	for (int32& SlotId : WheelSlots)
 	{
 		if (SlotId != Entry.Id)
@@ -524,97 +286,6 @@ void UNoFearInventoryComponent::ReleaseEntryAt(int32 Index)
 	}
 }
 
-bool UNoFearInventoryComponent::MoveEntry(int32 Id, FIntPoint Cell, bool bRotated)
-{
-	const int32 Index = FindEntryIndex(Id);
-	if (Index == INDEX_NONE || !CanPlaceAt(Entries[Index].Item, Cell, bRotated, Id))
-	{
-		return false;
-	}
-	Entries[Index].Cell = Cell;
-	Entries[Index].bRotated = bRotated;
-	NotifyChanged();
-	return true;
-}
-
-int32 UNoFearInventoryComponent::SplitStack(int32 Id, int32 Count)
-{
-	const int32 Index = FindEntryIndex(Id);
-	if (Index == INDEX_NONE || Count <= 0 || Count >= Entries[Index].Count)
-	{
-		return 0;
-	}
-	UNoFearItemData* Item = Entries[Index].Item;
-	TArray<int32> Grid;
-	BuildOccupancy(Grid);
-	FIntPoint Cell;
-	bool bRotated = false;
-	if (!FindFreeCell(Grid, Item->GetGridSize(), Cell, bRotated))
-	{
-		return 0;
-	}
-	Entries[Index].Count -= Count;
-	const int32 NewId = CreateEntry(Item, Count, Cell, bRotated, -1, false);
-	NotifyChanged();
-	return NewId;
-}
-
-bool UNoFearInventoryComponent::RemoveEntry(int32 Id)
-{
-	const int32 Index = FindEntryIndex(Id);
-	if (Index == INDEX_NONE)
-	{
-		return false;
-	}
-	ReleaseEntryAt(Index);
-	NotifyChanged();
-	return true;
-}
-
-int32 UNoFearInventoryComponent::RemoveItem(const UNoFearItemData* Item, int32 Count)
-{
-	if (!Item || Count <= 0)
-	{
-		return 0;
-	}
-
-	// Сначала из самых маленьких стопок: неполные пачки уходят первыми и освобождают клетки.
-	TArray<int32> Ids;
-	for (const FNoFearInventoryEntry& Entry : Entries)
-	{
-		if (Entry.Item == Item)
-		{
-			Ids.Add(Entry.Id);
-		}
-	}
-	Ids.Sort([this](int32 A, int32 B) { return Entries[FindEntryIndex(A)].Count < Entries[FindEntryIndex(B)].Count; });
-
-	int32 Left = Count;
-	for (const int32 Id : Ids)
-	{
-		if (Left <= 0)
-		{
-			break;
-		}
-		const int32 Index = FindEntryIndex(Id);
-		FNoFearInventoryEntry& Entry = Entries[Index];
-		const int32 Taken = FMath::Min(Left, Entry.Count);
-		Entry.Count -= Taken;
-		Left -= Taken;
-		if (Entry.Count <= 0)
-		{
-			ReleaseEntryAt(Index);
-		}
-	}
-
-	const int32 Removed = Count - Left;
-	if (Removed > 0)
-	{
-		NotifyChanged();
-	}
-	return Removed;
-}
-
 ANoFearPickup* UNoFearInventoryComponent::DropEntry(int32 Id, int32 Count)
 {
 	const int32 Index = FindEntryIndex(Id);
@@ -627,7 +298,7 @@ ANoFearPickup* UNoFearInventoryComponent::DropEntry(int32 Id, int32 Count)
 	FNoFearInventoryEntry& Entry = Entries[Index];
 	UNoFearItemData* Item = Entry.Item;
 	const int32 DropCount = Count <= 0 ? Entry.Count : FMath::Min(Count, Entry.Count);
-	const int32 Magazine = Entry.Weapon ? Entry.Weapon->GetMagazineAmmo() : -1;
+	const int32 Magazine = Entry.GetMagazineAmmo();
 	if (DropCount >= Entry.Count)
 	{
 		ReleaseEntryAt(Index);
@@ -675,7 +346,7 @@ void UNoFearInventoryComponent::NotifyChanged()
 			Entry.Weapon->RefreshAmmo();
 		}
 	}
-	OnInventoryChanged.Broadcast(this);
+	Super::NotifyChanged();
 }
 
 // ---------------------------------------------------------------------------

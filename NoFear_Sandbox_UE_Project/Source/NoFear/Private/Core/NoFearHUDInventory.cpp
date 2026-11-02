@@ -1,5 +1,5 @@
 // Кейс героя в HUD (Docs/Inventory_Design.md): сообщения о подборе, отладочная мини-сетка (NoFear.Inv.Debug)
-// и экран кейса на I. Колесо предметов на Q — этап 3. Остальной HUD — NoFearHUD.cpp.
+// и экран кейса на I — с колесом или с сеткой открытого хранилища. Колесо предметов на Q — этап 3. Остальной HUD — NoFearHUD.cpp.
 
 #include "Core/NoFearHUD.h"
 
@@ -211,48 +211,78 @@ void ANoFearHUD::DrawCaseScreen()
 	Frame(Layout.PanelMin, PanelSize, FMath::Max(1.f, S), FLinearColor(1.f, 1.f, 1.f, 0.15f));
 
 	const FIntPoint Grid = Layout.GridSize;
+	const UNoFearItemContainerComponent* Container = Case->GetOpenContainer();
 	const float TitleY = Layout.PanelMin.Y + 18.f * S;
 	DrawLabel(FString::Printf(TEXT("Кейс %d×%d · расширений %d/%d"), Grid.X, Grid.Y, Case->GetExpansionLevel(), Case->GetMaxExpansionLevel()),
 		Layout.GridOrigin.X, TitleY, FLinearColor::White, 1.f * S, ELabelAlign::Left);
-	DrawLabel(TEXT("Колесо (1–8)"), Layout.WheelCenter.X, TitleY, Dim, 0.9f * S, ELabelAlign::Center);
+	if (Layout.bShowWheel)
+	{
+		DrawLabel(TEXT("Колесо (1–8)"), Layout.WheelCenter.X, TitleY, Dim, 0.9f * S, ELabelAlign::Center);
+	}
+	else if (Container)
+	{
+		DrawLabel(FString::Printf(TEXT("%s %d×%d"), *Container->DisplayName.ToString(), Layout.ContainerSize.X, Layout.ContainerSize.Y),
+			Layout.ContainerOrigin.X, TitleY, FLinearColor::White, 1.f * S, ELabelAlign::Left);
+	}
 
 	// Клетки.
-	for (int32 Y = 0; Y < Grid.Y; ++Y)
+	auto DrawCells = [&](bool bOfContainer)
 	{
-		for (int32 X = 0; X < Grid.X; ++X)
+		const FIntPoint Size = Layout.GetSize(bOfContainer);
+		for (int32 Y = 0; Y < Size.Y; ++Y)
 		{
-			const FVector2D Min = Layout.GetCellMin(FIntPoint(X, Y));
-			DrawRect(FLinearColor(0.12f, 0.13f, 0.14f, 0.95f), Min.X + 1.f, Min.Y + 1.f, Layout.Cell - 2.f, Layout.Cell - 2.f);
+			for (int32 X = 0; X < Size.X; ++X)
+			{
+				const FVector2D Min = Layout.GetCellMin(FIntPoint(X, Y), bOfContainer);
+				DrawRect(FLinearColor(0.12f, 0.13f, 0.14f, 0.95f), Min.X + 1.f, Min.Y + 1.f, Layout.Cell - 2.f, Layout.Cell - 2.f);
+			}
 		}
+	};
+	DrawCells(false);
+	if (Container)
+	{
+		DrawCells(true);
 	}
 
 	const bool bHolding = Case->IsHolding();
 	const bool bMenu = Case->IsMenuOpen();
-	const int32 HeldId = bHolding && !Case->IsHoldingSplit() ? Case->GetHeldEntryId() : 0;
+	const bool bHeldFromContainer = Case->IsHoldingFromContainer();
+	const int32 HeldId = bHolding && !Case->IsHoldingSplit() && !bHeldFromContainer ? Case->GetHeldEntryId() : 0;
+	const int32 HeldContainerId = bHolding && !Case->IsHoldingSplit() && bHeldFromContainer ? Case->GetHeldEntryId() : 0;
 	const int32 HoverId = !bHolding && !bMenu ? Case->GetHoveredEntryId() : 0;
+	const int32 HoverContainerId = !bHolding && !bMenu ? Case->GetHoveredContainerEntryId() : 0;
 	const int32 HoverSlot = Case->GetHoveredWheelSlot();
-	const int32 MenuId = Case->GetMenuEntryId();
+	const int32 MenuId = bMenu && !Case->IsMenuForContainer() ? Case->GetMenuEntryId() : 0;
+	const int32 MenuContainerId = bMenu && Case->IsMenuForContainer() ? Case->GetMenuEntryId() : 0;
 	const FNoFearCaseTarget Target = bHolding ? Case->GetHeldTarget() : FNoFearCaseTarget();
 
 	// Предметы. Тот, что на курсоре, остаётся на месте полупрозрачным, пока его не положат.
 	for (const FNoFearInventoryEntry& Entry : Case->GetEntriesRef())
 	{
-		const int32 Magazine = Entry.Weapon ? Entry.Weapon->GetMagazineAmmo() : -1;
 		const bool bHighlight = Entry.Id == HoverId || Entry.Id == MenuId;
 		DrawItem(Entry.Item, Layout.GetCellMin(Entry.Cell), FVector2D(Entry.GetSize()) * Layout.Cell, Entry.Id == HeldId ? 0.3f : 1.f,
-			bHighlight, CornerText(Entry.Item, Entry.Count, Magazine), Case->FindWheelSlotOf(Entry.Id), Entry.Weapon && Entry.Weapon == InHands);
+			bHighlight, CornerText(Entry.Item, Entry.Count, Entry.GetMagazineAmmo()), Case->FindWheelSlotOf(Entry.Id), Entry.Weapon && Entry.Weapon == InHands);
+	}
+	if (Container)
+	{
+		for (const FNoFearInventoryEntry& Entry : Container->GetEntriesRef())
+		{
+			const bool bHighlight = Entry.Id == HoverContainerId || Entry.Id == MenuContainerId;
+			DrawItem(Entry.Item, Layout.GetCellMin(Entry.Cell, true), FVector2D(Entry.GetSize()) * Layout.Cell, Entry.Id == HeldContainerId ? 0.3f : 1.f,
+				bHighlight, CornerText(Entry.Item, Entry.Count, Entry.GetMagazineAmmo()), INDEX_NONE, false);
+		}
 	}
 
-	// Колесо: восемь секторов, первый сверху, дальше по часовой.
+	// Колесо: восемь секторов, первый сверху, дальше по часовой. С хранилищем на его месте сетка хранилища.
 	const float Half = Layout.SlotSize * 0.5f;
-	for (int32 Slot = 0; Slot < UNoFearInventoryComponent::WheelSlotCount; ++Slot)
+	for (int32 Slot = 0; Layout.bShowWheel && Slot < UNoFearInventoryComponent::WheelSlotCount; ++Slot)
 	{
 		const FVector2D Min = Layout.GetSlotCenter(Slot) - FVector2D(Half);
 		const FVector2D Size(Layout.SlotSize);
 		FNoFearInventoryEntry Entry;
 		if (Case->GetEntry(Case->GetWheelSlot(Slot), Entry))
 		{
-			const int32 Magazine = Entry.Weapon ? Entry.Weapon->GetMagazineAmmo() : -1;
+			const int32 Magazine = Entry.GetMagazineAmmo();
 			// У гранат и медицины — сколько всего таких в кейсе: колесо берёт из любой стопки.
 			const int32 Count = Entry.Item && Entry.Item->Kind != ENoFearItemKind::Weapon ? Case->CountItem(Entry.Item) : Entry.Count;
 			DrawItem(Entry.Item, Min, Size, Entry.Id == HeldId ? 0.4f : 1.f, Slot == HoverSlot && !bHolding && !bMenu,
@@ -276,23 +306,24 @@ void ANoFearHUD::DrawCaseScreen()
 		if (Target.Kind == ENoFearCaseTarget::Grid)
 		{
 			const FIntPoint Size = Case->GetHeldSize();
+			const FIntPoint TargetGrid = Layout.GetSize(Target.bContainer);
 			FLinearColor Color = Target.bValid ? Good : Bad;
 			Color.A = 0.35f;
-			for (int32 Y = FMath::Max(Target.Cell.Y, 0); Y < FMath::Min(Target.Cell.Y + Size.Y, Grid.Y); ++Y)
+			for (int32 Y = FMath::Max(Target.Cell.Y, 0); Y < FMath::Min(Target.Cell.Y + Size.Y, TargetGrid.Y); ++Y)
 			{
-				for (int32 X = FMath::Max(Target.Cell.X, 0); X < FMath::Min(Target.Cell.X + Size.X, Grid.X); ++X)
+				for (int32 X = FMath::Max(Target.Cell.X, 0); X < FMath::Min(Target.Cell.X + Size.X, TargetGrid.X); ++X)
 				{
-					const FVector2D CellMin = Layout.GetCellMin(FIntPoint(X, Y));
+					const FVector2D CellMin = Layout.GetCellMin(FIntPoint(X, Y), Target.bContainer);
 					DrawRect(Color, CellMin.X + 1.f, CellMin.Y + 1.f, Layout.Cell - 2.f, Layout.Cell - 2.f);
 				}
 			}
 		}
 		else if (Target.Kind == ENoFearCaseTarget::Merge)
 		{
-			FNoFearInventoryEntry Under;
-			if (Case->GetEntry(Target.MergeId, Under))
+			const UNoFearItemContainerComponent* Storage = Target.bContainer ? Container : Case;
+			if (const FNoFearInventoryEntry* Under = Storage ? Storage->FindEntry(Target.MergeId) : nullptr)
 			{
-				Frame(Layout.GetCellMin(Under.Cell), FVector2D(Under.GetSize()) * Layout.Cell, Line * 2.f, Good);
+				Frame(Layout.GetCellMin(Under->Cell, Target.bContainer), FVector2D(Under->GetSize()) * Layout.Cell, Line * 2.f, Good);
 			}
 		}
 		else if (Target.Kind == ENoFearCaseTarget::WheelSlot)
@@ -309,14 +340,21 @@ void ANoFearHUD::DrawCaseScreen()
 
 	// Карточка предмета под курсором: название, описание, подробности.
 	int32 CardId = HoverId;
+	const UNoFearItemContainerComponent* CardStorage = Case;
+	if (!CardId && HoverContainerId)
+	{
+		CardId = HoverContainerId;
+		CardStorage = Container;
+	}
 	if (!CardId && !bHolding && !bMenu && HoverSlot != INDEX_NONE)
 	{
 		CardId = Case->GetWheelSlot(HoverSlot);
 	}
 	FNoFearInventoryEntry Hovered;
-	if (CardId && Case->GetEntry(CardId, Hovered) && Hovered.Item)
+	if (CardId && CardStorage && CardStorage->GetEntry(CardId, Hovered) && Hovered.Item)
 	{
 		const UNoFearItemData* Item = Hovered.Item;
+		const bool bInCase = CardStorage == Case;
 		const float Width = 320.f * S;
 		const float Pad = 12.f * S;
 		const float TextScale = 0.82f * S;
@@ -349,9 +387,10 @@ void ANoFearHUD::DrawCaseScreen()
 		}
 
 		TArray<FString> Details;
-		if (Hovered.Weapon && Item->WeaponData)
+		if (Item->Kind == ENoFearItemKind::Weapon && Item->WeaponData)
 		{
-			Details.Add(FString::Printf(TEXT("Магазин %d/%d"), Hovered.Weapon->GetMagazineAmmo(), Item->WeaponData->MagazineSize));
+			const int32 Magazine = Hovered.GetMagazineAmmo();
+			Details.Add(FString::Printf(TEXT("Магазин %d/%d"), Magazine < 0 ? Item->WeaponData->MagazineSize : Magazine, Item->WeaponData->MagazineSize));
 			if (Item->AmmoItem)
 			{
 				Details.Add(FString::Printf(TEXT("%s в кейсе: %d"), *Item->AmmoItem->GetDisplayName().ToString(), Case->CountItem(Item->AmmoItem)));
@@ -359,7 +398,7 @@ void ANoFearHUD::DrawCaseScreen()
 		}
 		else if (Item->GetMaxStack() > 1)
 		{
-			Details.Add(FString::Printf(TEXT("В стопке %d/%d, всего %d"), Hovered.Count, Item->GetMaxStack(), Case->CountItem(Item)));
+			Details.Add(FString::Printf(TEXT("В стопке %d/%d, всего %d"), Hovered.Count, Item->GetMaxStack(), CardStorage->CountItem(Item)));
 		}
 		if (Item->Kind == ENoFearItemKind::Medicine)
 		{
@@ -367,14 +406,18 @@ void ANoFearHUD::DrawCaseScreen()
 				? FString::Printf(TEXT("Лечит полностью за %.0f с"), Item->UseTime)
 				: FString::Printf(TEXT("Лечит %.0f за %.0f с"), Item->HealAmount, Item->UseTime));
 		}
-		const int32 Slot = Case->FindWheelSlotOf(Hovered.Id);
+		const int32 Slot = bInCase ? Case->FindWheelSlotOf(Hovered.Id) : INDEX_NONE;
 		if (Slot != INDEX_NONE)
 		{
 			Details.Add(FString::Printf(TEXT("Колесо: сектор %d"), Slot + 1));
 		}
-		else if (UNoFearInventoryComponent::IsWheelItem(Item))
+		else if (bInCase && Layout.bShowWheel && UNoFearInventoryComponent::IsWheelItem(Item))
 		{
 			Details.Add(TEXT("Не в колесе: 1–8 или перетащить в сектор"));
+		}
+		else if (!bInCase)
+		{
+			Details.Add(FString::Printf(TEXT("Лежит: %s"), *CardStorage->DisplayName.ToString()));
 		}
 
 		const float Height = Pad * 2.f + 28.f * S + Lines.Num() * LineHeight + (Details.Num() > 0 ? 8.f * S + Details.Num() * LineHeight : 0.f);
@@ -416,7 +459,7 @@ void ANoFearHUD::DrawCaseScreen()
 				DrawRect(FLinearColor(1.f, 1.f, 1.f, 0.14f), Min.X + 1.f, Y + 1.f, Size.X - 2.f, Layout.MenuItemHeight - 2.f);
 			}
 			const FLinearColor Color = Actions[Index] == ENoFearCaseAction::Drop ? FLinearColor(1.f, 0.6f, 0.5f, 1.f) : FLinearColor::White;
-			DrawLabel(UNoFearInventoryComponent::GetCaseActionName(Actions[Index]).ToString(), Min.X + 12.f * S, Y + 7.f * S, Color, 0.85f * S, ELabelAlign::Left);
+			DrawLabel(Fit(Case->GetMenuActionName(Actions[Index]).ToString(), Size.X - 20.f * S, 0.85f * S), Min.X + 12.f * S, Y + 7.f * S, Color, 0.85f * S, ELabelAlign::Left);
 		}
 	}
 
@@ -428,6 +471,8 @@ void ANoFearHUD::DrawCaseScreen()
 	{
 		DrawLabel(Notice.ToString(), CenterX, Layout.PanelMax.Y + 14.f * S, FLinearColor(1.f, 0.9f, 0.6f, Alpha), 1.05f * S, ELabelAlign::Center);
 	}
-	DrawLabel(TEXT("ЛКМ — взять / положить · ПКМ — действия, повернуть · R — повернуть · 1–8 — в колесо · за край — выбросить · I / Esc — закрыть"),
-		CenterX, Layout.PanelMax.Y + 46.f * S, Dim, 0.8f * S, ELabelAlign::Center);
+	const TCHAR* Hint = Container
+		? TEXT("ЛКМ — взять / положить, тащить между сетками · ПКМ — действия · R — повернуть · за край — выбросить · E / I / Esc — закрыть")
+		: TEXT("ЛКМ — взять / положить · ПКМ — действия, повернуть · R — повернуть · 1–8 — в колесо · за край — выбросить · I / Esc — закрыть");
+	DrawLabel(Hint, CenterX, Layout.PanelMax.Y + 46.f * S, Dim, 0.8f * S, ELabelAlign::Center);
 }
