@@ -898,6 +898,8 @@ public:
 
 	/** Не рычит: крик-волну заменил гипноз. */
 	virtual void Roar() override {}
+	/** Шептун в ярость стаи не впадает: держится в стороне, как и всегда. */
+	virtual void BeginPackRage(AActor* Killer, float Duration) override {}
 	virtual bool IsRingFighter() const override { return false; }
 
 	virtual void Tick(float DeltaSeconds) override;

@@ -138,7 +138,6 @@ namespace
 			{ FNoFearBotKeys::HasAttackToken, UBlackboardKeyType_Bool::StaticClass(), TEXT("Монстру можно бить цель (жетон атаки)") },
 			{ FNoFearBotKeys::IsRoaring, UBlackboardKeyType_Bool::StaticClass(), TEXT("Монстр рычит и стоит") },
 			{ FNoFearBotKeys::PackGoal, UBlackboardKeyType_Vector::StaticClass(), TEXT("Куда стая ведёт монстра: место в строю или в кольце вокруг цели") },
-			{ FNoFearBotKeys::IsScattering, UBlackboardKeyType_Bool::StaticClass(), TEXT("Вожак погиб, монстр разбегается к FleeLocation") },
 			{ FNoFearBotKeys::WanderCenter, UBlackboardKeyType_Vector::StaticClass(), TEXT("Вокруг чего бродить: точка впереди по курсу или вожак стаи") },
 			{ FNoFearBotKeys::KeepAway, UBlackboardKeyType_Bool::StaticClass(), TEXT("Плевун отступает, держит дистанцию") },
 			{ FNoFearBotKeys::CoverLocation, UBlackboardKeyType_Vector::StaticClass(), TEXT("Укрытие стрелка (не задано — укрытия нет)") },
@@ -452,7 +451,6 @@ namespace
 	/**
 	 * Монстр (обычный и агрессивный). Куда встать, решает стая (UNoFearPackSubsystem), дерево только исполняет:
 	 *   рычит → стоять;
-	 *   вожак погиб → бежать к FleeLocation;
 	 *   есть цель и надо держать дистанцию (плевун) → отбежать от неё;
 	 *   есть цель и жетон (своя волна, самооборона, одиночка) → догнать и ударить (атаку выбирает UNoFearMeleeComponent);
 	 *   есть цель и место от стаи → бежать цепью к цели, на своё место в кольце и стоять там;
@@ -467,12 +465,6 @@ namespace
 
 		UBehaviorTreeGraphNode* RoarWait = Builder.Wait(Root, 1.2f);
 		Builder.IfSet(RoarWait, FNoFearBotKeys::IsRoaring, TEXT("Both"), TEXT("Рычит?"));
-
-		UBehaviorTreeGraphNode* Scatter = Builder.Sequence(Root, TEXT("Разбежаться"));
-		Builder.IfSet(Scatter, FNoFearBotKeys::IsScattering, TEXT("Both"), TEXT("Вожак погиб?"));
-		UBehaviorTreeGraphNode* RunAway = Builder.MoveTo(Scatter, FNoFearBotKeys::FleeLocation, 150.f, TEXT("Прочь"));
-		Builder.Decorator(RunAway, UBTDecorator_ForceSuccess::StaticClass());
-		Builder.Wait(Scatter, 0.5f);
 
 		UBehaviorTreeGraphNode* Attack = Builder.Selector(Root, TEXT("Атака"));
 		Builder.IfSet(Attack, FNoFearBotKeys::AttackTarget, TEXT("Both"), TEXT("Есть цель?"));

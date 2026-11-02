@@ -39,3 +39,25 @@ UNoFearTankStepShake::UNoFearTankStepShake(const FObjectInitializer& ObjectIniti
 	Pattern->Roll.Frequency = 14.f;
 	SetRootShakePattern(Pattern);
 }
+
+UNoFearHunterHitShake::UNoFearHunterHitShake(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	UPerlinNoiseCameraShakePattern* Pattern = CreateDefaultSubobject<UPerlinNoiseCameraShakePattern>(TEXT("RootShakePattern"));
+	Pattern->Duration = 0.25f;
+	Pattern->BlendInTime = 0.02f;
+	Pattern->BlendOutTime = 0.15f;
+	Pattern->X.Amplitude = 1.2f;
+	Pattern->X.Frequency = 30.f;
+	Pattern->Y.Amplitude = 1.2f;
+	Pattern->Y.Frequency = 26.f;
+	Pattern->Z.Amplitude = 1.5f;
+	Pattern->Z.Frequency = 28.f;
+	Pattern->Pitch.Amplitude = 1.4f;
+	Pattern->Pitch.Frequency = 24.f;
+	Pattern->Yaw.Amplitude = 1.0f;
+	Pattern->Yaw.Frequency = 22.f;
+	Pattern->Roll.Amplitude = 1.2f;
+	Pattern->Roll.Frequency = 20.f;
+	SetRootShakePattern(Pattern);
+}

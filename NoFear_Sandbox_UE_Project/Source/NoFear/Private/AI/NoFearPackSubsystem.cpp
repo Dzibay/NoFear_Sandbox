@@ -33,9 +33,6 @@ namespace
 	/** Медленнее этого вожак стоит: строй не разворачивается, см/с. */
 	constexpr float HeadingMinSpeed = 50.f;
 
-	/** Разбегаются в пределах ±этого угла от направления «прочь от угрозы». */
-	constexpr float ScatterSpreadAngle = 60.f;
-
 	bool IsAlive(const APawn* Pawn)
 	{
 		return Pawn && !UNoFearHealthComponent::IsActorDead(Pawn);
@@ -131,7 +128,7 @@ void UNoFearPackSubsystem::UpdateMembership(double Now)
 
 	for (FPack& Pack : Packs)
 	{
-		// Погиб вожак — стая разбегается (кто остался). Вожак, просто ушедший из стаи, — не повод.
+		// Погиб вожак — стая (кто остался) впадает в ярость. Вожак, просто ушедший из стаи, — не повод.
 		const int32 OldCount = Pack.Members.Num();
 		const bool bLeaderDied = !Pack.LeaderPawn.IsExplicitlyNull() && !IsAlive(Pack.LeaderPawn.Get());
 
@@ -160,7 +157,8 @@ void UNoFearPackSubsystem::UpdateMembership(double Now)
 		{
 			Pack.LeaderPawn.Reset();
 			Pack.Leader.Reset();
-			BeginScatter(Pack, Pack.Target.IsValid() ? Pack.TargetLocation : Pack.LeaderLocation, Now);
+			// Новый вожак назначается ниже; ярость начнётся в UpdatePack, когда он уже есть.
+			Pack.bRagePending = true;
 		}
 	}
 	Packs.RemoveAll([](const FPack& Pack) { return Pack.Members.IsEmpty(); });
@@ -200,7 +198,7 @@ void UNoFearPackSubsystem::UpdateMembership(double Now)
 				Best = &Pack;
 				break;
 			}
-			if (Pack.State == ENoFearPackState::Scatter)
+			if (Pack.State == ENoFearPackState::Rage)
 			{
 				continue;
 			}
@@ -239,7 +237,8 @@ void UNoFearPackSubsystem::UpdateMembership(double Now)
 			FPack& Into = Packs[A];
 			FPack& From = Packs[B];
 			if (!Into.Name.IsNone() || !From.Name.IsNone() || Into.Team != From.Team
-				|| Into.State == ENoFearPackState::Scatter || From.State == ENoFearPackState::Scatter
+				|| Into.State == ENoFearPackState::Rage || From.State == ENoFearPackState::Rage
+				|| Into.bRagePending || From.bRagePending
 				|| Into.Members.Num() + From.Members.Num() > MaxPackSize)
 			{
 				continue;
@@ -299,19 +298,24 @@ void UNoFearPackSubsystem::UpdatePack(FPack& Pack, double Now)
 		Pack.Heading = LeaderVelocity.GetSafeNormal2D();
 	}
 
-	if (Pack.State == ENoFearPackState::Scatter)
+	if (Pack.bRagePending)
 	{
-		if (Now < Pack.ScatterUntil)
+		Pack.bRagePending = false;
+		BeginRage(Pack, Now);
+	}
+	if (Pack.State == ENoFearPackState::Rage)
+	{
+		const AActor* Killer = Pack.Target.Get();
+		if (Now < Pack.RageUntil && Killer && !UNoFearHealthComponent::IsActorIncapacitated(Killer))
 		{
+			// Цель стаи держится на убийце, кто бы что ни выбрал; знание о нём — как обычно.
+			ShareIntel(Pack, Now);
+			UpdateWaves(Pack, Now);
 			ComputeGoals(Pack, Now);
 			return;
 		}
-		// Разбежались — новый вожак рыком собирает стаю.
+		// Ярость прошла — дальше обычные сбор, кольцо и волны.
 		SetState(Pack, ENoFearPackState::Roam, Now);
-		if (ANoFearMonsterAIController* Leader = Pack.Leader.Get(); Leader && Pack.Members.Num() >= 2)
-		{
-			Leader->Roar();
-		}
 	}
 
 	PickTarget(Pack, Now);
@@ -414,10 +418,6 @@ void UNoFearPackSubsystem::SetState(FPack& Pack, ENoFearPackState NewState, doub
 	{
 		Member.bAttackTurn = false;
 		Member.bAttackedThisWave = false;
-		if (NewState != ENoFearPackState::Scatter)
-		{
-			Member.bHasFleeGoal = false;
-		}
 	}
 
 	if (NewState == ENoFearPackState::Encircle || NewState == ENoFearPackState::Attack)
@@ -534,41 +534,50 @@ void UNoFearPackSubsystem::ShareIntel(FPack& Pack, double Now)
 	}
 }
 
-void UNoFearPackSubsystem::BeginScatter(FPack& Pack, const FVector& From, double Now)
+void UNoFearPackSubsystem::BeginRage(FPack& Pack, double Now)
 {
-	SetState(Pack, ENoFearPackState::Scatter, Now);
-	Pack.ScatterUntil = Now + ScatterTime;
-
-	UNavigationSystemV1* NavSystem = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
-	for (FMember& Member : Pack.Members)
+	AActor* Killer = Pack.LeaderKiller.Get();
+	Pack.LeaderKiller.Reset();
+	if (!Killer || UNoFearHealthComponent::IsActorIncapacitated(Killer)
+		|| UNoFearTeamLibrary::GetTeam(Killer) == Pack.Team)
 	{
-		Member.bHasFleeGoal = false;
-		const APawn* Pawn = Member.Pawn.Get();
-		if (!Pawn)
+		Killer = Pack.Target.Get();
+	}
+	ANoFearMonsterAIController* Leader = Pack.Leader.Get();
+	if (!Killer || UNoFearHealthComponent::IsActorIncapacitated(Killer))
+	{
+		// Мстить некому: новый вожак рыком собирает стаю.
+		if (Leader && Pack.Members.Num() >= 2)
 		{
-			continue;
+			Leader->Roar();
 		}
-		const FVector Location = Pawn->GetActorLocation();
-		FVector Away = (Location - From).GetSafeNormal2D();
-		if (Away.IsNearlyZero())
-		{
-			Away = AngleToDirection(FMath::FRandRange(-180.f, 180.f));
-		}
+		return;
+	}
 
-		// Прочь от угрозы с разбросом; не вышло — ближе; совсем не вышло — куда угодно в пределах ScatterMaxDistance.
-		for (int32 Attempt = 0; Attempt < 4 && !Member.bHasFleeGoal; ++Attempt)
+	SetState(Pack, ENoFearPackState::Rage, Now);
+	Pack.RageUntil = Now + RageTime;
+	Pack.Target = Killer;
+	Pack.TargetLocation = Killer->GetActorLocation();
+	for (const FMember& Member : Pack.Members)
+	{
+		if (ANoFearMonsterAIController* Bot = Member.Bot.Get())
 		{
-			const float Angle = FMath::FRandRange(-ScatterSpreadAngle, ScatterSpreadAngle);
-			const float Distance = FMath::FRandRange(ScatterMinDistance, ScatterMaxDistance) * (Attempt >= 2 ? 0.5f : 1.f);
-			const FVector Point = Location + Away.RotateAngleAxis(Angle, FVector::UpVector) * Distance;
-			Member.bHasFleeGoal = ProjectGoal(Point, Member.FleeGoal);
+			Bot->BeginPackRage(Killer, RageTime);
 		}
-		FNavLocation Random;
-		if (!Member.bHasFleeGoal && NavSystem && NavSystem->GetRandomReachablePointInRadius(Location, ScatterMaxDistance, Random))
-		{
-			Member.FleeGoal = Random.Location;
-			Member.bHasFleeGoal = true;
-		}
+	}
+	// Новый вожак рычит: рык поднимает всю стаю на убийцу.
+	if (Leader && Pack.Members.Num() >= 2)
+	{
+		Leader->Roar();
+	}
+}
+
+void UNoFearPackSubsystem::NotifyMemberKilled(const ANoFearMonsterAIController* Bot, AActor* Killer)
+{
+	FPack* Pack = FindPack(Bot);
+	if (Pack && Killer && Pack->Leader.Get() == Bot)
+	{
+		Pack->LeaderKiller = Killer;
 	}
 }
 
@@ -675,7 +684,8 @@ void UNoFearPackSubsystem::UpdateWaves(FPack& Pack, double Now)
 {
 	for (FMember& Member : Pack.Members)
 	{
-		Member.bAttackTurn = false;
+		// Ярость: очереди нет, бьют все разом.
+		Member.bAttackTurn = Pack.State == ENoFearPackState::Rage;
 	}
 	if (Pack.State != ENoFearPackState::Attack || Pack.WaveCount <= 0)
 	{
@@ -739,13 +749,9 @@ void UNoFearPackSubsystem::ComputeGoals(FPack& Pack, double Now)
 		Member.bHasGoal = false;
 	}
 
-	if (Pack.State == ENoFearPackState::Scatter)
+	// Ярость: ни строя, ни кольца — каждый бежит прямо на убийцу.
+	if (Pack.State == ENoFearPackState::Rage)
 	{
-		for (FMember& Member : Pack.Members)
-		{
-			Member.bHasGoal = Member.bHasFleeGoal;
-			Member.Goal = Member.FleeGoal;
-		}
 		return;
 	}
 
@@ -1044,7 +1050,7 @@ void UNoFearPackSubsystem::DrawDebug() const
 		case ENoFearPackState::Gather: Color = FColor::Yellow; break;
 		case ENoFearPackState::Encircle: Color = FColor::Orange; break;
 		case ENoFearPackState::Attack: Color = FColor::Red; break;
-		case ENoFearPackState::Scatter: Color = FColor::Purple; break;
+		case ENoFearPackState::Rage: Color = FColor::Purple; break;
 		default: break;
 		}
 

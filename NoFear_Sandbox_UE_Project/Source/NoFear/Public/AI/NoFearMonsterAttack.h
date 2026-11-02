@@ -7,6 +7,7 @@
 
 class ACharacter;
 class UAnimMontage;
+class UCameraShakeBase;
 class UDamageType;
 class UNoFearMeleeComponent;
 class USoundBase;
@@ -111,6 +112,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timing", meta = (ClampMin = "0"))
 	float WindupTurnRate = 720.f;
 
+	/** Вероятность финта: на середине замаха монстр опускает лапу, выжидает FeintPause и бьёт с короткого замаха. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timing", meta = (ClampMin = "0", ClampMax = "1"))
+	float FeintChance = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timing", meta = (ClampMin = "0"))
+	float FeintPause = 0.3f;
+
 	// --- Рывок ---
 
 	/** Горизонтальная скорость рывка в начале удара, см/с. 0 — бить с места. */
@@ -149,6 +157,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Effects")
 	TObjectPtr<USoundBase> HitSound;
 
+	/** Тряска камеры игрока, которого задело. Пусто — без тряски. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Effects")
+	TSubclassOf<UCameraShakeBase> HitShake;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Effects", meta = (ClampMin = "0"))
+	float HitShakeScale = 1.f;
+
 	/** Атаку можно начать по этой цели: дистанция и высота подходят. Перезарядку проверяет компонент. */
 	virtual bool CanUse(const UNoFearMeleeComponent* Melee, const AActor* Target) const;
 
@@ -157,6 +172,9 @@ public:
 
 	/** Начало удара после замаха: по умолчанию рывок вперёд. */
 	virtual void BeginStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target);
+
+	/** Сфера удара сейчас бьёт (StrikeElapsed — сек с начала окна удара). Серия гасит её между взмахами. */
+	virtual bool CanHitNow(float StrikeElapsed) const { return true; }
 
 	/** Каждый кадр окна удара. Вернуть false, чтобы закончить окно раньше. */
 	virtual bool TickStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target, float DeltaTime) { return true; }
@@ -194,6 +212,43 @@ class NOFEAR_API UNoFearMonsterAttack_Swing : public UNoFearMonsterAttack
 
 public:
 	UNoFearMonsterAttack_Swing();
+};
+
+/**
+ * Серия из двух (загонщик): удар, через SecondHitDelay второй взмах с повтором позы и шагом вперёд. Каждый взмах
+ * бьёт HitActiveTime сек и может задеть ту же цель. После серии долгое восстановление — окно для ответа.
+ */
+UCLASS(meta = (DisplayName = "Combo"))
+class NOFEAR_API UNoFearMonsterAttack_Combo : public UNoFearMonsterAttack
+{
+	GENERATED_BODY()
+
+public:
+	UNoFearMonsterAttack_Combo();
+
+	/** Через сколько после начала удара второй взмах, сек. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combo", meta = (ClampMin = "0.05"))
+	float SecondHitDelay = 0.32f;
+
+	/** Сколько бьёт сфера каждого взмаха, сек. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combo", meta = (ClampMin = "0.01"))
+	float HitActiveTime = 0.2f;
+
+	/** Шаг вперёд на втором взмахе, см/с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combo", meta = (ClampMin = "0"))
+	float SecondLungeSpeed = 200.f;
+
+	/** Сколько вторых взмахов сделано (для тестов). */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Combo")
+	int32 SecondSwingCount = 0;
+
+	virtual bool CanHitNow(float StrikeElapsed) const override;
+	virtual void BeginStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target) override;
+	virtual bool TickStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target, float DeltaTime) override;
+
+private:
+	bool bSecondSwing = false;
+	float StrikeElapsed = 0.f;
 };
 
 /** Рывок с дистанции: прыжок вперёд, удар на лету. Дальше и сильнее, но долго перезаряжается. */

@@ -106,6 +106,19 @@ void UNoFearMeleeComponent::SetAttacks(const TArray<UNoFearMonsterAttack*>& Temp
 	}
 }
 
+UNoFearMonsterAttack* UNoFearMeleeComponent::AddAttack(const UNoFearMonsterAttack* Template)
+{
+	if (!Template)
+	{
+		return nullptr;
+	}
+	if (UNoFearMonsterAttack* Existing = FindAttack(Template->AttackName))
+	{
+		return Existing;
+	}
+	return Attacks.Add_GetRef(DuplicateObject<UNoFearMonsterAttack>(Template, this));
+}
+
 UNoFearMonsterAttack* UNoFearMeleeComponent::ChooseAttack(const AActor* Target) const
 {
 	if (!Target)
@@ -196,7 +209,12 @@ bool UNoFearMeleeComponent::BeginAttack(UNoFearMonsterAttack* Attack, AActor* Ta
 	const FVector OwnerLocation = GetOwner()->GetActorLocation();
 	UNoFearBotSubsystem::ReportDanger(this, ENoFearDangerType::Fight, GetOwner(), OwnerLocation, UNoFearBotSubsystem::FightNoticeRadius, OwnerLocation);
 
-	if (Attack->WindupTime > 0.f)
+	bFeinting = false;
+	if (Attack->WindupTime > 0.f && Attack->FeintChance > 0.f && FMath::FRand() < Attack->FeintChance)
+	{
+		World->GetTimerManager().SetTimer(PhaseTimer, this, &UNoFearMeleeComponent::BeginFeint, Attack->WindupTime * 0.5f, false);
+	}
+	else if (Attack->WindupTime > 0.f)
 	{
 		World->GetTimerManager().SetTimer(PhaseTimer, this, &UNoFearMeleeComponent::BeginStrike, Attack->WindupTime, false);
 	}
@@ -205,6 +223,42 @@ bool UNoFearMeleeComponent::BeginAttack(UNoFearMonsterAttack* Attack, AActor* Ta
 		BeginStrike();
 	}
 	return true;
+}
+
+void UNoFearMeleeComponent::BeginFeint()
+{
+	UNoFearMonsterAttack* Attack = CurrentAttack;
+	if (Phase != EPhase::Windup || !Attack || !IsOwnerAlive())
+	{
+		FinishAttack();
+		return;
+	}
+	// Рука опускается на полпути: игрок, ушедший от «удара», ошибся раньше времени.
+	bFeinting = true;
+	++FeintCount;
+	if (UNoFearPoseComponent* Pose = GetOwner()->FindComponentByClass<UNoFearPoseComponent>())
+	{
+		Pose->PlayPose(Attack->Pose, 0.f, Attack->PoseIntensity);
+	}
+	GetWorld()->GetTimerManager().SetTimer(PhaseTimer, this, &UNoFearMeleeComponent::ResumeWindup, FMath::Max(Attack->FeintPause, 0.01f), false);
+}
+
+void UNoFearMeleeComponent::ResumeWindup()
+{
+	UNoFearMonsterAttack* Attack = CurrentAttack;
+	if (Phase != EPhase::Windup || !Attack || !IsOwnerAlive())
+	{
+		FinishAttack();
+		return;
+	}
+	// Короткий замах — и настоящий удар.
+	bFeinting = false;
+	const float ShortWindup = Attack->WindupTime * 0.5f;
+	if (UNoFearPoseComponent* Pose = GetOwner()->FindComponentByClass<UNoFearPoseComponent>())
+	{
+		Pose->PlayPose(Attack->Pose, ShortWindup + Attack->HitWindow * 0.5f, Attack->PoseIntensity);
+	}
+	GetWorld()->GetTimerManager().SetTimer(PhaseTimer, this, &UNoFearMeleeComponent::BeginStrike, FMath::Max(ShortWindup, 0.01f), false);
 }
 
 void UNoFearMeleeComponent::BeginStrike()
@@ -262,6 +316,7 @@ void UNoFearMeleeComponent::FinishAttack()
 	UNoFearMonsterAttack* Attack = CurrentAttack;
 	AActor* Target = AttackTarget.Get();
 	Phase = EPhase::Idle;
+	bFeinting = false;
 	CurrentAttack = nullptr;
 	AttackTarget.Reset();
 	HitActors.Reset();
@@ -366,7 +421,7 @@ void UNoFearMeleeComponent::SweepHits()
 	AActor* Owner = GetOwner();
 	UWorld* World = GetWorld();
 	UNoFearMonsterAttack* Attack = CurrentAttack;
-	if (!Owner || !World || !Attack || !Attack->bSweepHits)
+	if (!Owner || !World || !Attack || !Attack->bSweepHits || !Attack->CanHitNow(static_cast<float>(World->GetTimeSeconds() - Attack->StrikeStartTime)))
 	{
 		return;
 	}

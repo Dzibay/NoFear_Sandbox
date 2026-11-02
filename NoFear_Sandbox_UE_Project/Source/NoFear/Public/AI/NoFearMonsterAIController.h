@@ -6,6 +6,7 @@
 #include "AI/NoFearPackSubsystem.h"
 #include "NoFearMonsterAIController.generated.h"
 
+class ANoFearWhispererAIController;
 class UPointLightComponent;
 class UNoFearMeleeComponent;
 class UNoFearMonsterAttack;
@@ -21,7 +22,7 @@ class UNoFearMonsterAttack;
  *   в обход) и бьёт волнами по 2–3 с разных сторон; остальные держат кольцо и отрезают отход. Подошедшего вплотную
  *   бьёт и без очереди. В кольце и очереди только бойцы ближнего боя (IsRingFighter): прыгуны кружат по краю и
  *   прыгают, когда цель отвлеклась, плевуны держат дистанцию за кольцом (GetStandoffPoint) — в лимит жетонов не входят.
- * - Погиб вожак — стая разбегается от угрозы, потом новый вожак рыком собирает её снова.
+ * - Погиб вожак — новый вожак рычит, и стая RageTime секунд вся разом, без очереди и быстрее обычного бьёт убийцу.
  * - Охотится на слух: видит хуже стрелков, зато слышит дальше и на шум бежит, а не идёт. Обидчика помнит
  *   (GrudgeTime) и гонит хоть через всю карту.
  * - Монстр без стаи бьёт по жетонам атаки UNoFearBotSubsystem: одновременно до трёх бойцов на цель, остальные кружат.
@@ -61,9 +62,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
 	ENoFearPackState GetPackState() const;
 
-	/** Вожак погиб, монстр разбегается. */
+	/** Вожак погиб, стая в ярости: бьёт убийцу без очереди. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
-	bool IsScattering() const;
+	bool IsPackRaging() const;
+
+	/** Стая впала в ярость: идти на Killer Duration секунд. У шептуна ничего не делает. */
+	virtual void BeginPackRage(AActor* Killer, float Duration);
 
 	/** Можно бить цель (жетон атаки, очередь в волне стаи или он не нужен). */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
@@ -167,6 +171,81 @@ public:
 	float WhisperBuffCooldownScale = 0.85f;
 
 	// --- Стая ---
+
+	// --- Загонщик (только вид Hunter: не бешеный и не наследники) ---
+
+	/** Здоровье тела загонщика. 0 — оставить как у тела. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Hunter", meta = (ClampMin = "0"))
+	float HunterMaxHealth = 150.f;
+
+	/** Вероятность финта на обычном ударе (Swing). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Hunter", meta = (ClampMin = "0", ClampMax = "1"))
+	float HunterFeintChance = 0.3f;
+
+	/** Попадание от стольких урона (или в голову) на замахе срывает замах: загонщик вздрагивает. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Hunter", meta = (ClampMin = "0"))
+	float FlinchCancelDamage = 15.f;
+
+	/** После сорванного замаха не бьёт столько, сек. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Hunter", meta = (ClampMin = "0"))
+	float FlinchBlockTime = 0.6f;
+
+	/** Ложный выпад из кольца без жетона: раз в столько секунд (случайно между Min и Max). 0 — не делать. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Hunter", meta = (ClampMin = "0"))
+	float FakeLungeMinInterval = 6.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Hunter", meta = (ClampMin = "0"))
+	float FakeLungeMaxInterval = 10.f;
+
+	/** Скорость броска вперёд и отскока назад, см/с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Hunter", meta = (ClampMin = "0"))
+	float FakeLungeSpeed = 750.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Hunter", meta = (ClampMin = "0"))
+	float FakeLungeBackSpeed = 550.f;
+
+	/** Сколько замахов сорвано попаданием (для тестов). */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "NoFear|Monster|Hunter")
+	int32 FlinchCancelCount = 0;
+
+	/** Загон к шептуну: мирного, если шептун ближе этого, загонщик гонит к нему, заходя с дальней стороны, см. 0 — не гнать. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Hunter", meta = (ClampMin = "0"))
+	float HerdToWhispererRadius = 4000.f;
+
+	/** Прикрытие гипноза: загонщик ближе этого к гипнотизирующему шептуну охраняет гипноз, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Hunter", meta = (ClampMin = "0"))
+	float HypnosisCoverRadius = 1500.f;
+
+	/** ... и прибавляет столько к оценке того, кто подошёл к жертве ближе HypnosisCoverVictimDistance или ранил шептуна. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Hunter", meta = (ClampMin = "0"))
+	float HypnosisCoverBonus = 2.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Hunter", meta = (ClampMin = "0"))
+	float HypnosisCoverVictimDistance = 600.f;
+
+	/** Гонит текущую цель-мирного к шептуну. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
+	bool IsHerdingToWhisperer() const { return bHerding; }
+
+	/** Шептун рядом, которого загонщик учитывает (загон и прикрытие), или nullptr. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
+	ANoFearWhispererAIController* GetNearWhisperer() const { return NearWhisperer.Get(); }
+
+	/** Кандидат мешает гипнозу шептуна рядом (подошёл к жертве или ранил шептуна). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
+	bool IsHypnosisThreat(const AActor* Candidate) const;
+
+	/** Сколько ложных выпадов сделано (для тестов). */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "NoFear|Monster|Hunter")
+	int32 FakeLungeCount = 0;
+
+	/** Это загонщик: вид Hunter и не бешеный. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster")
+	bool IsHunterKind() const;
+
+	/** В ярости стаи тело быстрее во столько раз (время тела вне атак, вместе с баффом шептуна). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pack", meta = (ClampMin = "0.1"))
+	float RageSpeedScale = 1.2f;
 
 	/** Прибавка к оценке цели стаи: стая бьёт одну цель. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Pack", meta = (ClampMin = "0"))
@@ -375,6 +454,10 @@ private:
 	UFUNCTION()
 	void HandleAttackFinished(AActor* Target);
 
+	/** Попадание по своему телу: смертельное — сообщить стае, кто убил. */
+	UFUNCTION()
+	void HandleBodyDamaged(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info);
+
 	void UpdateGrudges();
 	void UpdateAttackToken();
 	void ReleaseToken();
@@ -385,6 +468,7 @@ private:
 	FVector GetRoamCenter();
 
 	TWeakObjectPtr<UNoFearMeleeComponent> ConfiguredMelee;
+	TWeakObjectPtr<UNoFearHealthComponent> BoundBodyHealth;
 
 	TMap<TWeakObjectPtr<AActor>, double> Grudges;
 
@@ -395,8 +479,10 @@ private:
 
 	TWeakObjectPtr<AActor> DefendTarget;
 	double DefendUntil = 0.0;
+	/** До какого времени в ярости стаи (BeginPackRage). */
+	double RageUntil = 0.0;
 	double WhisperBuffUntil = 0.0;
-	/** Бафф сам выставил время тела (снять, когда кончится). */
+	/** Бафф или ярость сами выставили время тела (снять, когда кончатся). */
 	bool bBuffDilation = false;
 	TWeakObjectPtr<UPointLightComponent> BuffGlow;
 
@@ -406,6 +492,21 @@ private:
 	int32 RoarCount = 0;
 	double NextRoarTime = 0.0;
 	FTimerHandle RoarTimer;
+
+	/** Загонщик: найти шептуна рядом (раз в секунду). */
+	void UpdateNearWhisperer();
+	TWeakObjectPtr<ANoFearWhispererAIController> NearWhisperer;
+	double NextWhispererCheckTime = 0.0;
+	bool bHerding = false;
+
+	/** Ложный выпад загонщика: бросок к цели, через FakeLungeTimer отскок назад. */
+	void UpdateFakeLunge();
+	void EndFakeLunge();
+	double NextFakeLungeTime = 0.0;
+	FTimerHandle FakeLungeTimer;
+	/** Загонщик: здоровье тела и набор атак (серия, финты, звук и тряска попадания). */
+	void ConfigureHunterBody(APawn* InPawn);
+	void ConfigureHunterMelee(UNoFearMeleeComponent* Melee);
 
 	FVector RoamHeading = FVector::ForwardVector;
 	double NextRoamTurnTime = 0.0;

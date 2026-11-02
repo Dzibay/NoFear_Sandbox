@@ -19,8 +19,8 @@ enum class ENoFearPackState : uint8
 	Encircle,
 	/** Окружили: бьют волнами по 2–3 с разных сторон, остальные держат кольцо и отрезают отход. */
 	Attack,
-	/** Вожак погиб: стая разбегается, потом новый вожак рыком собирает её снова. */
-	Scatter,
+	/** Вожак погиб: RageTime секунд вся стая без очереди и кольца бьёт его убийцу, быстрее обычного. */
+	Rage,
 };
 
 /** Решение стаи для одного монстра (читает ANoFearMonsterAIController). */
@@ -31,7 +31,7 @@ struct FNoFearPackMemberView
 	int32 PackSize = 1;
 	/** Цель стаи. nullptr — цели нет. */
 	AActor* Target = nullptr;
-	/** Куда идти: место в строю, в кольце или точка бегства. */
+	/** Куда идти: место в строю или в кольце. */
 	bool bHasGoal = false;
 	FVector Goal = FVector::ZeroVector;
 	/** Очередь монстра бить цель (его волна, ещё не ударил). */
@@ -41,7 +41,7 @@ struct FNoFearPackMemberView
 };
 
 /**
- * Числа стай монстров: сбор, окружение, волны, разбегание.
+ * Числа стай монстров: сбор, окружение, волны, ярость.
  * Хранятся в Project Settings → Game → NoFear AI; подсистема копирует их к себе при создании мира.
  */
 USTRUCT(BlueprintType)
@@ -113,16 +113,9 @@ struct FNoFearPackTuning
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0.5"))
 	float WaveMaxTime = 5.f;
 
-	/** Сколько разбегаются после гибели вожака, сек. */
+	/** Сколько длится ярость стаи после гибели вожака, сек. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
-	float ScatterTime = 6.f;
-
-	/** На сколько разбегаются от угрозы, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
-	float ScatterMinDistance = 1500.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pack", meta = (ClampMin = "0"))
-	float ScatterMaxDistance = 2500.f;
+	float RageTime = 5.f;
 };
 
 /**
@@ -135,7 +128,7 @@ struct FNoFearPackTuning
  *  - выбирает цель стаи (цель вожака, иначе самая частая у остальных) и делится знанием о ней: кто её видит
  *    или в кого она только что попала, сообщает остальным, где она;
  *  - ведёт стаю по состояниям ENoFearPackState и раздаёт каждому точку (ключ PackGoal) и очередь удара;
- *  - погиб вожак — стая на ScatterTime разбегается от угрозы, потом новый вожак рычит и собирает её.
+ *  - погиб вожак — новый вожак рычит, и стая RageTime секунд вся разом бьёт убийцу (ENoFearPackState::Rage).
  */
 UCLASS()
 class NOFEAR_API UNoFearPackSubsystem : public UTickableWorldSubsystem, public FNoFearPackTuning
@@ -208,6 +201,9 @@ public:
 	/** Монстр закончил удар: его часть волны сделана. */
 	void NotifyAttackFinished(const ANoFearMonsterAIController* Bot);
 
+	/** Монстра убили. Погиб вожак — его стая впадёт в ярость против Killer (при следующем обновлении). */
+	void NotifyMemberKilled(const ANoFearMonsterAIController* Bot, AActor* Killer);
+
 private:
 	struct FMember
 	{
@@ -218,9 +214,6 @@ private:
 		bool bAttackTurn = false;
 		bool bHasGoal = false;
 		FVector Goal = FVector::ZeroVector;
-		/** Точка бегства, пока стая разбегается. */
-		bool bHasFleeGoal = false;
-		FVector FleeGoal = FVector::ZeroVector;
 	};
 
 	struct FPack
@@ -252,7 +245,10 @@ private:
 		int32 WaveCount = 1;
 		double WaveStartTime = 0.0;
 
-		double ScatterUntil = 0.0;
+		/** Ярость: до какого времени и кто убил вожака. bRagePending — вожак погиб, ярость начнётся при обновлении стаи. */
+		double RageUntil = 0.0;
+		TWeakObjectPtr<AActor> LeaderKiller;
+		bool bRagePending = false;
 	};
 
 	void UpdateMembership(double Now);
@@ -260,7 +256,8 @@ private:
 	void SetState(FPack& Pack, ENoFearPackState NewState, double Now);
 	void PickTarget(FPack& Pack, double Now);
 	void ShareIntel(FPack& Pack, double Now);
-	void BeginScatter(FPack& Pack, const FVector& From, double Now);
+	/** Погиб вожак: ярость против его убийцы (нет убийцы — против цели стаи). */
+	void BeginRage(FPack& Pack, double Now);
 	/** Кольцо вокруг цели: места монстрам, которые бьют её (или ещё без цели), по их направлению от цели. */
 	void AssignSlots(FPack& Pack);
 	bool NeedsSlots(const FPack& Pack) const;

@@ -641,7 +641,7 @@ void ANoFearJumperAIController::UpdateMovementStance()
 	// К подножию насеста — тоже спринтом.
 	FVector PackGoal;
 	if (PerchState == EPerchState::Approach
-		|| (CurrentTarget.IsValid() && !IsCircling() && !IsScattering() && (HasAttackToken() || !GetPackGoal(PackGoal))))
+		|| (CurrentTarget.IsValid() && !IsCircling() && (HasAttackToken() || !GetPackGoal(PackGoal))))
 	{
 		SetMovementFlags(false, false, false, true);
 	}
@@ -2348,7 +2348,7 @@ AActor* ANoFearWhispererAIController::FindTendPortal() const
 void ANoFearWhispererAIController::UpdateMode()
 {
 	APawn* MyPawn = GetPawn();
-	if (!MyPawn || IsScattering() || UNoFearPoseComponent::IsActorStaggered(MyPawn))
+	if (!MyPawn || UNoFearPoseComponent::IsActorStaggered(MyPawn))
 	{
 		return;
 	}
@@ -2776,7 +2776,7 @@ void ANoFearWhispererAIController::UpdatePosition()
 {
 	APawn* MyPawn = GetPawn();
 	UWorld* World = GetWorld();
-	if (!MyPawn || !World || IsScattering())
+	if (!MyPawn || !World)
 	{
 		return;
 	}

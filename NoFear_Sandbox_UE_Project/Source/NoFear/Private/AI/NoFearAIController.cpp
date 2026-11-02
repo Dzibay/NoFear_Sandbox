@@ -90,7 +90,6 @@ const FName FNoFearBotKeys::IsWary(TEXT("IsWary"));
 const FName FNoFearBotKeys::HasAttackToken(TEXT("HasAttackToken"));
 const FName FNoFearBotKeys::IsRoaring(TEXT("IsRoaring"));
 const FName FNoFearBotKeys::PackGoal(TEXT("PackGoal"));
-const FName FNoFearBotKeys::IsScattering(TEXT("IsScattering"));
 const FName FNoFearBotKeys::WanderCenter(TEXT("WanderCenter"));
 const FName FNoFearBotKeys::KeepAway(TEXT("KeepAway"));
 const FName FNoFearBotKeys::CoverLocation(TEXT("CoverLocation"));

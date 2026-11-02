@@ -86,6 +86,21 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Melee")
 	void SetAttacks(const TArray<UNoFearMonsterAttack*>& Templates);
 
+	/** Добавить к набору копию Template, если атаки с таким именем ещё нет. Остальные атаки не трогает. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Melee")
+	UNoFearMonsterAttack* AddAttack(const UNoFearMonsterAttack* Template);
+
+	/** Забыть, кого уже задело в этом окне удара: следующий взмах серии бьёт их снова. */
+	void ResetHitActors() { HitActors.Reset(); }
+
+	/** Сейчас финт: замах брошен на полпути, монстр выжидает и замахивается снова. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Melee")
+	bool IsFeinting() const { return bFeinting; }
+
+	/** Сколько финтов на замахе сделано с появления. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Melee")
+	int32 GetFeintCount() const { return FeintCount; }
+
 	UPROPERTY(BlueprintAssignable, Category = "NoFear|Melee")
 	FNoFearMeleeAttackSignature OnAttackStarted;
 
@@ -137,6 +152,9 @@ private:
 	UNoFearMonsterAttack* ChooseAttack(const AActor* Target) const;
 	bool BeginAttack(UNoFearMonsterAttack* Attack, AActor* Target);
 	void BeginStrike();
+	/** Финт: на середине замаха поза сброшена, пауза, потом короткий замах и настоящий удар. */
+	void BeginFeint();
+	void ResumeWindup();
 	void EndHitWindow();
 	void FinishAttack();
 	void SweepHits();
@@ -152,5 +170,7 @@ private:
 	double NextAttackTime = 0.0;
 	FName LastAttackName;
 	int32 AttackCount = 0;
+	bool bFeinting = false;
+	int32 FeintCount = 0;
 	FTimerHandle PhaseTimer;
 };

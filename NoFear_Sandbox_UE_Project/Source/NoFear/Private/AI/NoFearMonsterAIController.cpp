@@ -3,7 +3,10 @@
 #include "AI/NoFearBotSubsystem.h"
 #include "AI/NoFearMeleeComponent.h"
 #include "AI/NoFearMonsterAttack.h"
+#include "AI/NoFearMonsterKinds.h"
+#include "EngineUtils.h"
 #include "AI/NoFearOpportunitySubsystem.h"
+#include "AI/NoFearTankShake.h"
 #include "AI/NoFearVulnerabilityComponent.h"
 #include "Animation/NoFearPoseComponent.h"
 #include "BehaviorTree/BehaviorTree.h"
@@ -18,6 +21,9 @@
 #include "Perception/AISenseConfig_Hearing.h"
 #include "Perception/AISenseConfig_Sight.h"
 #include "TimerManager.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "Sound/SoundBase.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace
@@ -32,6 +38,20 @@ namespace
 	constexpr float PackGoalRunDistance = 600.f;
 	/** Самооборона не кончается, пока цель не отошла на столько дальше SelfDefenseDistance, см. */
 	constexpr float SelfDefenseHysteresis = 200.f;
+
+	/** Звуки попадания загонщика (заглушки: удар по телу из Lyra). */
+	const TCHAR* HunterHitSounds[] = {
+		TEXT("/Game/External/LyraContent/Audio/Sounds/Impacts/Lyra_Plyr_BulletImpact_01.Lyra_Plyr_BulletImpact_01"),
+		TEXT("/Game/External/LyraContent/Audio/Sounds/Impacts/Lyra_Plyr_BulletImpact_02.Lyra_Plyr_BulletImpact_02"),
+		TEXT("/Game/External/LyraContent/Audio/Sounds/Impacts/Lyra_Plyr_BulletImpact_03.Lyra_Plyr_BulletImpact_03"),
+		TEXT("/Game/External/LyraContent/Audio/Sounds/Impacts/Lyra_Plyr_BulletImpact_04.Lyra_Plyr_BulletImpact_04"),
+		TEXT("/Game/External/LyraContent/Audio/Sounds/Impacts/Lyra_Plyr_BulletImpact_05.Lyra_Plyr_BulletImpact_05"),
+		TEXT("/Game/External/LyraContent/Audio/Sounds/Impacts/Lyra_Plyr_BulletImpact_06.Lyra_Plyr_BulletImpact_06"),
+	};
+	/** Ложный выпад: только если цель на таком расстоянии, см; бросок длится столько, сек. */
+	constexpr float FakeLungeMinDistance = 250.f;
+	constexpr float FakeLungeMaxDistance = 750.f;
+	constexpr float FakeLungeDuration = 0.35f;
 
 	/** Курс вожака гуляет на ±столько градусов раз в 6–10 секунд. */
 	constexpr float RoamTurnAngle = 50.f;
@@ -137,6 +157,7 @@ void ANoFearMonsterAIController::OnPossess(APawn* InPawn)
 	Grudges.Reset();
 	DefendTarget.Reset();
 	DefendUntil = 0.0;
+	RageUntil = 0.0;
 	WhisperBuffUntil = 0.0;
 	bBuffDilation = false;
 	bHasAttackToken = false;
@@ -148,8 +169,11 @@ void ANoFearMonsterAIController::OnPossess(APawn* InPawn)
 	NextRoamCenterTime = 0.0;
 
 	ConfiguredMelee.Reset();
+	NextFakeLungeTime = 0.0;
+	GetWorldTimerManager().ClearTimer(FakeLungeTimer);
 
 	Super::OnPossess(InPawn);
+	ConfigureHunterBody(InPawn);
 
 	if (UNoFearMeleeComponent* Melee = GetMeleeComponent())
 	{
@@ -157,6 +181,11 @@ void ANoFearMonsterAIController::OnPossess(APawn* InPawn)
 		Melee->OnAttackFinished.AddUniqueDynamic(this, &ANoFearMonsterAIController::HandleAttackFinished);
 		ConfigureMelee(Melee);
 		ConfiguredMelee = Melee;
+	}
+	if (UNoFearHealthComponent* Health = UNoFearHealthComponent::FindHealth(InPawn))
+	{
+		Health->OnDamaged.AddUniqueDynamic(this, &ANoFearMonsterAIController::HandleBodyDamaged);
+		BoundBodyHealth = Health;
 	}
 
 	// Слабые места и окна вида.
@@ -184,6 +213,168 @@ void ANoFearMonsterAIController::ConfigureMelee(UNoFearMeleeComponent* Melee)
 	{
 		Melee->SetAttacks(ObjectPtrDecay(AttackSet));
 	}
+	ConfigureHunterMelee(Melee);
+}
+
+bool ANoFearMonsterAIController::IsHunterKind() const
+{
+	return GetKindName() == FName(TEXT("Hunter"));
+}
+
+void ANoFearMonsterAIController::ConfigureHunterBody(APawn* InPawn)
+{
+	if (!InPawn || !IsHunterKind() || HunterMaxHealth <= 0.f)
+	{
+		return;
+	}
+	if (UNoFearHealthComponent* Health = UNoFearHealthComponent::FindHealth(InPawn); Health && !Health->IsDead())
+	{
+		// Целое тело остаётся целым при новом максимуме; раненое сохраняет долю здоровья.
+		const float Fraction = Health->GetMaxHealth() > 0.f ? Health->GetHealthFraction() : 1.f;
+		Health->MaxHealth = HunterMaxHealth;
+		Health->SetHealth(HunterMaxHealth * Fraction);
+	}
+}
+
+void ANoFearMonsterAIController::ConfigureHunterMelee(UNoFearMeleeComponent* Melee)
+{
+	if (!Melee || !IsHunterKind() || !AttackSet.IsEmpty())
+	{
+		return;
+	}
+	Melee->AddAttack(GetDefault<UNoFearMonsterAttack_Combo>());
+	if (UNoFearMonsterAttack* Swing = Melee->FindAttack(TEXT("Swing")))
+	{
+		Swing->FeintChance = HunterFeintChance;
+		if (Swing->KnockbackSpeed <= 0.f)
+		{
+			Swing->KnockbackSpeed = 250.f;
+		}
+	}
+	for (UNoFearMonsterAttack* Attack : Melee->Attacks)
+	{
+		if (!Attack)
+		{
+			continue;
+		}
+		if (!Attack->HitSound)
+		{
+			Attack->HitSound = LoadObject<USoundBase>(nullptr, HunterHitSounds[FMath::RandHelper(UE_ARRAY_COUNT(HunterHitSounds))]);
+		}
+		if (!Attack->HitShake)
+		{
+			Attack->HitShake = UNoFearHunterHitShake::StaticClass();
+		}
+	}
+}
+
+void ANoFearMonsterAIController::UpdateNearWhisperer()
+{
+	const APawn* MyPawn = GetPawn();
+	if (!MyPawn || !IsHunterKind())
+	{
+		NearWhisperer.Reset();
+		return;
+	}
+	const double Now = GetNow();
+	if (Now < NextWhispererCheckTime)
+	{
+		return;
+	}
+	NextWhispererCheckTime = Now + 1.0;
+	NearWhisperer.Reset();
+	const float WhispererSearchRadius = FMath::Max(HerdToWhispererRadius, HypnosisCoverRadius);
+	float BestDistSq = FMath::Square(WhispererSearchRadius);
+	for (TActorIterator<ANoFearWhispererAIController> It(GetWorld()); It; ++It)
+	{
+		const APawn* WhispererPawn = It->GetPawn();
+		if (!WhispererPawn || UNoFearHealthComponent::IsActorDead(WhispererPawn))
+		{
+			continue;
+		}
+		const float DistSq = FVector::DistSquared(MyPawn->GetActorLocation(), WhispererPawn->GetActorLocation());
+		if (DistSq <= BestDistSq)
+		{
+			BestDistSq = DistSq;
+			NearWhisperer = *It;
+		}
+	}
+}
+
+bool ANoFearMonsterAIController::IsHypnosisThreat(const AActor* Candidate) const
+{
+	const ANoFearWhispererAIController* Whisperer = NearWhisperer.Get();
+	const APawn* MyPawn = GetPawn();
+	const APawn* WhispererPawn = Whisperer ? Whisperer->GetPawn() : nullptr;
+	if (!Candidate || !MyPawn || !WhispererPawn || !Whisperer->IsHypnotizing() || HypnosisCoverBonus <= 0.f
+		|| FVector::DistSquared(MyPawn->GetActorLocation(), WhispererPawn->GetActorLocation()) > FMath::Square(HypnosisCoverRadius))
+	{
+		return false;
+	}
+	const APawn* Victim = Whisperer->GetHuntVictim();
+	if (Candidate == Victim || Candidate == WhispererPawn)
+	{
+		return false;
+	}
+	if (Whisperer->HasGrudgeAgainst(Candidate) || Whisperer->GetDefendTarget() == Candidate)
+	{
+		return true;
+	}
+	return Victim && FVector::DistSquared(Candidate->GetActorLocation(), Victim->GetActorLocation()) <= FMath::Square(HypnosisCoverVictimDistance);
+}
+
+void ANoFearMonsterAIController::UpdateFakeLunge()
+{
+	ACharacter* Body = Cast<ACharacter>(GetPawn());
+	const AActor* Target = CurrentTarget.Get();
+	UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	if (!Body || !Target || !Melee || !IsHunterKind() || FakeLungeMaxInterval <= 0.f || bHasAttackToken || IsPackRaging()
+		|| GetWorldTimerManager().IsTimerActive(FakeLungeTimer))
+	{
+		return;
+	}
+	const double Now = GetNow();
+	if (NextFakeLungeTime <= 0.0)
+	{
+		NextFakeLungeTime = Now + FMath::FRandRange(FakeLungeMinInterval, FakeLungeMaxInterval);
+		return;
+	}
+	if (Now < NextFakeLungeTime || !IsCircling() || !Melee->CanAttack())
+	{
+		return;
+	}
+	const float Distance = FVector::Dist2D(Body->GetActorLocation(), Target->GetActorLocation());
+	if (Distance < FakeLungeMinDistance || Distance > FakeLungeMaxDistance)
+	{
+		return;
+	}
+	// Бросок к цели без удара: игрок дёргается, а монстр отскакивает обратно в кольцо.
+	NextFakeLungeTime = Now + FMath::FRandRange(FakeLungeMinInterval, FakeLungeMaxInterval);
+	++FakeLungeCount;
+	const FVector Dir = (Target->GetActorLocation() - Body->GetActorLocation()).GetSafeNormal2D();
+	Body->SetActorRotation(Dir.Rotation());
+	Body->LaunchCharacter(Dir * FakeLungeSpeed + FVector::UpVector * 120.f, true, true);
+	if (UNoFearPoseComponent* Pose = Body->FindComponentByClass<UNoFearPoseComponent>())
+	{
+		Pose->PlayPose(ENoFearPose::Lunge, FakeLungeDuration, 0.8f);
+	}
+	Melee->BlockAttacksFor(FakeLungeDuration + 0.2f);
+	GetWorldTimerManager().SetTimer(FakeLungeTimer, this, &ANoFearMonsterAIController::EndFakeLunge, FakeLungeDuration, false);
+}
+
+void ANoFearMonsterAIController::EndFakeLunge()
+{
+	ACharacter* Body = Cast<ACharacter>(GetPawn());
+	if (!Body || UNoFearHealthComponent::IsActorDead(Body))
+	{
+		return;
+	}
+	FVector Away = -Body->GetActorForwardVector().GetSafeNormal2D();
+	if (const AActor* Target = CurrentTarget.Get())
+	{
+		Away = (Body->GetActorLocation() - Target->GetActorLocation()).GetSafeNormal2D();
+	}
+	Body->LaunchCharacter(Away * FakeLungeBackSpeed + FVector::UpVector * 100.f, true, true);
 }
 
 float ANoFearMonsterAIController::GetTargetDistance2D() const
@@ -205,7 +396,13 @@ void ANoFearMonsterAIController::OnUnPossess()
 		Melee->OnAttackStarted.RemoveDynamic(this, &ANoFearMonsterAIController::HandleAttackStarted);
 		Melee->OnAttackFinished.RemoveDynamic(this, &ANoFearMonsterAIController::HandleAttackFinished);
 	}
+	if (UNoFearHealthComponent* Health = BoundBodyHealth.Get())
+	{
+		Health->OnDamaged.RemoveDynamic(this, &ANoFearMonsterAIController::HandleBodyDamaged);
+	}
+	BoundBodyHealth.Reset();
 	GetWorldTimerManager().ClearTimer(RoarTimer);
+	GetWorldTimerManager().ClearTimer(FakeLungeTimer);
 	bRoaring = false;
 	Super::OnUnPossess();
 }
@@ -240,12 +437,18 @@ void ANoFearMonsterAIController::UpdateBot()
 		const bool bBuffed = IsWhisperBuffed();
 		Melee->CooldownScale *= bBuffed ? WhisperBuffCooldownScale : 1.f;
 		Melee->DamageScale = bBuffed ? WhisperBuffDamageScale : 1.f;
-		// Бафф ускоряет тело вне атак (колосс сам пишет время тела каждый кадр, см. его Tick).
-		const float Dilation = bBuffed && !Melee->IsAttacking() ? WhisperBuffSpeedScale : 1.f;
-		if (bBuffed || bBuffDilation)
+		// Бафф и ярость стаи ускоряют тело вне атак (колосс сам пишет время тела каждый кадр, см. его Tick).
+		const bool bRaging = IsPackRaging();
+		float Dilation = 1.f;
+		if (!Melee->IsAttacking())
+		{
+			Dilation *= bBuffed ? WhisperBuffSpeedScale : 1.f;
+			Dilation *= bRaging ? RageSpeedScale : 1.f;
+		}
+		if (bBuffed || bRaging || bBuffDilation)
 		{
 			MyPawn->CustomTimeDilation = Dilation;
-			bBuffDilation = bBuffed;
+			bBuffDilation = bBuffed || bRaging;
 		}
 		// Фиолетовый отсвет баффа.
 		UPointLightComponent* Glow = BuffGlow.Get();
@@ -285,6 +488,7 @@ void ANoFearMonsterAIController::UpdateBot()
 
 	UpdateScare();
 	UpdateAttackToken();
+	UpdateFakeLunge();
 	// Жетон и точка испуга могли смениться после того, как база записала блэкборд.
 	SetBlackboardBool(FNoFearBotKeys::HasAttackToken, bHasAttackToken);
 	if (bScaring)
@@ -298,8 +502,15 @@ void ANoFearMonsterAIController::UpdateScare()
 {
 	APawn* MyPawn = GetPawn();
 	AActor* Target = CurrentTarget.Get();
-	bScaring = bScareCivilians && MyPawn && Target && !IsAggro() && !HasGrudgeAgainst(Target)
+	UpdateNearWhisperer();
+	const bool bCivilianTarget = MyPawn && Target && !IsAggro() && !HasGrudgeAgainst(Target)
 		&& UNoFearOpportunitySubsystem::GetTargetCategory(Target) == ENoFearTargetCategory::Civilian;
+	// Загон к шептуну: мирного рядом с шептуном (и его жертву) не бьёт, а гонит к нему с дальней стороны.
+	const ANoFearWhispererAIController* Whisperer = NearWhisperer.Get();
+	const APawn* WhispererPawn = Whisperer ? Whisperer->GetPawn() : nullptr;
+	bHerding = bCivilianTarget && WhispererPawn && HerdToWhispererRadius > 0.f
+		&& FVector::DistSquared(MyPawn->GetActorLocation(), WhispererPawn->GetActorLocation()) <= FMath::Square(HerdToWhispererRadius);
+	bScaring = bCivilianTarget && (bScareCivilians || bHerding);
 	if (!bScaring)
 	{
 		return;
@@ -460,8 +671,16 @@ void ANoFearMonsterAIController::UpdateAttackToken()
 	// В стае очередь решает стая: бьют только окружив цель, своей волной. Кого цель бьёт рядом — отвечает без очереди.
 	// Ближний бой и в волне, и в самообороне — по жетону: на одну цель вплотную не больше MaxAttackersPerTarget.
 	FNoFearPackMemberView View;
-	if (GetPackView(View) && View.PackSize >= 2 && (View.Target == Target || View.State == ENoFearPackState::Scatter))
+	if (GetPackView(View) && View.PackSize >= 2 && (View.Target == Target || View.State == ENoFearPackState::Rage))
 	{
+		// Ярость: убийцу вожака бьют все разом, без очереди и жетона.
+		if (View.State == ENoFearPackState::Rage && View.Target == Target)
+		{
+			ReleaseToken();
+			bSelfDefense = false;
+			bHasAttackToken = true;
+			return;
+		}
 		const FNoFearKnownActor* Knowledge = KnownActors.Find(Target);
 		const bool bHitByTarget = Knowledge && GetNow() - Knowledge->LastAttackedTime <= SelfDefenseTime;
 		const float DefenseDistance = SelfDefenseDistance + (bSelfDefense ? SelfDefenseHysteresis : 0.f);
@@ -469,8 +688,6 @@ void ANoFearMonsterAIController::UpdateAttackToken()
 		bool bWantsMelee = false;
 		switch (View.State)
 		{
-		case ENoFearPackState::Scatter:
-			break;
 		case ENoFearPackState::Encircle:
 		case ENoFearPackState::Attack:
 			if (!IsRingFighter())
@@ -677,6 +894,11 @@ float ANoFearMonsterAIController::ScoreTarget(const AActor* Candidate, const FNo
 	{
 		Score += DefendScoreBonus;
 	}
+	// Прикрытие гипноза: загонщик рядом с шептуном бьёт того, кто мешает.
+	if (IsHunterKind() && IsHypnosisThreat(Candidate))
+	{
+		Score += HypnosisCoverBonus;
+	}
 	// Страж первым бьёт того, кто освобождает проводника.
 	if (bPortalGuard)
 	{
@@ -694,7 +916,7 @@ void ANoFearMonsterAIController::HandleTargetChanged(AActor* NewTarget, AActor* 
 	Super::HandleTargetChanged(NewTarget, OldTarget);
 
 	// Заметил добычу из спокойствия — рык, стая поднимается.
-	if (NewTarget && !OldTarget && GetNow() >= NextRoarTime && !IsScattering())
+	if (NewTarget && !OldTarget && GetNow() >= NextRoarTime)
 	{
 		Roar();
 	}
@@ -824,7 +1046,7 @@ bool ANoFearMonsterAIController::IsRoarReady() const
 bool ANoFearMonsterAIController::GetPackGoal(FVector& OutGoal) const
 {
 	// Колосс прикрывает: место в его тени важнее места в строю.
-	if (HasShadeGoal() && !IsScattering())
+	if (HasShadeGoal() && !IsPackRaging())
 	{
 		OutGoal = ShadeGoal;
 		return true;
@@ -834,7 +1056,17 @@ bool ANoFearMonsterAIController::GetPackGoal(FVector& OutGoal) const
 	const AActor* Target = CurrentTarget.Get();
 	if (bScaring && MyPawn && Target)
 	{
-		const FVector Away = (MyPawn->GetActorLocation() - Target->GetActorLocation()).GetSafeNormal2D();
+		FVector Away = (MyPawn->GetActorLocation() - Target->GetActorLocation()).GetSafeNormal2D();
+		// Загон: заходит с дальней от шептуна стороны, человек бежит от него — к шептуну.
+		const ANoFearWhispererAIController* Whisperer = NearWhisperer.Get();
+		if (bHerding && Whisperer && Whisperer->GetPawn())
+		{
+			const FVector FromWhisperer = (Target->GetActorLocation() - Whisperer->GetPawn()->GetActorLocation()).GetSafeNormal2D();
+			if (!FromWhisperer.IsNearlyZero())
+			{
+				Away = FromWhisperer;
+			}
+		}
 		OutGoal = Target->GetActorLocation() + Away * ScareDistance;
 		return true;
 	}
@@ -845,7 +1077,7 @@ bool ANoFearMonsterAIController::GetPackGoal(FVector& OutGoal) const
 		return true;
 	}
 	FNoFearPackMemberView View;
-	if (!GetPackView(View) || !View.bHasGoal || View.State == ENoFearPackState::Scatter)
+	if (!GetPackView(View) || !View.bHasGoal)
 	{
 		return false;
 	}
@@ -877,9 +1109,46 @@ ENoFearPackState ANoFearMonsterAIController::GetPackState() const
 	return GetPackView(View) ? View.State : ENoFearPackState::Roam;
 }
 
-bool ANoFearMonsterAIController::IsScattering() const
+bool ANoFearMonsterAIController::IsPackRaging() const
 {
-	return GetPackState() == ENoFearPackState::Scatter;
+	// Своё время ярости: шептун в неё не впадает, хоть стая и в ярости.
+	return GetNow() < RageUntil && GetPackState() == ENoFearPackState::Rage;
+}
+
+void ANoFearMonsterAIController::BeginPackRage(AActor* Killer, float Duration)
+{
+	// Как охрана шептуна: бросить цель и идти на убийцу, пока ярость не пройдёт.
+	RageUntil = GetNow() + Duration;
+	Defend(Killer, Duration);
+}
+
+void ANoFearMonsterAIController::HandleBodyDamaged(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info)
+{
+	if (!Info.bFatal)
+	{
+		// Вздрагивание: сильное попадание на замахе срывает удар загонщика.
+		UNoFearMeleeComponent* Melee = GetMeleeComponent();
+		if (IsHunterKind() && Melee && Melee->IsInWindup() && (Info.bHeadshot || Info.Amount >= FlinchCancelDamage))
+		{
+			Melee->CancelAttack();
+			Melee->BlockAttacksFor(FlinchBlockTime);
+			++FlinchCancelCount;
+			if (UNoFearPoseComponent* Pose = GetPawn() ? GetPawn()->FindComponentByClass<UNoFearPoseComponent>() : nullptr)
+			{
+				Pose->PlayPose(ENoFearPose::Flinch, 0.35f, 1.f);
+			}
+		}
+		return;
+	}
+	AActor* Killer = Info.InstigatorController ? Info.InstigatorController->GetPawn() : nullptr;
+	if (!Killer && Info.DamageCauser)
+	{
+		Killer = Info.DamageCauser->GetInstigator() ? Info.DamageCauser->GetInstigator() : Info.DamageCauser.Get();
+	}
+	if (UNoFearPackSubsystem* PackSubsystem = UNoFearPackSubsystem::Get(this); PackSubsystem && Killer)
+	{
+		PackSubsystem->NotifyMemberKilled(this, Killer);
+	}
 }
 
 // --- Походка и блэкборд ---
@@ -900,7 +1169,7 @@ bool ANoFearMonsterAIController::IsCircling() const
 
 bool ANoFearMonsterAIController::ShouldWalk() const
 {
-	if (IsScattering())
+	if (IsPackRaging())
 	{
 		return false;
 	}
@@ -934,9 +1203,9 @@ void ANoFearMonsterAIController::UpdateMovementStance()
 		SetMovementFlags(bClose, false, bClose, !bClose);
 		return;
 	}
-	if (IsScattering())
+	if (IsPackRaging() && bHasAttackToken)
 	{
-		// Разбегается со всех ног, не оглядываясь.
+		// На убийцу вожака — со всех ног.
 		SetMovementFlags(false, false, false, true);
 		return;
 	}
@@ -1001,20 +1270,10 @@ void ANoFearMonsterAIController::WriteBlackboard()
 
 	FNoFearPackMemberView View;
 	const bool bInPack = GetPackView(View) && View.PackSize >= 2;
-	const bool bScattering = bInPack && View.State == ENoFearPackState::Scatter;
-	BlackboardComp->SetValueAsBool(FNoFearBotKeys::IsScattering, bScattering);
-
-	// Точка от стаи: бегство (FleeLocation) или место в строю и кольце (PackGoal).
-	if (bScattering && View.bHasGoal)
-	{
-		BlackboardComp->SetValueAsVector(FNoFearBotKeys::FleeLocation, View.Goal);
-	}
-	else
-	{
-		BlackboardComp->ClearValue(FNoFearBotKeys::FleeLocation);
-	}
+	// Монстры не бегут: точка от стаи — только место в строю и кольце (PackGoal).
+	BlackboardComp->ClearValue(FNoFearBotKeys::FleeLocation);
 	FVector PackGoal;
-	if (!bScattering && GetPackGoal(PackGoal))
+	if (GetPackGoal(PackGoal))
 	{
 		BlackboardComp->SetValueAsVector(FNoFearBotKeys::PackGoal, PackGoal);
 	}

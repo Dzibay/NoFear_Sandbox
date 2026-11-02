@@ -17,6 +17,7 @@
 #include "EngineUtils.h"
 #include "GameFramework/DamageType.h"
 #include "Kismet/GameplayStatics.h"
+#include "GameFramework/PlayerController.h"
 
 const FName UNoFearMonsterAttack::BreakableTag = TEXT("NoFearBreakable");
 
@@ -88,6 +89,14 @@ void UNoFearMonsterAttack::ApplyHit(UNoFearMeleeComponent* Melee, AActor* Victim
 	{
 		UGameplayStatics::PlaySoundAtLocation(Melee, HitSound, Hit.ImpactPoint);
 	}
+	if (HitShake && HitShakeScale > 0.f)
+	{
+		const APawn* VictimPawn = Cast<APawn>(Victim);
+		if (APlayerController* PC = VictimPawn ? Cast<APlayerController>(VictimPawn->GetController()) : nullptr)
+		{
+			PC->ClientStartCameraShake(HitShake, HitShakeScale);
+		}
+	}
 }
 
 void UNoFearMonsterAttack::BreakCover(UNoFearMeleeComponent* Melee, AActor* Prop, UPrimitiveComponent* Component)
@@ -127,6 +136,65 @@ UNoFearMonsterAttack_Swing::UNoFearMonsterAttack_Swing()
 	// Шаг вперёд вместе с ударом, чтобы не махать по воздуху, если цель чуть отступила.
 	LungeSpeed = 250.f;
 	Pose = ENoFearPose::Swing;
+}
+
+UNoFearMonsterAttack_Combo::UNoFearMonsterAttack_Combo()
+{
+	AttackName = TEXT("Combo");
+	MinRange = 0.f;
+	MaxRange = 240.f;
+	Cooldown = 4.f;
+	Weight = 1.f;
+	Damage = 14.f;
+	HitReach = 100.f;
+	HitRadius = 90.f;
+	WindupTime = 0.4f;
+	HitWindow = 0.52f;
+	RecoveryTime = 0.9f;
+	LungeSpeed = 250.f;
+	Pose = ENoFearPose::Swing;
+}
+
+bool UNoFearMonsterAttack_Combo::CanHitNow(float Elapsed) const
+{
+	return Elapsed < HitActiveTime || (Elapsed >= SecondHitDelay && Elapsed < SecondHitDelay + HitActiveTime);
+}
+
+void UNoFearMonsterAttack_Combo::BeginStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target)
+{
+	bSecondSwing = false;
+	StrikeElapsed = 0.f;
+	Super::BeginStrike(Melee, Owner, Target);
+}
+
+bool UNoFearMonsterAttack_Combo::TickStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target, float DeltaTime)
+{
+	StrikeElapsed += DeltaTime;
+	if (!bSecondSwing && StrikeElapsed >= SecondHitDelay)
+	{
+		// Второй взмах: та же цель может получить ещё раз, поза и звук повторяются.
+		bSecondSwing = true;
+		++SecondSwingCount;
+		Melee->ResetHitActors();
+		if (UNoFearPoseComponent* PoseComp = Owner->FindComponentByClass<UNoFearPoseComponent>())
+		{
+			PoseComp->PlayPose(Pose, HitActiveTime + 0.15f, PoseIntensity * 1.15f);
+		}
+		if (SwingSound)
+		{
+			UGameplayStatics::PlaySoundAtLocation(Melee, SwingSound, Owner->GetActorLocation());
+		}
+		if (SecondLungeSpeed > 0.f)
+		{
+			FVector Dir = Owner->GetActorForwardVector();
+			if (Target)
+			{
+				Dir = (Target->GetActorLocation() - Owner->GetActorLocation()).GetSafeNormal2D();
+			}
+			Owner->LaunchCharacter(Dir * SecondLungeSpeed, true, false);
+		}
+	}
+	return true;
 }
 
 UNoFearMonsterAttack_Lunge::UNoFearMonsterAttack_Lunge()

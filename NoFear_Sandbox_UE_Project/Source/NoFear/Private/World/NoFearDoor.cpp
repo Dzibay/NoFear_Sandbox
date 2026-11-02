@@ -32,7 +32,7 @@ namespace
 	TArray<TWeakObjectPtr<ANoFearDoor>> GDoors;
 
 	/** Как часто дверь смотрит на ботов рядом. */
-	constexpr double BotUpdateInterval = 0.2;
+	constexpr double DoorBotUpdateInterval = 0.2;
 
 	float EaseInOut(float Alpha)
 	{
@@ -446,7 +446,7 @@ void ANoFearDoor::Tick(float DeltaSeconds)
 	}
 
 	const double Now = GetWorld()->GetTimeSeconds();
-	if (Now - LastBotUpdateTime >= BotUpdateInterval)
+	if (Now - LastBotUpdateTime >= DoorBotUpdateInterval)
 	{
 		LastBotUpdateTime = Now;
 		UpdateBots();

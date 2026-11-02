@@ -53,8 +53,6 @@ struct NOFEAR_API FNoFearBotKeys
 	static const FName IsRoaring;
 	/** Vector: куда стая ведёт монстра — место в строю, в кольце вокруг цели (не задано — точки нет). */
 	static const FName PackGoal;
-	/** Bool: вожак стаи погиб, монстр разбегается (к FleeLocation). */
-	static const FName IsScattering;
 	/** Vector: вокруг чего бродить спокойным (точка впереди по ходу у вожака, сам вожак у остальных). */
 	static const FName WanderCenter;
 	/** Bool: цель слишком близко, монстр (плевун) отступает, чтобы держать дистанцию. */
