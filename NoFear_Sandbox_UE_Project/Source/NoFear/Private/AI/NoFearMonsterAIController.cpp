@@ -330,7 +330,7 @@ void ANoFearMonsterAIController::UpdateGuardFacing()
 
 bool ANoFearMonsterAIController::CanJoinPack() const
 {
-	return !IsAggro() && !bPortalGuard;
+	return bJoinsPack && !IsAggro() && !bPortalGuard;
 }
 
 void ANoFearMonsterAIController::SetPortalGuard(const FVector& Center, const FVector& Post, float Radius)

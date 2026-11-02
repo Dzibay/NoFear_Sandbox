@@ -6,6 +6,7 @@
 #include "AI/NoFearBotSubsystem.h"
 #include "AI/NoFearCompanionAIController.h"
 #include "AI/NoFearMonsterAIController.h"
+#include "AI/NoFearMonsterKinds.h"
 #include "AI/NoFearShooterAIController.h"
 #include "AI/NoFearSquadSubsystem.h"
 #include "AI/NoFearRecruitableComponent.h"
@@ -1262,6 +1263,14 @@ void ANoFearHUD::DrawBotIndicators()
 			continue;
 		}
 		Seen.Add(Pawn);
+		// Тень в плаще панели не выдаёт.
+		if (const ANoFearShadeAIController* Shade = Cast<ANoFearShadeAIController>(Bot))
+		{
+			if (!Shade->IsRevealed())
+			{
+				continue;
+			}
+		}
 
 		// Плавная полоска и «хвост» живут независимо от того, показана ли панель: появившись, она не дёргается.
 		FBotPanelState& State = BotPanels.FindOrAdd(Pawn);

@@ -683,7 +683,7 @@ Class Defaults контроллера → **NoFear | AI**:
 
 | Метка | Кто ставит | Длится |
 |---|---|---|
-| KnockedDown | Атака с отбрасыванием не меньше **Knock Down Min Speed** (600): Smash и Charge танка | **Knock Down Time** (1.2 с) |
+| KnockedDown | Атака с отбрасыванием не меньше **Knock Down Min Speed** (600): Smash и Charge танка; удар тени в спину (8.11) | **Knock Down Time** (1.2 с) |
 | Slimed | Прямое попадание плевка | **Slime Time** снаряда (4 с) |
 | InAcid | Каждый тик лужи | Пока стоит в луже (+0.2 с) |
 | Isolated | Считается сам: нет живого союзника ближе **Isolated Distance** (1200) | Пока так |
@@ -782,6 +782,40 @@ Class Defaults контроллера → **NoFear | AI**:
 - Плевун не уходит с линии огня к укрытию.
 - Эффекты героя — заглушки HUD: размытия краёв и своих текстур нет.
 - Солдат, бегущий в укрытие, стреляет в ловчего только оттуда: спасение занимает 5–15 с. Выбор укрытия — в `ANoFearShooterAIController`, его этот этап не трогал.
+
+### 8.11. Тень (Shade)
+
+`ANoFearShadeAIController`, тело `CBP_Bot_Shade` (90 здоровья, ×0.95). В стаю не входит (**Join Pack** выкл.), не рычит, шаги тише в **Footstep Scale** (0.2) раза. Бег — **Run Speed** (650) временем тела, как колосс в ярости. Консоль: `NoFearSpawnBot Shade`.
+
+**Плащ.** Все слоты тела — динамический экземпляр `M_NoFear_ShadeCloak` (полупрозрачный, с преломлением), скаляр `Opacity`:
+- **Moving Opacity** (0.15) в движении, **Standing Opacity** (0.05) стоя;
+- проявлена — 1: замах **Strike Windup** (0.4 с) с шипением, **Reveal On Hurt Time** (3 с) после ранения, человек ближе **Reveal Human Distance** (250);
+- после удара и при бегстве — 0, даже вблизи. Тень от тела только у проявленной.
+
+**Восприятие.** Боты (`ANoFearAIController::UpdateAwareness`) не видят непроявленную тень дальше **Cloaked Sight Range** (400): движок её видит, но осведомлённость не растёт. Слух обычный, но тень не рычит, поэтому её замечают только глазами, в конусе зрения. Панель здоровья на HUD скрыта, пока тень не проявлена. Пули попадают всегда.
+
+**Охота** (состояния `GetShadeState`: Stalk, Approach, Strike, Retreat, Flee).
+- **Stalk.** Люди в **Hunt Range** (5000) держатся вместе — тень кружит вокруг центра группы (люди ближе **Group Radius**, 2000, к ближайшему) в коридоре **Stalk Min / Max Distance** (1500–2500).
+- **Отставший** — человек, у которого ближайший живой союзник дальше **Isolated Distance** (1200). Чем дальше союзник, тем лучше; вооружённому +**Armed Bonus** (400).
+- **Approach.** По дуге **Arc Radius** (700) заходит за спину (в полуугле **Back Half Angle**, 70°) и бьёт с **Strike Range** (220). Дольше **Approach Patience** (12 с) — бьёт откуда есть. Союзник подошёл ближе **Rejoined Distance** (900) — снова Stalk.
+- **Strike.** Атака `Strike`, **Strike Damage** (45). Пришлась в спину — сбивает с ног на **Knock Down Time** (1.2 с), метка `KnockedDown`.
+- **Retreat.** Отходит на **Retreat Distance** (1500), **Vanish Time** (6 с) невидима, затем Stalk.
+- **Flee.** Потеряла больше **Flee Health Fraction** (30 %) за **Flee Window** (2 с) — бежит на **Flee Distance** (2500) и прячется **Flee Hide Time** (10 с).
+
+**Слабые места.** Зона `RevealedHead` — голова ×2, пока проявлена; `RetreatBack` — спина ×1.5 при отходе и бегстве. Множители складываются с обычным выстрелом в голову и окнами.
+
+**Ложные звуки.** Во время Stalk раз в **Fake Sound Interval** (12–20 с) — крик, шаги или выстрел в **Fake Sound Distance** (1000–1800) от центра группы, в стороне от тени (90–150° от направления на неё). Звуки — мягкие ссылки **Cry / Steps / Shot Sound**, крик с **Cry Pitch** (1.8). Герой слышит звук на месте, без меток. Боты-люди ближе **Fake Sound Hearing** (3000) идут проверить (`ANoFearAIController::CheckNoise`):
+- стрелки и напарник — по ветке «По приказу» (`RallyLocation`), даже из строя; на месте осматриваются **Fake Sound Check Time** (3 с); цель, перевязка или приказ отменяют, не дошёл за **Noise Check Timeout** (20 с) — бросает;
+- из собранного отряда идёт один боец: ближайший к звуку свободный, командир — только если больше некого (`UNoFearSquadSubsystem::PickNoiseChecker`);
+- остальные — как на подозрительный шум.
+
+Для тестов и отладки: `IsRevealed`, `IsVanished`, `GetOpacity`, `GetStrikeCount`, `GetKnockDownCount`, `GetFleeCount`, `PlayFakeSoundNow`, `GetFakeSoundCount`, `GetLastFakeSoundLocation`, `GetLastFakeSoundCheckers`, `FindIsolatedVictim`; у стрелка — `IsCheckingNoise`, `GetNoiseCheckLocation`, `GetNoiseCheckArrivals`.
+
+**Не сделано.**
+- Проявление в визоре (этап 16).
+- Звуки — заглушки (`SC_GunShot_Cue`, `MSS_FoleySound_Run`, `Starter_Wind05`), шипение тоже.
+- Своей модели и анимаций нет: тело монстра под плащом.
+- Поход напарника на ложный звук отдельным тестом не проверен (проверены одиночный солдат и отряд).
 
 ## 9. Стрелки
 

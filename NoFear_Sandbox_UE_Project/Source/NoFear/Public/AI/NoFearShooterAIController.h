@@ -35,6 +35,23 @@ class NOFEAR_API ANoFearShooterAIController : public ANoFearAIController
 public:
 	ANoFearShooterAIController(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
+	/** Идёт к месту звука по ветке «По приказу» (RallyLocation), там осматривается; цель или приказ отменяют. */
+	virtual bool CheckNoise(FVector Location, float Duration) override;
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	bool IsCheckingNoise() const { return bCheckingNoise; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	FVector GetNoiseCheckLocation() const { return NoiseCheckLocation; }
+
+	/** Сколько раз дошёл до места звука. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
+	int32 GetNoiseCheckArrivals() const { return NoiseCheckArrivals; }
+
+	/** Дольше этого идёт к звуку — бросает, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|AI", meta = (ClampMin = "0"))
+	float NoiseCheckTimeout = 20.f;
+
 	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
 	UNoFearWeaponComponent* GetWeaponComponent() const;
 
@@ -397,6 +414,16 @@ protected:
 	/** Где стоять, ожидая санитара без укрытия (запомнено, когда санитар подошёл). */
 	bool bHoldingForMedic = false;
 	FVector MedicWaitLocation = FVector::ZeroVector;
+
+	/** Проверка звука (CheckNoise). */
+	void UpdateNoiseCheck();
+	bool bCheckingNoise = false;
+	bool bNoiseCheckArrived = false;
+	FVector NoiseCheckLocation = FVector::ZeroVector;
+	float NoiseCheckDuration = 0.f;
+	double NoiseCheckStartTime = 0.0;
+	double NoiseCheckArriveTime = 0.0;
+	int32 NoiseCheckArrivals = 0;
 	FString FlankSearchStats;
 
 	FNoFearCoverPoint Cover;

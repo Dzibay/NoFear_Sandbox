@@ -467,6 +467,7 @@ void ANoFearShooterAIController::UpdateBot()
 	{
 		MaintainWeapon();
 		UpdateSquadOrder();
+		UpdateNoiseCheck();
 		UpdateRescueFacing();
 		UpdateCover();
 		if (IsSuppressing())
@@ -542,6 +543,11 @@ void ANoFearShooterAIController::WriteBlackboard()
 	{
 		BlackboardComp->SetValueAsVector(FNoFearBotKeys::RallyLocation, MedicWaitLocation);
 	}
+	else if (bCheckingNoise)
+	{
+		// Проверка звука: та же ветка, что и приказ идти, — работает и в отряде, и у напарника в строю.
+		BlackboardComp->SetValueAsVector(FNoFearBotKeys::RallyLocation, NoiseCheckLocation);
+	}
 	else
 	{
 		BlackboardComp->ClearValue(FNoFearBotKeys::RallyLocation);
@@ -549,6 +555,68 @@ void ANoFearShooterAIController::WriteBlackboard()
 	const UNoFearCombatComponent* Combat = GetCombatComponent();
 	BlackboardComp->SetValueAsBool(FNoFearBotKeys::IsSuppressing, IsSuppressing() && !HasCover() && Combat && !Combat->HasLineOfSight());
 	BlackboardComp->SetValueAsInt(FNoFearBotKeys::SquadOrder, static_cast<int32>(SquadOrder.Order));
+}
+
+bool ANoFearShooterAIController::CheckNoise(FVector Location, float Duration)
+{
+	APawn* MyPawn = GetPawn();
+	if (!MyPawn || GetCurrentTarget() || UNoFearHealthComponent::IsActorIncapacitated(MyPawn) || GetHealTarget())
+	{
+		return false;
+	}
+	FVector Goal;
+	if (GetOrderMoveGoal(Goal))
+	{
+		return false;
+	}
+	const UNavigationSystemV1* Nav = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
+	FNavLocation Projected;
+	if (Nav && Nav->ProjectPointToNavigation(Location, Projected, FVector(300.f, 300.f, 400.f)))
+	{
+		Location = Projected.Location;
+	}
+	bCheckingNoise = true;
+	bNoiseCheckArrived = false;
+	NoiseCheckLocation = Location;
+	NoiseCheckDuration = Duration;
+	NoiseCheckStartTime = GetNow();
+	WriteBlackboard();
+	return true;
+}
+
+void ANoFearShooterAIController::UpdateNoiseCheck()
+{
+	const APawn* MyPawn = GetPawn();
+	if (!bCheckingNoise || !MyPawn)
+	{
+		return;
+	}
+	const double Now = GetNow();
+	FVector Goal;
+	// Бой, перевязка или приказ важнее; не дошёл за NoiseCheckTimeout — бросил.
+	const bool bInterrupted = GetCurrentTarget() || GetHealTarget() || GetOrderMoveGoal(Goal)
+		|| (!bNoiseCheckArrived && Now - NoiseCheckStartTime > NoiseCheckTimeout);
+	if (!bNoiseCheckArrived && FVector::Dist2D(MyPawn->GetActorLocation(), NoiseCheckLocation) <= 160.f)
+	{
+		bNoiseCheckArrived = true;
+		NoiseCheckArriveTime = Now;
+		++NoiseCheckArrivals;
+	}
+	if (bNoiseCheckArrived && !bInterrupted)
+	{
+		// Осматривается: взгляд медленно обходит круг.
+		const float Yaw = static_cast<float>(FMath::Fmod((Now - NoiseCheckArriveTime) * 90.0, 360.0));
+		SetFocalPoint(MyPawn->GetActorLocation() + FRotator(0.f, Yaw, 0.f).Vector() * 500.f + FVector(0.f, 0.f, 60.f));
+	}
+	if (bInterrupted || (bNoiseCheckArrived && Now - NoiseCheckArriveTime >= NoiseCheckDuration))
+	{
+		bCheckingNoise = false;
+		bNoiseCheckArrived = false;
+		if (!GetCurrentTarget())
+		{
+			ClearFocus(EAIFocusPriority::Gameplay);
+		}
+	}
 }
 
 bool ANoFearShooterAIController::IsInCover() const

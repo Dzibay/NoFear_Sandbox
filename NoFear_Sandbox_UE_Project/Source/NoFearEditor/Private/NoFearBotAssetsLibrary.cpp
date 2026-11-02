@@ -788,6 +788,8 @@ namespace
 				NSLOCTEXT("NoFearBots", "Tank", "Танк"), -1, nullptr, nullptr, 400.f, 1.3f },
 			{ TEXT("CBP_Bot_Whisperer"), TEXT("CBP_Bot_Monster"), ANoFearWhispererAIController::StaticClass(), ENoFearTeam::Monster, FLinearColor(0.25f, 0.02f, 0.35f),
 				NSLOCTEXT("NoFearBots", "Whisperer", "Шептун"), -1, nullptr, nullptr, 50.f, 0.8f },
+			{ TEXT("CBP_Bot_Shade"), TEXT("CBP_Bot_Monster"), ANoFearShadeAIController::StaticClass(), ENoFearTeam::Monster, FLinearColor(0.03f, 0.03f, 0.05f),
+				NSLOCTEXT("NoFearBots", "Shade", "Тень"), -1, nullptr, nullptr, 90.f, 0.95f },
 			{ TEXT("CBP_NoFearBot_Soldier"), TEXT("CBP_NoFearBot"), ANoFearShooterAIController::StaticClass(), ENoFearTeam::Enemy, FLinearColor(0.4f, 0.4f, 0.4f),
 				NSLOCTEXT("NoFearBots", "Soldier", "Стрелок"), 1, UNoFearCombatComponent::StaticClass(), TEXT("Combat") },
 			{ TEXT("CBP_Bot_Enemy"), TEXT("CBP_NoFearBot_Soldier"), ANoFearShooterAIController::StaticClass(), ENoFearTeam::Enemy, FLinearColor(1.f, 0.3f, 0.02f),

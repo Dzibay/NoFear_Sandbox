@@ -910,3 +910,334 @@ private:
 
 	double LastUpdateTime = -1.0;
 };
+
+class UMaterialInterface;
+class UMaterialInstanceDynamic;
+
+/** Что сейчас делает тень. */
+UENUM(BlueprintType)
+enum class ENoFearShadeState : uint8
+{
+	/** Кружит вокруг группы и ждёт отставшего, бросает ложные звуки. */
+	Stalk,
+	/** Заходит отставшему за спину по дуге. */
+	Approach,
+	/** Замах и удар. */
+	Strike,
+	/** Ударила — уходит, полностью невидима. */
+	Retreat,
+	/** Потеряла много здоровья — бежит и прячется. */
+	Flee
+};
+
+/**
+ * Тень (раздел 4.7 Docs/Monsters_Design.md): полуневидимый охотник на отставших.
+ * - Плащ: материал M_NoFear_ShadeCloak на всех слотах тела, прозрачность MovingOpacity в движении, StandingOpacity стоя.
+ *   Проявляется (RevealedOpacity) за StrikeWindup до удара с шипением, на RevealOnHurtTime после ранения и ближе
+ *   RevealHumanDistance к человеку.
+ * - Восприятие: боты-люди видят её только ближе CloakedSightRange (проявленную — как обычно, исчезнувшую — никак),
+ *   слышат как обычно (шаги тише в FootstepScale раз), пули попадают всегда.
+ * - Охота: жертва — человек, у которого ближайший союзник дальше IsolatedDistance (дальше лучше, вооружённые
+ *   интереснее). Нет такой — кружит в StalkMinDistance–StalkMaxDistance от группы и ждёт.
+ * - Удар и отход: заходит со спины по дуге, бьёт на StrikeDamage; удар в спину сбивает с ног на KnockDownTime.
+ *   После удара уходит на RetreatDistance и VanishTime полностью невидима (не проявляется и вплотную).
+ *   Потеряла больше FleeHealthFraction здоровья за FleeWindow — бежит и прячется на FleeHideTime.
+ * - Ложные звуки раз в FakeSoundInterval: крик, шаги или выстрел в FakeSoundDistance от группы, в стороне от тени.
+ *   Боты-люди в FakeSoundHearing идут проверить (CheckNoise; из отряда — один боец, PickNoiseChecker), герой
+ *   слышит звук без меток.
+ * - Слабые места: голова ×2, пока проявлена (зона RevealedHead); спина ×1.5 на отходе (RetreatBack).
+ * - В стаю не входит, своим не враждебна.
+ * Тело: CBP_Bot_Shade.
+ */
+UCLASS(Blueprintable)
+class NOFEAR_API ANoFearShadeAIController : public ANoFearMonsterAIController
+{
+	GENERATED_BODY()
+
+public:
+	ANoFearShadeAIController(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+
+	// --- Плащ ---
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Cloak")
+	TSoftObjectPtr<UMaterialInterface> CloakMaterial;
+
+	/** Непрозрачность в движении (85% прозрачности). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Cloak", meta = (ClampMin = "0", ClampMax = "1"))
+	float MovingOpacity = 0.15f;
+
+	/** Непрозрачность стоя (95% прозрачности). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Cloak", meta = (ClampMin = "0", ClampMax = "1"))
+	float StandingOpacity = 0.05f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Cloak", meta = (ClampMin = "0", ClampMax = "1"))
+	float RevealedOpacity = 1.f;
+
+	/** Скорость смены непрозрачности, долей в секунду. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Cloak", meta = (ClampMin = "0.1"))
+	float OpacityFadeSpeed = 5.f;
+
+	/** Проявляется после ранения на столько секунд. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Cloak", meta = (ClampMin = "0"))
+	float RevealOnHurtTime = 3.f;
+
+	/** Проявляется, если человек ближе, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Cloak", meta = (ClampMin = "0"))
+	float RevealHumanDistance = 250.f;
+
+	/** Боты видят непроявленную тень только ближе, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Cloak", meta = (ClampMin = "0"))
+	float CloakedSightRange = 400.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Cloak")
+	TSoftObjectPtr<USoundBase> HissSound;
+
+	// --- Тело ---
+
+	/** Скорость бега, см/с (тело ускоряется временем, как колосс в ярости). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Body", meta = (ClampMin = "0"))
+	float RunSpeed = 650.f;
+
+	/** Шаги тише во столько раз. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Body", meta = (ClampMin = "0", ClampMax = "1"))
+	float FootstepScale = 0.2f;
+
+	// --- Охота ---
+
+	/** Отставший: ближайший союзник дальше, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Hunt", meta = (ClampMin = "0"))
+	float IsolatedDistance = 1200.f;
+
+	/** Жертва перестаёт быть отставшей, если союзник ближе, см (чтобы не дёргаться на границе). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Hunt", meta = (ClampMin = "0"))
+	float RejoinedDistance = 900.f;
+
+	/** Вооружённая жертва интереснее: прибавка к расстоянию до союзника при выборе, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Hunt", meta = (ClampMin = "0"))
+	float ArmedBonus = 400.f;
+
+	/** Видит людей не дальше, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Hunt", meta = (ClampMin = "0"))
+	float HuntRange = 5000.f;
+
+	/** Кружит вокруг группы в этом коридоре, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Hunt", meta = (ClampMin = "0"))
+	float StalkMinDistance = 1500.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Hunt", meta = (ClampMin = "0"))
+	float StalkMaxDistance = 2500.f;
+
+	/** Скорость обхода группы, градусов в секунду. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Hunt", meta = (ClampMin = "0"))
+	float StalkOrbitSpeed = 8.f;
+
+	/** Группа: люди ближе этого к ближайшему, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Hunt", meta = (ClampMin = "0"))
+	float GroupRadius = 2000.f;
+
+	// --- Удар ---
+
+	/** Заходит в эту точку за спиной жертвы, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Strike", meta = (ClampMin = "0"))
+	float BehindDistance = 150.f;
+
+	/** Обходит жертву по дуге такого радиуса, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Strike", meta = (ClampMin = "0"))
+	float ArcRadius = 700.f;
+
+	/** Бьёт с такого расстояния, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Strike", meta = (ClampMin = "0"))
+	float StrikeRange = 220.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Strike", meta = (ClampMin = "0"))
+	float StrikeDamage = 45.f;
+
+	/** Замах: столько тень видна до удара, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Strike", meta = (ClampMin = "0"))
+	float StrikeWindup = 0.4f;
+
+	/** Удар в спину сбивает с ног на столько, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Strike", meta = (ClampMin = "0"))
+	float KnockDownTime = 1.2f;
+
+	/** Спина: удар пришёл из этого полуугла позади жертвы, градусов. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Strike", meta = (ClampMin = "0", ClampMax = "180"))
+	float BackHalfAngle = 70.f;
+
+	/** Подходит дольше — бьёт откуда есть, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Strike", meta = (ClampMin = "0"))
+	float ApproachPatience = 12.f;
+
+	/** Пауза между ударами, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Strike", meta = (ClampMin = "0"))
+	float StrikeCooldown = 2.f;
+
+	// --- Отход и бегство ---
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Retreat", meta = (ClampMin = "0"))
+	float RetreatDistance = 1500.f;
+
+	/** После удара полностью невидима, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Retreat", meta = (ClampMin = "0"))
+	float VanishTime = 6.f;
+
+	/** Потеряла больше этой доли здоровья за FleeWindow — бегство. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Retreat", meta = (ClampMin = "0", ClampMax = "1"))
+	float FleeHealthFraction = 0.3f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Retreat", meta = (ClampMin = "0"))
+	float FleeWindow = 2.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Retreat", meta = (ClampMin = "0"))
+	float FleeHideTime = 10.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Retreat", meta = (ClampMin = "0"))
+	float FleeDistance = 2500.f;
+
+	// --- Ложные звуки ---
+
+	/** Раз в столько секунд (случайно в диапазоне). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Decoy")
+	FVector2D FakeSoundInterval = FVector2D(12.f, 20.f);
+
+	/** Звук от центра группы, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Decoy")
+	FVector2D FakeSoundDistance = FVector2D(1000.f, 1800.f);
+
+	/** Боты слышат ложный звук в этом радиусе, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Decoy", meta = (ClampMin = "0"))
+	float FakeSoundHearing = 3000.f;
+
+	/** Сколько боец стоит на месте звука, осматриваясь, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Decoy", meta = (ClampMin = "0"))
+	float FakeSoundCheckTime = 3.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Decoy")
+	TSoftObjectPtr<USoundBase> CrySound;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Decoy", meta = (ClampMin = "0.1"))
+	float CryPitch = 1.8f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Decoy")
+	TSoftObjectPtr<USoundBase> StepsSound;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Decoy")
+	TSoftObjectPtr<USoundBase> ShotSound;
+
+	// --- Состояние (для тестов) ---
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Shade")
+	ENoFearShadeState GetShadeState() const { return State; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Shade")
+	AActor* GetVictim() const { return Victim.Get(); }
+
+	/** Проявлена: замах, ранена или человек рядом (и не исчезла). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Shade")
+	bool IsRevealed() const;
+
+	/** Полностью невидима: отход или бегство. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Shade")
+	bool IsVanished() const;
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Shade")
+	float GetOpacity() const { return Opacity; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Shade")
+	int32 GetStrikeCount() const { return StrikeCount; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Shade")
+	int32 GetKnockDownCount() const { return KnockDownCount; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Shade")
+	int32 GetFleeCount() const { return FleeCount; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Shade")
+	int32 GetFakeSoundCount() const { return FakeSoundCount; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Shade")
+	FVector GetLastFakeSoundLocation() const { return LastFakeSoundLocation; }
+
+	/** Сколько ботов пошло проверять последний ложный звук. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Shade")
+	int32 GetLastFakeSoundCheckers() const { return LastFakeSoundCheckers; }
+
+	/** Ложный звук сейчас: 0 — крик, 1 — шаги, 2 — выстрел (отладка и тесты). */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Shade")
+	void PlayFakeSound(FVector Location, int32 Kind);
+
+	/** Ложный звук сейчас в обычном месте (отладка и тесты). Ложь — некому слушать. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Shade")
+	bool PlayFakeSoundNow();
+
+	/** Предел, дальше которого боты не видят Actor: <0 — без предела, 0 — не видят совсем. */
+	static float GetSightLimit(const AActor* Actor);
+
+	virtual void Roar() override {}
+	virtual bool IsRingFighter() const override { return false; }
+
+	virtual void Tick(float DeltaSeconds) override;
+
+protected:
+	virtual void OnPossess(APawn* InPawn) override;
+	virtual void OnUnPossess() override;
+	virtual void UpdateBot() override;
+	virtual void UpdateMovementStance() override;
+	virtual bool WantsFreeAttack(AActor* Target) override { return false; }
+	virtual void ConfigureMelee(UNoFearMeleeComponent* Melee) override;
+
+private:
+	UFUNCTION()
+	void HandleDamaged(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info);
+
+	UFUNCTION()
+	void HandleAttackHit(AActor* HitVictim, float Damage);
+
+	void UpdateStalk(float DeltaTime);
+	void UpdateApproach();
+	void UpdateStrike();
+	void UpdateHide();
+	void UpdateCloak(float DeltaTime);
+	void UpdateFakeSounds();
+	void BeginStrike(AActor* Target);
+	void BeginHide(ENoFearShadeState NewState, const FVector& From, float Distance, float Duration);
+	void SetState(ENoFearShadeState NewState);
+	/** Отставший, на кого охотиться (или nullptr). */
+	APawn* FindIsolatedVictim() const;
+	/** Расстояние от Human до ближайшего живого союзника (огромное, если союзников нет). */
+	float GetNearestAllyDistance(const APawn* Human) const;
+	/** Живые враждебные люди в HuntRange. */
+	void GatherHumans(TArray<APawn*>& OutHumans) const;
+	/** Центр группы людей вокруг ближайшего к тени. */
+	bool GetGroupCenter(FVector& OutCenter) const;
+	void MoveToward(const FVector& Goal);
+	void ApplyOpacity();
+
+	ENoFearShadeState State = ENoFearShadeState::Stalk;
+	TWeakObjectPtr<AActor> Victim;
+	TWeakObjectPtr<UNoFearHealthComponent> BoundHealth;
+	TArray<TWeakObjectPtr<UMaterialInstanceDynamic>> CloakInstances;
+
+	float Opacity = 0.05f;
+	double StateStartTime = 0.0;
+	double RevealUntil = 0.0;
+	double HideUntil = 0.0;
+	double NextStrikeTime = 0.0;
+	double NextFakeSoundTime = 0.0;
+	FVector HideGoal = FVector::ZeroVector;
+	float OrbitAngle = 0.f;
+	bool bHasOrbit = false;
+	float ArcSign = 1.f;
+
+	/** Урон за последние FleeWindow секунд: время и величина. */
+	TArray<TPair<double, float>> RecentDamage;
+
+	int32 StrikeCount = 0;
+	int32 KnockDownCount = 0;
+	int32 FleeCount = 0;
+	int32 FakeSoundCount = 0;
+	int32 LastFakeSoundCheckers = 0;
+	FVector LastFakeSoundLocation = FVector::ZeroVector;
+
+	double LastUpdateTime = -1.0;
+};

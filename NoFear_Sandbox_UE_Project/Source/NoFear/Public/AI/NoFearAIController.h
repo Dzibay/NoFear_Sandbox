@@ -139,6 +139,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|AI")
 	AActor* GetCurrentTarget() const { return CurrentTarget.Get(); }
 
+	/**
+	 * Услышал звук, который стоит проверить (ложный звук тени): сходить к Location и осмотреться Duration секунд.
+	 * База — как подозрительный шум; стрелки и напарник идут туда даже из отряда и строя. false — не пойдёт (в бою).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|AI")
+	virtual bool CheckNoise(FVector Location, float Duration);
+
 	/** Уровень детализации (UNoFearAILodSubsystem): бот думает раз в UpdateInterval * Scale (Scale >= 1). */
 	void SetThinkScale(float Scale);
 

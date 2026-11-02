@@ -446,9 +446,11 @@ void ANoFearAIController::UpdateAwareness(float DeltaTime)
 
 		const float PreviousAwareness = Knowledge.Awareness;
 		bool bRising = false;
-		// Ослеплён — дальние враги пропадают из виду.
-		const bool bInView = Knowledge.bInView
-			&& !(bBlinded && FVector::Dist(MyPawn->GetActorLocation(), Actor->GetActorLocation()) > BlindedSightRange);
+		// Ослеплён — дальние враги пропадают из виду. Тень в плаще видна только вблизи.
+		const float Distance = FVector::Dist(MyPawn->GetActorLocation(), Actor->GetActorLocation());
+		const float ShadeLimit = ANoFearShadeAIController::GetSightLimit(Actor);
+		const bool bInView = Knowledge.bInView && !(bBlinded && Distance > BlindedSightRange)
+			&& !(ShadeLimit >= 0.f && Distance > ShadeLimit);
 
 		if (bInView)
 		{
@@ -777,6 +779,16 @@ void ANoFearAIController::SetAlertState(ENoFearAlertState NewState)
 	const ENoFearAlertState OldState = AlertState;
 	AlertState = NewState;
 	OnAlertStateChanged.Broadcast(this, NewState, OldState);
+}
+
+bool ANoFearAIController::CheckNoise(FVector Location, float Duration)
+{
+	if (!GetPawn() || CurrentTarget.IsValid() || UNoFearHealthComponent::IsActorIncapacitated(GetPawn()) || !CanInvestigateLocation(Location))
+	{
+		return false;
+	}
+	NoteSuspicion(Location, true);
+	return true;
 }
 
 void ANoFearAIController::NoteSuspicion(const FVector& Location, bool bInvestigate)

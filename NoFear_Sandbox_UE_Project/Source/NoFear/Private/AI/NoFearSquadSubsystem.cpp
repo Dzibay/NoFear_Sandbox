@@ -2988,6 +2988,40 @@ APawn* UNoFearSquadSubsystem::GetSquadCommander(const APawn* Pawn) const
 	return Squad ? Squad->Commander.Get() : nullptr;
 }
 
+APawn* UNoFearSquadSubsystem::PickNoiseChecker(APawn* Member, FVector Location) const
+{
+	const FSquad* Squad = FindSquadOf(Member);
+	if (!Squad || !Squad->bFormed)
+	{
+		return Member;
+	}
+	const APawn* Commander = Squad->Commander.Get();
+	APawn* Best = nullptr;
+	APawn* Fallback = nullptr;
+	float BestDistance = TNumericLimits<float>::Max();
+	for (const FMember& Candidate : Squad->Members)
+	{
+		APawn* CandidatePawn = Candidate.Pawn.Get();
+		const ANoFearShooterAIController* Bot = Candidate.Bot.Get();
+		if (!CandidatePawn || !Bot || Bot->GetCurrentTarget() || UNoFearHealthComponent::IsActorIncapacitated(CandidatePawn))
+		{
+			continue;
+		}
+		if (CandidatePawn == Commander)
+		{
+			Fallback = CandidatePawn;
+			continue;
+		}
+		const float Distance = FVector::DistSquared(CandidatePawn->GetActorLocation(), Location);
+		if (Distance < BestDistance)
+		{
+			BestDistance = Distance;
+			Best = CandidatePawn;
+		}
+	}
+	return Best ? Best : Fallback;
+}
+
 TArray<APawn*> UNoFearSquadSubsystem::GetSquadMembers(const APawn* Pawn) const
 {
 	TArray<APawn*> Result;

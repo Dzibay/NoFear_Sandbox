@@ -664,6 +664,13 @@ public:
 	 */
 	bool GetSquadLeash(const APawn* Pawn, FVector& OutAnchor, float& OutRadius) const;
 
+	/**
+	 * Кого из отряда Member отпустить проверить звук у Location: ближайшего к звуку свободного бойца (без цели),
+	 * командира — только если больше некого. Не в собранном отряде — сам Member.
+	 */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Squad")
+	APawn* PickNoiseChecker(APawn* Member, FVector Location) const;
+
 	/** Где отряд Pawn последний раз видел Enemy. false — не видел. */
 	bool GetSquadEnemyLocation(const APawn* Pawn, const AActor* Enemy, FVector& OutLocation) const;
 

@@ -10,6 +10,8 @@
 #include "AI/NoFearCombatComponent.h"
 #include "AI/NoFearTankShake.h"
 #include "AI/NoFearVulnerabilityComponent.h"
+#include "AI/NoFearSquadSubsystem.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Animation/NoFearPoseComponent.h"
 #include "BrainComponent.h"
 #include "Camera/CameraShakeBase.h"
@@ -2677,4 +2679,709 @@ void ANoFearWhispererAIController::ClearEffects()
 	}
 	WhisperAudio.Reset();
 	// Бафф держится 0.6 с после последнего пересчёта и спадёт сам.
+}
+
+// --- Тень ---
+
+ANoFearShadeAIController::ANoFearShadeAIController(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	// Охотится одна: в стаю не входит, жетон не берёт, удар запускает сама (BeginStrike).
+	bUseAttackTokens = false;
+	bJoinsPack = false;
+	bFinishKnockedDown = false;
+
+	AttackSet.Reset();
+	UNoFearMonsterAttack_Swing* Strike = CreateDefaultSubobject<UNoFearMonsterAttack_Swing>(TEXT("Strike"));
+	Strike->AttackName = TEXT("Strike");
+	Strike->MaxRange = 260.f;
+	Strike->Damage = StrikeDamage;
+	Strike->Cooldown = 1.f;
+	Strike->WindupTime = StrikeWindup;
+	Strike->RecoveryTime = 0.3f;
+	Strike->HitReach = 110.f;
+	Strike->LungeSpeed = 500.f;
+	Strike->LungeStopDistance = 90.f;
+	AttackSet.Add(Strike);
+
+	CloakMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Materials/M_NoFear_ShadeCloak.M_NoFear_ShadeCloak")));
+	HissSound = TSoftObjectPtr<USoundBase>(FSoftObjectPath(TEXT("/Game/Audio/Ambient/Starter_Wind06.Starter_Wind06")));
+	CrySound = TSoftObjectPtr<USoundBase>(FSoftObjectPath(TEXT("/Game/Audio/Ambient/Starter_Wind05.Starter_Wind05")));
+	StepsSound = TSoftObjectPtr<USoundBase>(FSoftObjectPath(TEXT("/Game/Audio/Foley/MetaSounds/MSS_FoleySound_Run.MSS_FoleySound_Run")));
+	ShotSound = TSoftObjectPtr<USoundBase>(FSoftObjectPath(TEXT("/Game/Audio/Effects/SC_GunShot_Cue.SC_GunShot_Cue")));
+
+	// Тень: голова ×2, пока проявлена; спина ×1.5 на отходе. Обе зоны включает контроллер.
+	KindName = TEXT("Shade");
+	WeakZones.Reset();
+	FNoFearWeakZone Head;
+	Head.Name = TEXT("RevealedHead");
+	Head.Bones = { TEXT("head") };
+	Head.DamageMultiplier = 2.f;
+	Head.Condition = ENoFearWeakCondition::Manual;
+	WeakZones.Add(Head);
+	FNoFearWeakZone Back;
+	Back.Name = TEXT("RetreatBack");
+	Back.Side = ENoFearWeakSide::Back;
+	Back.DamageMultiplier = 1.5f;
+	Back.Condition = ENoFearWeakCondition::Manual;
+	WeakZones.Add(Back);
+
+	TargetWeights.Hero = 1.f;
+	TargetWeights.Companion = 1.f;
+	TargetWeights.Soldier = 1.f;
+	TargetWeights.Civilian = 0.6f;
+	OpportunityBonuses.Reset();
+	OpportunityBonuses.Add(ENoFearOpportunity::Isolated, 2.f);
+}
+
+void ANoFearShadeAIController::OnPossess(APawn* InPawn)
+{
+	Super::OnPossess(InPawn);
+
+	State = ENoFearShadeState::Stalk;
+	Victim.Reset();
+	RecentDamage.Reset();
+	CloakInstances.Reset();
+	bHasOrbit = false;
+	LastUpdateTime = -1.0;
+	const double Now = GetNow();
+	StateStartTime = Now;
+	RevealUntil = 0.0;
+	HideUntil = 0.0;
+	NextStrikeTime = Now + 1.f;
+	NextFakeSoundTime = Now + FMath::FRandRange(FakeSoundInterval.X, FakeSoundInterval.Y);
+	Opacity = StandingOpacity;
+
+	ANoFearCharacter* Body = Cast<ANoFearCharacter>(InPawn);
+	if (!Body)
+	{
+		return;
+	}
+	if (UNoFearHealthComponent* Health = UNoFearHealthComponent::FindHealth(Body))
+	{
+		Health->OnDamaged.AddUniqueDynamic(this, &ANoFearShadeAIController::HandleDamaged);
+		BoundHealth = Health;
+	}
+	// Шаги почти не слышны.
+	const ANoFearCharacter* Defaults = GetDefault<ANoFearCharacter>();
+	Body->WalkFootstepRange = Defaults->WalkFootstepRange * FootstepScale;
+	Body->RunFootstepRange = Defaults->RunFootstepRange * FootstepScale;
+	Body->SprintFootstepRange = Defaults->SprintFootstepRange * FootstepScale;
+
+	// Плащ: прозрачный материал на всех слотах; окраска тела в BeginPlay его не перекрывает.
+	USkeletalMeshComponent* Mesh = Body->GetMesh();
+	UMaterialInterface* Cloak = CloakMaterial.LoadSynchronous();
+	if (Mesh && Cloak)
+	{
+		Body->bApplyBodyColor = false;
+		for (int32 Slot = 0; Slot < Mesh->GetNumMaterials(); ++Slot)
+		{
+			UMaterialInstanceDynamic* Instance = UMaterialInstanceDynamic::Create(Cloak, Body);
+			Mesh->SetMaterial(Slot, Instance);
+			CloakInstances.Add(Instance);
+		}
+	}
+	ApplyOpacity();
+}
+
+void ANoFearShadeAIController::OnUnPossess()
+{
+	if (UNoFearHealthComponent* Health = BoundHealth.Get())
+	{
+		Health->OnDamaged.RemoveDynamic(this, &ANoFearShadeAIController::HandleDamaged);
+	}
+	BoundHealth.Reset();
+	if (UNoFearMeleeComponent* Melee = GetMeleeComponent())
+	{
+		Melee->OnAttackHit.RemoveDynamic(this, &ANoFearShadeAIController::HandleAttackHit);
+	}
+	if (APawn* MyPawn = GetPawn())
+	{
+		MyPawn->CustomTimeDilation = 1.f;
+	}
+	Super::OnUnPossess();
+}
+
+void ANoFearShadeAIController::ConfigureMelee(UNoFearMeleeComponent* Melee)
+{
+	Super::ConfigureMelee(Melee);
+	if (Melee)
+	{
+		Melee->OnAttackHit.AddUniqueDynamic(this, &ANoFearShadeAIController::HandleAttackHit);
+	}
+}
+
+float ANoFearShadeAIController::GetSightLimit(const AActor* Actor)
+{
+	const APawn* Pawn = Cast<APawn>(Actor);
+	const ANoFearShadeAIController* Shade = Pawn ? Cast<ANoFearShadeAIController>(Pawn->GetController()) : nullptr;
+	if (!Shade || UNoFearHealthComponent::IsActorDead(Pawn))
+	{
+		return -1.f;
+	}
+	if (Shade->IsVanished())
+	{
+		return 0.f;
+	}
+	return Shade->IsRevealed() ? -1.f : Shade->CloakedSightRange;
+}
+
+bool ANoFearShadeAIController::IsVanished() const
+{
+	return (State == ENoFearShadeState::Retreat || State == ENoFearShadeState::Flee) && GetNow() < HideUntil;
+}
+
+bool ANoFearShadeAIController::IsRevealed() const
+{
+	const APawn* MyPawn = GetPawn();
+	if (!MyPawn || IsVanished())
+	{
+		return false;
+	}
+	if (State == ENoFearShadeState::Strike || GetNow() < RevealUntil)
+	{
+		return true;
+	}
+	// Человек вплотную.
+	for (const ANoFearCharacter* Human : TActorRange<ANoFearCharacter>(GetWorld()))
+	{
+		if (Human && Human != MyPawn && !Cast<ANoFearMonsterAIController>(Human->GetController())
+			&& !UNoFearHealthComponent::IsActorDead(Human)
+			&& FVector::DistSquared(Human->GetActorLocation(), MyPawn->GetActorLocation()) <= FMath::Square(RevealHumanDistance))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void ANoFearShadeAIController::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+	APawn* MyPawn = GetPawn();
+	if (!MyPawn)
+	{
+		return;
+	}
+	// Скорость задаёт Blueprint тела: бег до RunSpeed — временем тела, в ударе время обычное.
+	float Dilation = 1.f;
+	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	const ACharacter* Body = Cast<ACharacter>(MyPawn);
+	const UCharacterMovementComponent* Movement = Body ? Body->GetCharacterMovement() : nullptr;
+	const bool bRunning = State == ENoFearShadeState::Approach || State == ENoFearShadeState::Retreat || State == ENoFearShadeState::Flee;
+	if (bRunning && Movement && Movement->MaxWalkSpeed > 1.f && !(Melee && Melee->IsAttacking()))
+	{
+		Dilation = FMath::Max(1.f, RunSpeed / Movement->MaxWalkSpeed);
+	}
+	MyPawn->CustomTimeDilation = Dilation;
+	UpdateCloak(DeltaSeconds);
+}
+
+void ANoFearShadeAIController::UpdateMovementStance()
+{
+	// Выслеживает шагом, заходит, отходит и бежит бегом; лицом по ходу.
+	const bool bRunning = State == ENoFearShadeState::Approach || State == ENoFearShadeState::Retreat || State == ENoFearShadeState::Flee;
+	SetMovementFlags(false, false, !bRunning, false);
+}
+
+void ANoFearShadeAIController::UpdateBot()
+{
+	Super::UpdateBot();
+
+	APawn* MyPawn = GetPawn();
+	if (!MyPawn || UNoFearHealthComponent::IsActorDead(MyPawn))
+	{
+		return;
+	}
+	const double Now = GetNow();
+	const float DeltaTime = LastUpdateTime < 0.0 ? 0.f : static_cast<float>(FMath::Min(Now - LastUpdateTime, 0.5));
+	LastUpdateTime = Now;
+
+	switch (State)
+	{
+	case ENoFearShadeState::Stalk:
+		UpdateStalk(DeltaTime);
+		break;
+	case ENoFearShadeState::Approach:
+		UpdateApproach();
+		break;
+	case ENoFearShadeState::Strike:
+		UpdateStrike();
+		break;
+	default:
+		UpdateHide();
+		break;
+	}
+
+	if (UNoFearVulnerabilityComponent* Vulnerability = UNoFearVulnerabilityComponent::Find(MyPawn))
+	{
+		Vulnerability->SetZoneOpen(TEXT("RevealedHead"), IsRevealed());
+		Vulnerability->SetZoneOpen(TEXT("RetreatBack"), State == ENoFearShadeState::Retreat || State == ENoFearShadeState::Flee);
+	}
+}
+
+void ANoFearShadeAIController::SetState(ENoFearShadeState NewState)
+{
+	State = NewState;
+	StateStartTime = GetNow();
+	bHasOrbit = false;
+}
+
+void ANoFearShadeAIController::MoveToward(const FVector& Goal)
+{
+	FVector Projected = Goal;
+	NoFearWhisperer::ProjectToNav(GetWorld(), Goal, Projected);
+	SetShadeGoal(Projected, 0.6f);
+}
+
+// --- Выслеживание ---
+
+void ANoFearShadeAIController::GatherHumans(TArray<APawn*>& OutHumans) const
+{
+	const APawn* MyPawn = GetPawn();
+	if (!MyPawn)
+	{
+		return;
+	}
+	for (ANoFearCharacter* Human : TActorRange<ANoFearCharacter>(GetWorld()))
+	{
+		if (Human && Human != MyPawn && !Cast<ANoFearMonsterAIController>(Human->GetController())
+			&& !UNoFearHealthComponent::IsActorIncapacitated(Human) && UNoFearTeamLibrary::AreHostile(MyPawn, Human)
+			&& FVector::DistSquared(Human->GetActorLocation(), MyPawn->GetActorLocation()) <= FMath::Square(HuntRange))
+		{
+			OutHumans.Add(Human);
+		}
+	}
+}
+
+float ANoFearShadeAIController::GetNearestAllyDistance(const APawn* Human) const
+{
+	float Best = TNumericLimits<float>::Max();
+	for (const ANoFearCharacter* Other : TActorRange<ANoFearCharacter>(GetWorld()))
+	{
+		if (Other && Other != Human && !Cast<ANoFearMonsterAIController>(Other->GetController())
+			&& !UNoFearHealthComponent::IsActorIncapacitated(Other) && UNoFearTeamLibrary::AreFriendly(Human, Other))
+		{
+			Best = FMath::Min(Best, FVector::Dist(Other->GetActorLocation(), Human->GetActorLocation()));
+		}
+	}
+	return Best;
+}
+
+APawn* ANoFearShadeAIController::FindIsolatedVictim() const
+{
+	TArray<APawn*> Humans;
+	GatherHumans(Humans);
+	APawn* Best = nullptr;
+	float BestScore = -1.f;
+	for (APawn* Human : Humans)
+	{
+		const float AllyDistance = GetNearestAllyDistance(Human);
+		if (AllyDistance <= IsolatedDistance)
+		{
+			continue;
+		}
+		// Дальше от своих лучше, вооружённый интереснее; совсем одинокий — как отставший на HuntRange.
+		float Score = FMath::Min(AllyDistance, HuntRange);
+		if (NoFearWhisperer::IsArmed(Cast<ANoFearCharacter>(Human)))
+		{
+			Score += ArmedBonus;
+		}
+		if (Score > BestScore)
+		{
+			BestScore = Score;
+			Best = Human;
+		}
+	}
+	return Best;
+}
+
+bool ANoFearShadeAIController::GetGroupCenter(FVector& OutCenter) const
+{
+	const APawn* MyPawn = GetPawn();
+	TArray<APawn*> Humans;
+	GatherHumans(Humans);
+	if (!MyPawn || Humans.IsEmpty())
+	{
+		return false;
+	}
+	const APawn* Nearest = nullptr;
+	float NearestDistance = TNumericLimits<float>::Max();
+	for (const APawn* Human : Humans)
+	{
+		const float Distance = FVector::DistSquared(Human->GetActorLocation(), MyPawn->GetActorLocation());
+		if (Distance < NearestDistance)
+		{
+			NearestDistance = Distance;
+			Nearest = Human;
+		}
+	}
+	FVector Sum = FVector::ZeroVector;
+	int32 Count = 0;
+	for (const APawn* Human : Humans)
+	{
+		if (FVector::Dist(Human->GetActorLocation(), Nearest->GetActorLocation()) <= GroupRadius)
+		{
+			Sum += Human->GetActorLocation();
+			++Count;
+		}
+	}
+	OutCenter = Sum / FMath::Max(Count, 1);
+	return true;
+}
+
+void ANoFearShadeAIController::UpdateStalk(float DeltaTime)
+{
+	APawn* MyPawn = GetPawn();
+	const double Now = GetNow();
+	if (Now >= NextStrikeTime)
+	{
+		if (APawn* Isolated = FindIsolatedVictim())
+		{
+			Victim = Isolated;
+			const FVector ToMe = MyPawn->GetActorLocation() - Isolated->GetActorLocation();
+			// Обходит с той стороны, с которой ближе к спине.
+			ArcSign = FVector::DotProduct(ToMe, FVector::CrossProduct(FVector::UpVector, Isolated->GetActorForwardVector())) >= 0.f ? 1.f : -1.f;
+			SetState(ENoFearShadeState::Approach);
+			UpdateApproach();
+			return;
+		}
+	}
+	Victim.Reset();
+
+	// Все вместе — кружит вокруг группы в коридоре StalkMin–StalkMax и ждёт.
+	FVector Center;
+	if (!GetGroupCenter(Center))
+	{
+		return;
+	}
+	const FVector FromCenter = MyPawn->GetActorLocation() - Center;
+	if (!bHasOrbit)
+	{
+		OrbitAngle = FMath::RadiansToDegrees(FMath::Atan2(FromCenter.Y, FromCenter.X));
+		bHasOrbit = true;
+	}
+	OrbitAngle = FMath::UnwindDegrees(OrbitAngle + StalkOrbitSpeed * DeltaTime);
+	const float Radius = FMath::Clamp(static_cast<float>(FromCenter.Size2D()), StalkMinDistance, StalkMaxDistance);
+	const FVector Goal = Center + FRotator(0.f, OrbitAngle, 0.f).Vector() * Radius;
+	MoveToward(FVector(Goal.X, Goal.Y, MyPawn->GetActorLocation().Z));
+
+	UpdateFakeSounds();
+}
+
+// --- Подход и удар ---
+
+void ANoFearShadeAIController::UpdateApproach()
+{
+	APawn* MyPawn = GetPawn();
+	AActor* Target = Victim.Get();
+	const double Now = GetNow();
+	if (!Target || UNoFearHealthComponent::IsActorIncapacitated(Target) || GetNearestAllyDistance(Cast<APawn>(Target)) < RejoinedDistance)
+	{
+		// Жертва вернулась к своим — снова ждать.
+		Victim.Reset();
+		SetState(ENoFearShadeState::Stalk);
+		return;
+	}
+	const FVector TargetLocation = Target->GetActorLocation();
+	const FVector Forward = Target->GetActorForwardVector().GetSafeNormal2D();
+	const FVector ToMe = MyPawn->GetActorLocation() - TargetLocation;
+	const float Distance = ToMe.Size2D();
+	const bool bBehind = FVector::DotProduct(ToMe.GetSafeNormal2D(), -Forward) >= FMath::Cos(FMath::DegreesToRadians(BackHalfAngle));
+	const bool bImpatient = Now - StateStartTime > ApproachPatience;
+	if (Distance <= StrikeRange && (bBehind || bImpatient))
+	{
+		BeginStrike(Target);
+		return;
+	}
+	FVector Goal;
+	if (bBehind || bImpatient)
+	{
+		// За спиной: прямо к ней.
+		Goal = TargetLocation - Forward * BehindDistance;
+	}
+	else
+	{
+		// Спереди или сбоку: по дуге в сторону спины — точка на круге ArcRadius, повёрнутая к спине.
+		const FVector Dir = Distance > 1.f ? ToMe / Distance : -Forward;
+		const float Radius = FMath::Min(ArcRadius, FMath::Max(Distance, StrikeRange));
+		const FVector Next = Dir.RotateAngleAxis(50.f * ArcSign, FVector::UpVector);
+		Goal = TargetLocation + Next.GetSafeNormal2D() * Radius;
+		// Дошли до спины — дальше прямо.
+		if (FVector::DotProduct(Next.GetSafeNormal2D(), -Forward) > 0.7f)
+		{
+			Goal = TargetLocation - Forward * FMath::Min(Radius, BehindDistance + 200.f);
+		}
+	}
+	MoveToward(FVector(Goal.X, Goal.Y, TargetLocation.Z));
+}
+
+void ANoFearShadeAIController::BeginStrike(AActor* Target)
+{
+	UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	APawn* MyPawn = GetPawn();
+	if (!Melee || !MyPawn || !Melee->StartAttackByName(Target, TEXT("Strike"), true))
+	{
+		return;
+	}
+	StopMovement();
+	SetShadeGoal(MyPawn->GetActorLocation(), 0.6f);
+	SetState(ENoFearShadeState::Strike);
+	++StrikeCount;
+	// Проявляется на замахе с шипением.
+	if (USoundBase* Sound = HissSound.LoadSynchronous())
+	{
+		UGameplayStatics::PlaySoundAtLocation(this, Sound, MyPawn->GetActorLocation(), 1.f, 2.4f, 0.f);
+	}
+}
+
+void ANoFearShadeAIController::HandleAttackHit(AActor* HitVictim, float Damage)
+{
+	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	const UNoFearMonsterAttack* Attack = Melee ? Melee->GetCurrentAttack() : nullptr;
+	const APawn* MyPawn = GetPawn();
+	ACharacter* VictimCharacter = Cast<ACharacter>(HitVictim);
+	if (!Attack || Attack->AttackName != TEXT("Strike") || !MyPawn || !VictimCharacter || UNoFearHealthComponent::IsActorDead(VictimCharacter))
+	{
+		return;
+	}
+	// В спину — сбивает с ног.
+	const FVector FromVictim = (MyPawn->GetActorLocation() - VictimCharacter->GetActorLocation()).GetSafeNormal2D();
+	if (FVector::DotProduct(FromVictim, -VictimCharacter->GetActorForwardVector().GetSafeNormal2D()) < FMath::Cos(FMath::DegreesToRadians(BackHalfAngle)))
+	{
+		return;
+	}
+	++KnockDownCount;
+	UNoFearOpportunitySubsystem::AddTag(VictimCharacter, ENoFearOpportunity::KnockedDown, KnockDownTime);
+	VictimCharacter->LaunchCharacter(-FromVictim * 350.f + FVector::UpVector * 120.f, true, true);
+	if (const ANoFearCharacter* VictimNoFear = Cast<ANoFearCharacter>(VictimCharacter))
+	{
+		if (UNoFearPoseComponent* Pose = VictimNoFear->GetPoseComponent())
+		{
+			Pose->Stagger(-FromVictim, KnockDownTime);
+			Pose->OnHitReaction.Broadcast(Pose, true);
+		}
+	}
+	if (AAIController* VictimAI = Cast<AAIController>(VictimCharacter->GetController()))
+	{
+		VictimAI->StopMovement();
+	}
+}
+
+void ANoFearShadeAIController::UpdateStrike()
+{
+	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	if (Melee && Melee->IsAttacking() && GetNow() - StateStartTime < 3.f)
+	{
+		return;
+	}
+	// Ударила — уходит и исчезает.
+	const AActor* Target = Victim.Get();
+	const APawn* MyPawn = GetPawn();
+	const FVector From = Target ? Target->GetActorLocation() : MyPawn->GetActorLocation() - MyPawn->GetActorForwardVector() * 100.f;
+	BeginHide(ENoFearShadeState::Retreat, From, RetreatDistance, VanishTime);
+}
+
+// --- Отход и бегство ---
+
+void ANoFearShadeAIController::BeginHide(ENoFearShadeState NewState, const FVector& From, float Distance, float Duration)
+{
+	const APawn* MyPawn = GetPawn();
+	if (UNoFearMeleeComponent* Melee = GetMeleeComponent())
+	{
+		Melee->CancelAttack();
+	}
+	FVector Away = (MyPawn->GetActorLocation() - From).GetSafeNormal2D();
+	if (Away.IsNearlyZero())
+	{
+		Away = -MyPawn->GetActorForwardVector().GetSafeNormal2D();
+	}
+	// Прочь от обидчика; не вышло на навигации — пробует со сдвигом вбок.
+	HideGoal = MyPawn->GetActorLocation() + Away * Distance;
+	for (const float Turn : { 0.f, 35.f, -35.f, 70.f, -70.f })
+	{
+		FVector Projected;
+		if (NoFearWhisperer::ProjectToNav(GetWorld(), MyPawn->GetActorLocation() + Away.RotateAngleAxis(Turn, FVector::UpVector) * Distance, Projected))
+		{
+			HideGoal = Projected;
+			break;
+		}
+	}
+	SetState(NewState);
+	HideUntil = GetNow() + Duration;
+	RevealUntil = 0.0;
+	Victim.Reset();
+	ClearFocus(EAIFocusPriority::Gameplay);
+	SetShadeGoal(HideGoal, Duration);
+}
+
+void ANoFearShadeAIController::UpdateHide()
+{
+	const double Now = GetNow();
+	if (Now >= HideUntil)
+	{
+		NextStrikeTime = Now + StrikeCooldown;
+		SetState(ENoFearShadeState::Stalk);
+		return;
+	}
+	SetShadeGoal(HideGoal, 0.6f);
+}
+
+void ANoFearShadeAIController::HandleDamaged(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info)
+{
+	APawn* MyPawn = GetPawn();
+	if (!MyPawn || !Component || Component->IsDead())
+	{
+		return;
+	}
+	const double Now = GetNow();
+	RevealUntil = Now + RevealOnHurtTime;
+	RecentDamage.Add(TPair<double, float>(Now, Info.Amount));
+	RecentDamage.RemoveAll([this, Now](const TPair<double, float>& Entry) { return Now - Entry.Key > FleeWindow; });
+	float Lost = 0.f;
+	for (const TPair<double, float>& Entry : RecentDamage)
+	{
+		Lost += Entry.Value;
+	}
+	if (State != ENoFearShadeState::Flee && Lost > FleeHealthFraction * Component->GetMaxHealth())
+	{
+		// Много урона подряд — бежит прочь от обидчика и прячется.
+		++FleeCount;
+		RecentDamage.Reset();
+		const AActor* Offender = Info.InstigatorController ? Info.InstigatorController->GetPawn() : Info.DamageCauser.Get();
+		const FVector From = Offender ? Offender->GetActorLocation() : MyPawn->GetActorLocation() - MyPawn->GetActorForwardVector() * 100.f;
+		BeginHide(ENoFearShadeState::Flee, From, FleeDistance, FleeHideTime);
+	}
+}
+
+// --- Плащ ---
+
+void ANoFearShadeAIController::UpdateCloak(float DeltaTime)
+{
+	const APawn* MyPawn = GetPawn();
+	if (!MyPawn)
+	{
+		return;
+	}
+	float Wanted;
+	if (UNoFearHealthComponent::IsActorDead(MyPawn))
+	{
+		Wanted = RevealedOpacity;
+	}
+	else if (IsVanished())
+	{
+		Wanted = 0.f;
+	}
+	else if (IsRevealed())
+	{
+		Wanted = RevealedOpacity;
+	}
+	else
+	{
+		Wanted = MyPawn->GetVelocity().Size2D() > 20.f ? MovingOpacity : StandingOpacity;
+	}
+	// Проявление на замахе — сразу, остальное плавно.
+	Opacity = State == ENoFearShadeState::Strike ? Wanted : FMath::FInterpConstantTo(Opacity, Wanted, DeltaTime, OpacityFadeSpeed);
+	ApplyOpacity();
+}
+
+void ANoFearShadeAIController::ApplyOpacity()
+{
+	const ACharacter* Body = Cast<ACharacter>(GetPawn());
+	USkeletalMeshComponent* Mesh = Body ? Body->GetMesh() : nullptr;
+	for (const TWeakObjectPtr<UMaterialInstanceDynamic>& Instance : CloakInstances)
+	{
+		if (UMaterialInstanceDynamic* Material = Instance.Get())
+		{
+			Material->SetScalarParameterValue(TEXT("Opacity"), Opacity);
+		}
+	}
+	// Тень от тела выдаёт её — только проявленная отбрасывает тень.
+	const bool bShadow = Opacity > 0.5f;
+	if (Mesh && Mesh->CastShadow != bShadow)
+	{
+		Mesh->SetCastShadow(bShadow);
+	}
+}
+
+// --- Ложные звуки ---
+
+void ANoFearShadeAIController::UpdateFakeSounds()
+{
+	if (GetNow() >= NextFakeSoundTime)
+	{
+		PlayFakeSoundNow();
+	}
+}
+
+bool ANoFearShadeAIController::PlayFakeSoundNow()
+{
+	const APawn* MyPawn = GetPawn();
+	NextFakeSoundTime = GetNow() + FMath::FRandRange(FakeSoundInterval.X, FakeSoundInterval.Y);
+	FVector Center;
+	if (!MyPawn || !GetGroupCenter(Center))
+	{
+		return false;
+	}
+	// В стороне от тени: от направления на неё повернуть на 90–150° в случайную сторону.
+	FVector ToShade = (MyPawn->GetActorLocation() - Center).GetSafeNormal2D();
+	if (ToShade.IsNearlyZero())
+	{
+		ToShade = FVector::ForwardVector;
+	}
+	const float Sign = FMath::RandBool() ? 1.f : -1.f;
+	FVector Location = Center;
+	for (int32 Attempt = 0; Attempt < 6; ++Attempt)
+	{
+		const FVector Dir = ToShade.RotateAngleAxis(Sign * FMath::FRandRange(90.f, 150.f), FVector::UpVector);
+		FVector Projected;
+		if (NoFearWhisperer::ProjectToNav(GetWorld(), Center + Dir * FMath::FRandRange(FakeSoundDistance.X, FakeSoundDistance.Y), Projected))
+		{
+			Location = Projected;
+			break;
+		}
+	}
+	PlayFakeSound(Location, FMath::RandRange(0, 2));
+	return true;
+}
+
+void ANoFearShadeAIController::PlayFakeSound(FVector Location, int32 Kind)
+{
+	APawn* MyPawn = GetPawn();
+	UWorld* World = GetWorld();
+	if (!MyPawn || !World)
+	{
+		return;
+	}
+	++FakeSoundCount;
+	LastFakeSoundLocation = Location;
+
+	// Герой слышит звук на месте, без меток.
+	const TSoftObjectPtr<USoundBase>& SoundRef = Kind == 0 ? CrySound : Kind == 1 ? StepsSound : ShotSound;
+	if (USoundBase* Sound = SoundRef.LoadSynchronous())
+	{
+		UGameplayStatics::PlaySoundAtLocation(this, Sound, Location, 1.f, Kind == 0 ? CryPitch : 1.f, 0.f);
+	}
+
+	// Боты-люди идут проверить; из собранного отряда — один боец.
+	LastFakeSoundCheckers = 0;
+	const UNoFearSquadSubsystem* Squads = UNoFearSquadSubsystem::Get(this);
+	for (ANoFearCharacter* Human : TActorRange<ANoFearCharacter>(World))
+	{
+		ANoFearAIController* Bot = Human ? Cast<ANoFearAIController>(Human->GetController()) : nullptr;
+		if (!Bot || Cast<ANoFearMonsterAIController>(Bot) || UNoFearHealthComponent::IsActorIncapacitated(Human)
+			|| UNoFearTeamLibrary::AreFriendly(MyPawn, Human)
+			|| FVector::DistSquared(Human->GetActorLocation(), Location) > FMath::Square(FakeSoundHearing))
+		{
+			continue;
+		}
+		if (Squads && Squads->IsInFormedSquad(Human) && Squads->PickNoiseChecker(Human, Location) != Human)
+		{
+			continue;
+		}
+		if (Bot->CheckNoise(Location, FakeSoundCheckTime))
+		{
+			++LastFakeSoundCheckers;
+		}
+	}
 }

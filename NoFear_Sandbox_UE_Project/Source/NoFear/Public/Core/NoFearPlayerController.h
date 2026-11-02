@@ -109,7 +109,7 @@ public:
 
 	/**
 	 * Консоль: поставить ботов перед игроком. Тип — суффикс Blueprint из /Game/Blueprints/Bots/CBP_Bot_<Type>:
-	 * Civilian, Monster, AggroMonster, Jumper, Spitter, Tank, Whisperer, Enemy, Ally, Companion. Пример: NoFearSpawnBot Enemy 3.
+	 * Civilian, Monster, AggroMonster, Jumper, Spitter, Tank, Whisperer, Shade, Enemy, Ally, Companion. Пример: NoFearSpawnBot Enemy 3.
 	 */
 	UFUNCTION(Exec)
 	void NoFearSpawnBot(const FString& Type, int32 Count = 1);

@@ -99,6 +99,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster")
 	bool bUseAttackTokens = true;
 
+	/** Входит в стаю (UNoFearPackSubsystem). false — охотится один (тень). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster")
+	bool bJoinsPack = true;
+
 	/**
 	 * Свой набор атак вида монстра (прыгун, плевун, танк). Не пустой — заменяет набор UNoFearMeleeComponent тела
 	 * при вселении. Пустой — у тела остаются его атаки.
