@@ -157,9 +157,9 @@ def scenario():
 
     # --- отказы: предмет остаётся
     n_wires = len(placed(unreal.NoFearTripwire))
-    yield from key('I')
+    yield from key('Tab')
     check('screen refuses', case.is_screen_open() and case.place_item(wire) is None and case.count_item(wire) == 1)
-    yield from key('I')
+    yield from key('Tab')
     yield 0.1
 
     put_player(2, 0, 0)

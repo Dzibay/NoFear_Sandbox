@@ -86,9 +86,13 @@ struct NOFEAR_API FNoFearCaseLayout
 
 	/**
 	 * Сетка кейса слева, справа колесо или сетка хранилища, всё по центру экрана.
+	 * Экран крупнее остального HUD (CaseScreenZoom); не влезает в окно — масштаб уменьшается, но не меньше размера HUD.
 	 * Нулевой размер вьюпорта (-nullrhi) — как 1920×1080.
 	 */
 	static FNoFearCaseLayout Make(const FVector2D& InViewportSize, FIntPoint InGridSize, FIntPoint InContainerSize = FIntPoint::ZeroValue);
+
+	/** Та же разметка при заданном увеличении: 1 — размер HUD (клетка 56 пикселей при 1080p). */
+	static FNoFearCaseLayout MakeScaled(const FVector2D& InViewportSize, FIntPoint InGridSize, FIntPoint InContainerSize, float Zoom);
 
 	bool HasContainer() const { return ContainerSize.X > 0 && ContainerSize.Y > 0; }
 	FVector2D GetOrigin(bool bContainer) const { return bContainer ? ContainerOrigin : GridOrigin; }
@@ -325,7 +329,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Healing")
 	float GetHealingTimeRemaining() const;
 
-	// --- Экран кейса (I) ---
+	// --- Экран кейса (Tab) ---
 
 	/** Ввод экрана: I на кейс и контекст самого экрана. Вызывает ANoFearCharacter::SetupPlayerInputComponent. */
 	void SetupPlayerInput(UInputComponent* PlayerInputComponent);

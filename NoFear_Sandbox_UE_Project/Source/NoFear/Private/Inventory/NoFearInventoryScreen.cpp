@@ -1,4 +1,4 @@
-// Экран кейса (I): курсор, перетаскивание и поворот предметов, меню ПКМ, назначение в колесо, выброс за край,
+// Экран кейса (Tab): курсор, перетаскивание и поворот предметов, меню ПКМ, назначение в колесо, выброс за край,
 // предмет с земли на курсоре, когда в кейсе нет места, и сетка открытого хранилища рядом с кейсом.
 // Данные кейса — в NoFearInventoryComponent.cpp, сетка — в NoFearItemContainerComponent.cpp.
 
@@ -37,7 +37,7 @@ namespace
 
 	/**
 	 * Действия и контексты экрана — одни на всю игру. Свои у каждого тела оставались бы в подсистеме после
-	 * смерти тела и перехватывали бы I у нового.
+	 * смерти тела и перехватывали бы Tab у нового.
 	 */
 	struct FCaseInput
 	{
@@ -56,7 +56,7 @@ namespace
 		/** Заглушки: клавиши героя, которые на экране ничего не должны делать. */
 		UInputAction* Block = nullptr;
 		UInputAction* BlockLook = nullptr;
-		/** I — пока кейс работает. */
+		/** Tab — пока кейс работает. */
 		UInputMappingContext* CaseMapping = nullptr;
 		/** Пока экран открыт. */
 		UInputMappingContext* ScreenMapping = nullptr;
@@ -107,7 +107,7 @@ namespace
 		Input.BlockLook = MakeAction(TEXT("IA_NoFearCaseBlockLook"), EInputActionValueType::Axis2D);
 
 		Input.CaseMapping = MakeMapping(TEXT("IMC_NoFearCase"));
-		Input.CaseMapping->MapKey(Input.Toggle, EKeys::I);
+		Input.CaseMapping->MapKey(Input.Toggle, EKeys::Tab);
 		Input.CaseMapping->MapKey(Input.ItemWheel, EKeys::Q);
 
 		UInputMappingContext* Screen = MakeMapping(TEXT("IMC_NoFearCaseScreen"));
@@ -122,10 +122,10 @@ namespace
 		{
 			Screen->MapKey(Input.Slots[Slot], SlotKeys[Slot]);
 		}
-		// Граната, кобура и рэгдолл, смена ствола колёсиком, колесо приказов, колесо предметов, стабилизация, средняя кнопка, N.
+		// Граната, кобура и рэгдолл, смена ствола колёсиком, колесо приказов (F), колесо предметов, стабилизация, средняя кнопка, N.
 		const FKey Blocked[] = {
 			EKeys::G, EKeys::X, EKeys::MouseWheelAxis, EKeys::MouseScrollUp, EKeys::MouseScrollDown,
-			EKeys::Tab, EKeys::Q, EKeys::B, EKeys::MiddleMouseButton, EKeys::N,
+			EKeys::F, EKeys::Q, EKeys::B, EKeys::MiddleMouseButton, EKeys::N,
 		};
 		for (const FKey& Key : Blocked)
 		{
@@ -139,7 +139,7 @@ namespace
 		UInputMappingContext* Wheel = MakeMapping(TEXT("IMC_NoFearItemWheel"));
 		const FKey WheelBlocked[] = {
 			EKeys::LeftMouseButton, EKeys::RightMouseButton, EKeys::MouseWheelAxis, EKeys::MouseScrollUp, EKeys::MouseScrollDown,
-			EKeys::G, EKeys::I, EKeys::Tab, EKeys::B, EKeys::E, EKeys::X, EKeys::MiddleMouseButton, EKeys::N,
+			EKeys::G, EKeys::F, EKeys::Tab, EKeys::B, EKeys::E, EKeys::X, EKeys::MiddleMouseButton, EKeys::N,
 		};
 		for (const FKey& Key : WheelBlocked)
 		{
@@ -205,7 +205,35 @@ namespace
 // Разметка
 // ---------------------------------------------------------------------------
 
+namespace
+{
+	/** Экран кейса крупнее остального HUD: при 1080p клетка 90 пикселей (было 56), текст растёт вместе с ней. */
+	constexpr float CaseScreenZoom = 1.6f;
+	/** Подсказка и сообщение под подложкой занимают столько же, сколько 84 пикселя при 1080p. */
+	constexpr float BelowPanelSpace = 84.f;
+
+	bool FitsViewport(const FNoFearCaseLayout& Layout)
+	{
+		const FVector2D& View = Layout.ViewportSize;
+		return Layout.PanelMin.X >= View.X * 0.02f && Layout.PanelMax.X <= View.X * 0.98f
+			&& Layout.PanelMin.Y >= View.Y * 0.02f && Layout.PanelMax.Y + BelowPanelSpace * Layout.Scale <= View.Y;
+	}
+}
+
 FNoFearCaseLayout FNoFearCaseLayout::Make(const FVector2D& InViewportSize, FIntPoint InGridSize, FIntPoint InContainerSize)
+{
+	float Zoom = CaseScreenZoom;
+	FNoFearCaseLayout Layout = MakeScaled(InViewportSize, InGridSize, InContainerSize, Zoom);
+	// Узкое окно или большая сетка: уменьшаем шаг за шагом, но не мельче прежнего размера.
+	for (int32 Step = 0; Step < 24 && Zoom > 1.f && !FitsViewport(Layout); ++Step)
+	{
+		Zoom = FMath::Max(Zoom * 0.95f, 1.f);
+		Layout = MakeScaled(InViewportSize, InGridSize, InContainerSize, Zoom);
+	}
+	return Layout;
+}
+
+FNoFearCaseLayout FNoFearCaseLayout::MakeScaled(const FVector2D& InViewportSize, FIntPoint InGridSize, FIntPoint InContainerSize, float Zoom)
 {
 	FNoFearCaseLayout Layout;
 	Layout.ViewportSize = InViewportSize.X > 1.f && InViewportSize.Y > 1.f ? InViewportSize : FVector2D(1920.f, 1080.f);
@@ -215,8 +243,8 @@ FNoFearCaseLayout FNoFearCaseLayout::Make(const FVector2D& InViewportSize, FIntP
 		Layout.ContainerSize = InContainerSize;
 	}
 	Layout.bShowWheel = !Layout.HasContainer();
-	// Как GetUIScale у HUD: всё в пикселях 1080p.
-	const float S = Layout.ViewportSize.Y / 1080.f;
+	// Как GetUIScale у HUD: всё в пикселях 1080p, и ещё увеличение экрана.
+	const float S = Layout.ViewportSize.Y / 1080.f * Zoom;
 	Layout.Scale = S;
 	Layout.Cell = 56.f * S;
 	Layout.WheelRadius = 150.f * S;

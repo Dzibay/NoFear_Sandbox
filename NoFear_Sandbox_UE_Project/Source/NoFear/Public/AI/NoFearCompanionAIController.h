@@ -9,7 +9,7 @@ class ANoFearPlayerController;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FNoFearCompanionStateChangedSignature, ANoFearCompanionAIController*, Companion);
 
-/** Приказ напарнику (колесо на Tab, ANoFearPlayerController). */
+/** Приказ напарнику (колесо на F, ANoFearPlayerController). */
 UENUM(BlueprintType)
 enum class ENoFearCompanionOrder : uint8
 {

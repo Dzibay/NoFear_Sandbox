@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# T8: экран кейса на I (Docs/Inventory_Design.md, этап 2). Открытие с замедлением, ходьба без стрельбы, перенос щелчком
+# T8: экран кейса на Tab (Docs/Inventory_Design.md, этап 2). Открытие с замедлением, ходьба без стрельбы, перенос щелчком
 # и перетаскиванием, поворот, красная цель, разделение и доливка стопок, сектора колеса (1–8, перетаскивание, из сектора),
 # меню ПКМ (взять в руки, выбросить), выброс за край, E заблокирована, предмет на курсоре при нехватке места.
 # Клавиши идут через NoFear.Inv.Key, как с клавиатуры; курсор ставится напрямую (в -nullrhi мыши нет).
@@ -159,10 +159,10 @@ def scenario():
     pistol = wc.get_current_weapon()
     log('start: %s' % describe())
 
-    # --- открыть на I: замедление, курсор, камера стоит
-    yield from key('I')
+    # --- открыть на Tab: замедление, курсор, камера стоит
+    yield from key('Tab')
     dil = unreal.GameplayStatics.get_global_time_dilation(w)
-    check('screen opens on I', case.is_screen_open())
+    check('screen opens on Tab', case.is_screen_open())
     check('time slowed', abs(dil - 0.3) < 0.01, 'dilation %.2f' % dil)
     check('cursor shown, look ignored', pc.get_editor_property('show_mouse_cursor') and pc.is_look_input_ignored())
 
@@ -325,6 +325,8 @@ def scenario():
 
     # --- выброс перетаскиванием за край: ствол с магазином падает на землю
     n = len(pickups())
+    # в L_Demo в Z8_Items уже лежит винтовка: считаем только новые
+    rifles0 = len([p for p in pickups() if p.get_editor_property('item') == item('Rifle')])
     cursor(on(entry_of('Rifle')))
     cmd('NoFear.Inv.Key LeftMouseButton press')
     yield 0.05
@@ -333,8 +335,8 @@ def scenario():
     cmd('NoFear.Inv.Key LeftMouseButton release')
     yield 0.1
     new = [p for p in pickups() if p.get_editor_property('item') == item('Rifle')]
-    check('drag out drops', entry_of('Rifle') is None and len(pickups()) == n + 1 and len(new) == 1 and rifle not in list(wc.get_weapons()),
-          describe())
+    check('drag out drops', entry_of('Rifle') is None and len(pickups()) == n + 1 and len(new) == rifles0 + 1 and rifle not in list(wc.get_weapons()),
+          '%s pickups %d->%d rifles %d->%d' % (describe(), n, len(pickups()), rifles0, len(new)))
 
     # --- меню: выбросить
     cursor(on(by_id(bid)))
@@ -356,11 +358,11 @@ def scenario():
     yield 1.5
     aim(p)
     yield 0.3
-    yield from key('I')
+    yield from key('Tab')
     yield from key('E')
     check('E blocked while open', p in pickups() and case.count_item(item('PistolAmmo')) == 24)
-    yield from key('I')
-    check('I closes', not case.is_screen_open())
+    yield from key('Tab')
+    check('Tab closes', not case.is_screen_open())
     yield from key('E')
     yield 0.2
     check('E works after close', p not in pickups() and case.count_item(item('PistolAmmo')) == 34)

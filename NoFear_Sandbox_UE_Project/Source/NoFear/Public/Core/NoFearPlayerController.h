@@ -49,7 +49,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FNoFearCompanionsChangedSignature);
  * каждый кадр выбирает ближайший к центру экрана UNoFearInteractableComponent в пределах его дистанции.
  *
  * Напарник:
- * - колесо приказов: держать Tab — время замедляется, мышью выбрать сектор, отпустить — приказ;
+ * - колесо приказов: держать F — время замедляется, мышью выбрать сектор, отпустить — приказ;
  *   точечные приказы берут точку и врага под прицелом;
  * - пока есть стоящий на ногах напарник, игрок не умирает, а падает раненым (UNoFearHealthComponent::bCanBeDowned);
  * - упавшего напарника поднимают, удерживая E ReviveHoldTime секунд; урон по игроку сбрасывает подъём;
@@ -230,7 +230,7 @@ public:
 
 	// --- Колесо приказов ---
 
-	/** Колесо приказов (держать). Не задано — создаётся на Tab. */
+	/** Колесо приказов (держать). Не задано — создаётся на F. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Companions|Orders")
 	TObjectPtr<UInputAction> OrderWheelAction;
 

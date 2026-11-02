@@ -270,13 +270,15 @@ def scenario():
 
     # --- из ящика за край — на землю
     n = len(pickups())
+    # в L_Demo в Z8_Items уже лежат гранаты: считаем только новые
+    grenade_pickups0 = len([p for p in pickups() if p.get_editor_property('item') == item('Grenade')])
     grenades = store.count_item(item('Grenade'))
     cursor(on(entry_of(store, 'Grenade'), True))
     yield from key('LeftMouseButton')
     cursor(case.get_outside_point())
     yield from key('LeftMouseButton')
     new = [p for p in pickups() if p.get_editor_property('item') == item('Grenade')]
-    check('drop from box', store.count_item(item('Grenade')) == grenades - 1 and len(pickups()) == n + 1 and len(new) == 1
+    check('drop from box', store.count_item(item('Grenade')) == grenades - 1 and len(pickups()) == n + 1 and len(new) == grenade_pickups0 + 1
           and not case.is_holding() and case.count_item(item('Grenade')) == 0)
 
     # --- расширение из ящика на сетку кейса увеличивает кейс
@@ -296,9 +298,9 @@ def scenario():
     check('closed event', len(closed) == 1 and closed[0] == store, str(closed))
 
     # --- экран кейса уже открыт — ящик не открывается; с этим же ящиком — да
-    yield from key('I')
+    yield from key('Tab')
     check('busy screen refuses', case.is_screen_open() and not case.open_container_screen(store) and case.get_open_container() is None)
-    yield from key('I')
+    yield from key('Tab')
     check('reopen', case.open_container_screen(store) and case.open_container_screen(store) and case.get_open_container() == store)
 
     # --- отошёл — экран закрывается

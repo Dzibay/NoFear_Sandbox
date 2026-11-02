@@ -431,7 +431,7 @@ void ANoFearPlayerController::SetupInputComponent()
 	if (!CompanionInputContext)
 	{
 		CompanionInputContext = NewObject<UInputMappingContext>(this, TEXT("IMC_NoFearCompanion"));
-		CompanionInputContext->MapKey(OrderWheelAction, EKeys::Tab);
+		CompanionInputContext->MapKey(OrderWheelAction, EKeys::F);
 		CompanionInputContext->MapKey(OrderWheelAction, EKeys::Gamepad_DPad_Up);
 		CompanionInputContext->MapKey(StabilizeAction, EKeys::B);
 		CompanionInputContext->MapKey(StabilizeAction, EKeys::Gamepad_DPad_Down);

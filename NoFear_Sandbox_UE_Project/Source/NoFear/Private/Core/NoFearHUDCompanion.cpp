@@ -565,7 +565,7 @@ void ANoFearHUD::DrawOrderWheel()
 		DrawLabel(Name, Center.X, Y, CompanionColor, 1.1f * S, ELabelAlign::Center);
 		Y += NameHeight + 2.f * S;
 	}
-	const FText Hint = Selection == INDEX_NONE ? LOCTEXT("WheelHintPick", "Мышь — выбрать приказ, отпустить Tab — отдать")
+	const FText Hint = Selection == INDEX_NONE ? LOCTEXT("WheelHintPick", "Мышь — выбрать приказ, отпустить F — отдать")
 		: LOCTEXT("WheelHintCancel", "Вернуть мышь в центр — отменить");
 	DrawLabel(Hint.ToString(), Center.X, Y, FLinearColor(0.85f, 0.85f, 0.85f, 0.85f), 0.85f * S, ELabelAlign::Center);
 }

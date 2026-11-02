@@ -1,5 +1,5 @@
 // Кейс героя в HUD (Docs/Inventory_Design.md): сообщения о подборе, отладочная мини-сетка (NoFear.Inv.Debug),
-// экран кейса на I — с колесом или с сеткой открытого хранилища — и колесо предметов на Q. Остальной HUD — NoFearHUD.cpp.
+// экран кейса на Tab — с колесом или с сеткой открытого хранилища — и колесо предметов на Q. Остальной HUD — NoFearHUD.cpp.
 
 #include "Core/NoFearHUD.h"
 
@@ -519,8 +519,8 @@ void ANoFearHUD::DrawCaseScreen()
 		DrawLabel(Notice.ToString(), CenterX, Layout.PanelMax.Y + 14.f * S, FLinearColor(1.f, 0.9f, 0.6f, Alpha), 1.05f * S, ELabelAlign::Center);
 	}
 	const TCHAR* Hint = Container
-		? TEXT("ЛКМ — взять / положить, тащить между сетками · ПКМ — действия · R — повернуть · за край — выбросить · E / I / Esc — закрыть")
-		: TEXT("ЛКМ — взять / положить · ПКМ — действия, повернуть · R — повернуть · 1–8 — в колесо · за край — выбросить · I / Esc — закрыть");
+		? TEXT("ЛКМ — взять / положить, тащить между сетками · ПКМ — действия · R — повернуть · за край — выбросить · E / Tab / Esc — закрыть")
+		: TEXT("ЛКМ — взять / положить · ПКМ — действия, повернуть · R — повернуть · 1–8 — в колесо · за край — выбросить · Tab / Esc — закрыть");
 	DrawLabel(Hint, CenterX, Layout.PanelMax.Y + 46.f * S, Dim, 0.8f * S, ELabelAlign::Center);
 }
 

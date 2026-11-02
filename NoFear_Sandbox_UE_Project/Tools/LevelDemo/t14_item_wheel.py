@@ -82,7 +82,9 @@ def choose(case, k):
 
 
 def scenario():
-    for a, _, _, _ in bots:
+    for a, _, kind, _ in bots:
+        if kind == 'Companion':
+            continue  # нужен в конце: колесо приказов на F открывается только с напарником
         try:
             a.destroy_actor()
         except Exception:
@@ -151,21 +153,19 @@ def scenario():
 
     # --- экран кейса и колесо не открываются вместе
     check('screen refuses on wheel', not case.open_screen() and not case.is_screen_open())
-    yield from key('I')
-    check('I blocked on wheel', not case.is_screen_open())
     yield from key('Tab')
-    check('Tab blocked on wheel', not pc.is_order_wheel_open())
+    check('Tab blocked on wheel', not case.is_screen_open())
     yield from key('B')
     check('B blocked on wheel', not bracelet.is_stabilizing())
     release('Q')
     yield 0.1
-    yield from key('I')
+    yield from key('Tab')
     check('screen opens', case.is_screen_open())
     press('Q')
     yield 0.1
     check('Q refuses on screen', not case.is_item_wheel_open())
     release('Q')
-    yield from key('I')
+    yield from key('Tab')
     check('screen closed', not case.is_screen_open())
 
     # --- ствол из колеса в руки
@@ -269,6 +269,35 @@ def scenario():
           'cooldown %.1f' % bracelet.get_stabilize_cooldown_remaining())
 
     check('closed at end', not case.is_item_wheel_open() and abs(dilation() - 1.0) < 1e-3)
+
+    # --- колесо приказов на F (нужен напарник): держать открывает, отпустить закрывает; на колесе предметов и на экране кейса заперто
+    companion = find_bot('Companion')
+    put_player(156, 162.3, 90)
+    yield 1.5
+    recruit = companion.get_component_by_class(unreal.NoFearRecruitableComponent)
+    check('companion recruited', recruit.interact(pawn))
+    yield 1.0
+    press('F')
+    yield 0.15
+    check('F opens order wheel', pc.is_order_wheel_open())
+    release('F')
+    yield 0.15
+    check('order wheel closes', not pc.is_order_wheel_open())
+    press('Q')
+    yield 0.15
+    press('F')
+    yield 0.15
+    check('F blocked on item wheel', case.is_item_wheel_open() and not pc.is_order_wheel_open())
+    release('F')
+    release('Q')
+    yield 0.2
+    yield from key('Tab')
+    press('F')
+    yield 0.15
+    check('F blocked on screen', case.is_screen_open() and not pc.is_order_wheel_open())
+    release('F')
+    yield from key('Tab')
+    check('order wheel idle at end', not case.is_screen_open() and not pc.is_order_wheel_open())
     log('layout %s' % layout(case))
     log('RESULT %s' % ('OK' if not fails else 'FAILED ' + ', '.join(fails)))
 

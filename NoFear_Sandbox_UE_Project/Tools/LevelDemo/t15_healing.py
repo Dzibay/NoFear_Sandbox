@@ -214,7 +214,7 @@ def scenario():
     yield from interrupts('sprint', lambda: press('LeftShift'), lambda: release('LeftShift'), hold=0.3)
     yield from interrupts('wheel', lambda: press('Q'), lambda: release('Q'), hold=0.3)
     check('wheel closed', not case.is_item_wheel_open())
-    yield from interrupts('screen', lambda: press('I'), lambda: release('I'), hold=0.1)
+    yield from interrupts('screen', lambda: press('Tab'), lambda: release('Tab'), hold=0.1)
 
     # --- на бегу не начать
     wounded(50.0)
@@ -251,9 +251,9 @@ def scenario():
 
     # --- меню ПКМ: «Использовать»
     wounded(40.0)
-    press('I')
+    press('Tab')
     yield 0.1
-    release('I')
+    release('Tab')
     yield 0.3
     check('screen opens', case.is_screen_open())
     e = entry_of('Bandage')
@@ -272,9 +272,9 @@ def scenario():
 
     # --- оружие в руках для стрелковых пунктов меню остаётся без «Использовать»
     wounded(maxhp)
-    press('I')
+    press('Tab')
     yield 0.1
-    release('I')
+    release('Tab')
     yield 0.3
     pist = None
     for ent in case.get_entries():
