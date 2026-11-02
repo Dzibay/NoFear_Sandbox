@@ -22,6 +22,7 @@ public class NoFearEditor : ModuleRules
 			"BehaviorTreeEditor",
 			"BlueprintGraph",
 			"GameplayTasks",
+			"InputCore",
 			"KismetCompiler",
 			"NoFear",
 			"UnrealEd"

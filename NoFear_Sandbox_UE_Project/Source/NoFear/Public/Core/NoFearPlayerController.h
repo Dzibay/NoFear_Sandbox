@@ -55,7 +55,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FNoFearCompanionsChangedSignature);
  *
  * Испуганного мирного успокаивают, удерживая E рядом с ним (StartCalming, этап 11).
  *
- * Браслет стража (UNoFearBraceletComponent, этап 12): страх героя, его эффекты; Q — стабилизация,
+ * Браслет стража (UNoFearBraceletComponent, этап 12): страх героя, его эффекты; B — стабилизация,
  * держать Left Alt целясь — задержка дыхания.
  */
 UCLASS()

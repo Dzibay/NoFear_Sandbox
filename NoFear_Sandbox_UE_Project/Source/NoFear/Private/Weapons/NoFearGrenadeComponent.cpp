@@ -83,6 +83,21 @@ UNoFearItemData* UNoFearGrenadeComponent::GetGrenadeItem() const
 	return LoadedGrenadeItem;
 }
 
+void UNoFearGrenadeComponent::SetGrenadeItem(UNoFearItemData* Item)
+{
+	if (!Item || Item->Kind != ENoFearItemKind::Grenade || Item == GetGrenadeItem())
+	{
+		return;
+	}
+	if (!DefaultGrenadeData)
+	{
+		DefaultGrenadeData = GrenadeData;
+	}
+	GrenadeItem = Item;
+	LoadedGrenadeItem = Item;
+	GrenadeData = Item->GrenadeData ? Item->GrenadeData.Get() : DefaultGrenadeData.Get();
+}
+
 int32 UNoFearGrenadeComponent::GetGrenadeCount() const
 {
 	if (const UNoFearInventoryComponent* Case = UNoFearInventoryComponent::FindCase(GetOwner()))

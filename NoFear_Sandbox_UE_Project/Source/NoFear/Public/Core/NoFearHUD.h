@@ -680,6 +680,8 @@ private:
 	void DrawInventory();
 	/** Экран кейса (I): сетка, колесо, предмет на курсоре, карточка и меню. NoFearHUDInventory.cpp. */
 	void DrawCaseScreen();
+	/** Колесо предметов (Q): восемь секторов кейса посреди экрана, выбранный — цветом предмета. NoFearHUDInventory.cpp. */
+	void DrawItemWheel();
 	/** Дуга кольца From..To, разбитая на куски не больше 15°, чтобы оставалась гладкой. */
 	void DrawArc(const FVector2D& Center, float Inner, float Outer, float From, float To, const FLinearColor& Color);
 	void DrawOrderWheel();

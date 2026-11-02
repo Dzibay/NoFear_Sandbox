@@ -396,6 +396,7 @@ void ANoFearHUD::DrawHUD()
 	if (!bDead)
 	{
 		DrawCaseScreen();
+		DrawItemWheel();
 		// Колесо — поверх всего.
 		DrawOrderWheel();
 	}

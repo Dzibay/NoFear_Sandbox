@@ -123,7 +123,7 @@ void ANoFearHUD::DrawBracelet()
 	DrawLabel(Number, Center.X, NumberY, Fear >= FearTuning.AnxiousThreshold ? FillColor : FLinearColor::White, NumberScale, ELabelAlign::Center);
 	DrawLabel(BraceletLabel.ToString(), Center.X, NumberY - LabelHeight + 2.f * S, FLinearColor(0.8f, 0.8f, 0.8f, 0.8f), LabelScale, ELabelAlign::Center);
 
-	// Справа: Q — стабилизация (кольцо готовности), Alt — запас дыхания.
+	// Справа: B — стабилизация (кольцо готовности), Alt — запас дыхания.
 	const float SideX = Center.X + Radius + 18.f * S;
 	const float KeyScale = 0.85f * S;
 	const float HintScale = 0.75f * S;
@@ -139,8 +139,8 @@ void ANoFearHUD::DrawBracelet()
 		DrawRing(RingCenter, RingRadius, bActive ? 1.f : Ready, RingColor, 3.f * S);
 
 		float KeyHeight = 0.f;
-		GetTextSize(TEXT("Q"), Unused, KeyHeight, GetFont(), KeyScale);
-		DrawLabel(TEXT("Q"), RingCenter.X, RingCenter.Y - KeyHeight * 0.5f, bReady || bActive ? FLinearColor::White : FLinearColor(0.7f, 0.7f, 0.7f, 0.8f), KeyScale, ELabelAlign::Center);
+		GetTextSize(TEXT("B"), Unused, KeyHeight, GetFont(), KeyScale);
+		DrawLabel(TEXT("B"), RingCenter.X, RingCenter.Y - KeyHeight * 0.5f, bReady || bActive ? FLinearColor::White : FLinearColor(0.7f, 0.7f, 0.7f, 0.8f), KeyScale, ELabelAlign::Center);
 
 		const FString Hint = bReady || bActive ? LOCTEXT("Stabilize", "Стабилизация").ToString()
 			: FString::Printf(TEXT("%d с"), FMath::CeilToInt(Bracelet->GetStabilizeCooldownRemaining()));

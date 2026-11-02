@@ -107,6 +107,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FNoFearContainerScreenSignature, UNo
  * Кейс героя (Docs/Inventory_Design.md): сетка клеток, в которой лежат стволы, патроны, гранаты и медицина.
  * Сетка, стопки и поворот — от UNoFearItemContainerComponent; расширения увеличивают её по GridSizes.
  * На экране кейса рядом может быть открыто хранилище (OpenContainerScreen): предметы перетаскивают между сетками.
+ * Колесо предметов на Q (NoFearItemWheel.cpp) применяет то, что лежит в восьми секторах; колёсико мыши листает стволы колеса.
  *
  * Стоит на каждом ANoFearCharacter, но работает только у того, кем управляет игрок: включается при вселении
  * и забирает себе стволы UNoFearWeaponComponent. Каждый ствол кейса — актор ANoFearWeapon, который берёт
@@ -163,6 +164,18 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Inventory|Screen", meta = (ClampMin = "0"))
 	float PickupHoldDistance = 400.f;
+
+	/** Скорость игры, пока зажата Q и открыто колесо предметов. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Inventory|Wheel", meta = (ClampMin = "0.05", ClampMax = "1"))
+	float WheelTimeDilation = 0.3f;
+
+	/** Насколько сдвинуть мышь от центра колеса, чтобы выбрать сектор (сырые единицы мыши). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Inventory|Wheel", meta = (ClampMin = "1"))
+	float WheelDeadZone = 12.f;
+
+	/** Колёсико мыши листает только стволы из колеса, по порядку секторов. Выключено — все стволы кейса. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Inventory|Wheel")
+	bool bScrollWheelWeaponsOnly = true;
 
 	// --- Кейс ---
 
@@ -239,6 +252,45 @@ public:
 
 	/** В колесо можно только стволы, гранаты, медицину и то, что ставится в мир. */
 	static bool IsWheelItem(const UNoFearItemData* Item);
+
+	/**
+	 * Применить сектор колеса: ствол — в руки, граната — её бросает G, медицина — лечиться (этап 4),
+	 * капкан и растяжка — PlaceItem. false — сектор пуст или предмет сейчас не применить.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory")
+	bool UseWheelSlot(int32 Slot);
+
+	/**
+	 * Колёсико мыши: следующий (Direction > 0) или предыдущий ствол из колеса по порядку секторов.
+	 * Ствол в руках не из колеса или руки пусты — вперёд первый, назад последний. false — листать нечего.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory")
+	bool CycleWheelWeapon(int32 Direction);
+
+	// --- Колесо предметов (Q) ---
+
+	/** Открыть колесо: время замедляется, мышь выбирает сектор, обзор стоит, ходить можно. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory|Wheel")
+	bool OpenItemWheel();
+
+	/** Закрыть колесо; bUse — применить выбранный сектор (Q отпущена). Мышь в центре — ничего не выбрано. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory|Wheel")
+	void CloseItemWheel(bool bUse = true);
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Wheel")
+	bool IsItemWheelOpen() const { return bItemWheelOpen; }
+
+	/** Сектор под курсором колеса или INDEX_NONE (мышь в центре). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Wheel")
+	int32 GetItemWheelSelection() const { return bItemWheelOpen ? ItemWheelSelection : INDEX_NONE; }
+
+	/** Куда смотрит курсор колеса: единичный вектор, Y вверх; ноль — в центре. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory|Wheel")
+	FVector2D GetItemWheelCursor() const;
+
+	/** Курсор колеса в сырых единицах мыши, Y вверх. Мышь двигает его сама; проверки ставят его так. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory|Wheel")
+	void SetItemWheelCursor(FVector2D Cursor);
 
 	// --- Экран кейса (I) ---
 
@@ -456,8 +508,10 @@ private:
 	void TryActivate();
 
 	APlayerController* GetOwnerPlayerController() const;
-	/** Вернуть контекст ввода с I, если его сняли (персонаж GASP пересобирает контексты при вселении). */
+	/** Вернуть контексты ввода с I и Q, если их сняли (персонаж GASP пересобирает контексты при вселении). */
 	void EnsureCaseInput(APlayerController* PC) const;
+	/** Снять заглушки колеса предметов. */
+	void RemoveItemWheelInput(APlayerController* PC) const;
 	void UpdateScreenCursor(APlayerController* PC);
 
 	/** Взять предмет кейса или хранилища на курсор, курсор там, где за него взялись. */
@@ -490,12 +544,28 @@ private:
 
 	UNoFearWeaponComponent* GetWeaponComponent() const;
 
+	/** Колесо открыто: мышь двигает курсор; упал, сменился контроллер, открылся экран или колесо приказов — закрыть. */
+	void UpdateItemWheel(APlayerController* PC);
+	/** Гранаты, которые бросает G, кончились — G бросает другие гранаты из кейса, по порядку секторов колеса. */
+	void RefreshGrenadeChoice();
+	/** Лечение медициной — этап 4; пока предмет не тратится. */
+	bool StartHealing(UNoFearItemData* Item);
+
 	TArray<int32> WheelSlots;
 	int32 ExpansionLevel = 0;
 	bool bCaseActive = false;
 
 	FText NoticeText;
 	double NoticeTime = -100.0;
+
+	// --- Колесо предметов ---
+
+	bool bItemWheelOpen = false;
+	int32 ItemWheelSelection = INDEX_NONE;
+	FVector2D ItemWheelCursor = FVector2D::ZeroVector;
+	float TimeDilationBeforeWheel = 1.f;
+	/** Контроллер, у которого колесо забрало обзор: ему и вернуть. */
+	TWeakObjectPtr<APlayerController> WheelController;
 
 	// --- Экран кейса ---
 

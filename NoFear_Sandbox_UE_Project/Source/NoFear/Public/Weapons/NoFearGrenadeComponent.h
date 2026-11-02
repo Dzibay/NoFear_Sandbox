@@ -88,6 +88,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Grenade")
 	void AddGrenades(int32 Amount);
 
+	/** Предмет кейса, который бросает G у героя с кейсом. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Grenade")
+	UNoFearItemData* GetGrenadeItem() const;
+
+	/**
+	 * Какие гранаты из кейса бросает G (выбор на колесе предметов). У предмета есть GrenadeData — граната летит
+	 * и взрывается по ним, нет — по данным компонента с начала игры.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Grenade")
+	void SetGrenadeItem(UNoFearItemData* Item);
+
 	/** Игрок держит G: рисовать дугу. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Grenade")
 	bool IsAiming() const { return bAiming; }
@@ -160,7 +171,6 @@ private:
 	void SpawnAimedGrenade();
 	/** Списать брошенную гранату: из кейса или из своего запаса. */
 	void ConsumeGrenade();
-	UNoFearItemData* GetGrenadeItem() const;
 	void FinishThrow();
 	void EndBusy();
 
@@ -175,6 +185,9 @@ private:
 	int32 GrenadeCount = 0;
 	UPROPERTY(Transient)
 	mutable TObjectPtr<UNoFearItemData> LoadedGrenadeItem;
+	/** GrenadeData до первого SetGrenadeItem: для гранат без своих данных. */
+	UPROPERTY(Transient)
+	TObjectPtr<UNoFearGrenadeData> DefaultGrenadeData;
 	/** Запас уже задан (SetGrenadeCount до BeginPlay — контроллер бота при захвате). */
 	bool bCountSet = false;
 	bool bAiming = false;

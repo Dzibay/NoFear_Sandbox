@@ -48,6 +48,8 @@ namespace
 		UInputAction* Back = nullptr;
 		/** E: закрыть экран с хранилищем. */
 		UInputAction* Interact = nullptr;
+		/** Q: колесо предметов, пока зажата. */
+		UInputAction* ItemWheel = nullptr;
 		UInputAction* Slots[UNoFearInventoryComponent::WheelSlotCount] = {};
 		/** Заглушки: клавиши героя, которые на экране ничего не должны делать. */
 		UInputAction* Block = nullptr;
@@ -56,6 +58,8 @@ namespace
 		UInputMappingContext* CaseMapping = nullptr;
 		/** Пока экран открыт. */
 		UInputMappingContext* ScreenMapping = nullptr;
+		/** Пока открыто колесо предметов: только заглушки, ходить можно. */
+		UInputMappingContext* WheelMapping = nullptr;
 	};
 
 	UInputAction* MakeAction(const TCHAR* Name, EInputActionValueType Type)
@@ -89,6 +93,7 @@ namespace
 		Input.Rotate = MakeAction(TEXT("IA_NoFearCaseRotate"), EInputActionValueType::Boolean);
 		Input.Back = MakeAction(TEXT("IA_NoFearCaseBack"), EInputActionValueType::Boolean);
 		Input.Interact = MakeAction(TEXT("IA_NoFearCaseInteract"), EInputActionValueType::Boolean);
+		Input.ItemWheel = MakeAction(TEXT("IA_NoFearItemWheel"), EInputActionValueType::Boolean);
 		for (int32 Slot = 0; Slot < UNoFearInventoryComponent::WheelSlotCount; ++Slot)
 		{
 			Input.Slots[Slot] = MakeAction(*FString::Printf(TEXT("IA_NoFearCaseSlot%d"), Slot + 1), EInputActionValueType::Boolean);
@@ -98,6 +103,7 @@ namespace
 
 		Input.CaseMapping = MakeMapping(TEXT("IMC_NoFearCase"));
 		Input.CaseMapping->MapKey(Input.Toggle, EKeys::I);
+		Input.CaseMapping->MapKey(Input.ItemWheel, EKeys::Q);
 
 		UInputMappingContext* Screen = MakeMapping(TEXT("IMC_NoFearCaseScreen"));
 		Screen->MapKey(Input.Click, EKeys::LeftMouseButton);
@@ -111,10 +117,10 @@ namespace
 		{
 			Screen->MapKey(Input.Slots[Slot], SlotKeys[Slot]);
 		}
-		// Граната, кобура и рэгдолл, смена ствола колёсиком, колесо приказов, стабилизация, средняя кнопка, N.
+		// Граната, кобура и рэгдолл, смена ствола колёсиком, колесо приказов, колесо предметов, стабилизация, средняя кнопка, N.
 		const FKey Blocked[] = {
 			EKeys::G, EKeys::X, EKeys::MouseWheelAxis, EKeys::MouseScrollUp, EKeys::MouseScrollDown,
-			EKeys::Tab, EKeys::Q, EKeys::MiddleMouseButton, EKeys::N,
+			EKeys::Tab, EKeys::Q, EKeys::B, EKeys::MiddleMouseButton, EKeys::N,
 		};
 		for (const FKey& Key : Blocked)
 		{
@@ -122,6 +128,19 @@ namespace
 		}
 		Screen->MapKey(Input.BlockLook, EKeys::Mouse2D);
 		Input.ScreenMapping = Screen;
+
+		// На колесе предметов мышь выбирает сектор: стрельба, прицел, смена ствола колёсиком, граната, экран кейса,
+		// колесо приказов, стабилизация, E, кобура, средняя кнопка и N ничего не делают. Обзор стоит через SetIgnoreLookInput.
+		UInputMappingContext* Wheel = MakeMapping(TEXT("IMC_NoFearItemWheel"));
+		const FKey WheelBlocked[] = {
+			EKeys::LeftMouseButton, EKeys::RightMouseButton, EKeys::MouseWheelAxis, EKeys::MouseScrollUp, EKeys::MouseScrollDown,
+			EKeys::G, EKeys::I, EKeys::Tab, EKeys::B, EKeys::E, EKeys::X, EKeys::MiddleMouseButton, EKeys::N,
+		};
+		for (const FKey& Key : WheelBlocked)
+		{
+			Wheel->MapKey(Input.Block, Key);
+		}
+		Input.WheelMapping = Wheel;
 		return Input;
 	}
 
@@ -332,6 +351,28 @@ void UNoFearInventoryComponent::SetupPlayerInput(UInputComponent* PlayerInputCom
 	Input->BindAction(Actions.Back, ETriggerEvent::Started, this, &UNoFearInventoryComponent::ScreenBack);
 	Input->BindAction(Actions.Interact, ETriggerEvent::Started, this, &UNoFearInventoryComponent::ScreenInteract);
 	const TWeakObjectPtr<UNoFearInventoryComponent> WeakThis(this);
+	// Q зажата — колесо открыто, отпущена — выбранный сектор применяется.
+	Input->BindActionInstanceLambda(Actions.ItemWheel, ETriggerEvent::Started, [WeakThis](const FInputActionInstance&)
+	{
+		if (UNoFearInventoryComponent* Case = WeakThis.Get())
+		{
+			Case->OpenItemWheel();
+		}
+	});
+	Input->BindActionInstanceLambda(Actions.ItemWheel, ETriggerEvent::Completed, [WeakThis](const FInputActionInstance&)
+	{
+		if (UNoFearInventoryComponent* Case = WeakThis.Get())
+		{
+			Case->CloseItemWheel(true);
+		}
+	});
+	Input->BindActionInstanceLambda(Actions.ItemWheel, ETriggerEvent::Canceled, [WeakThis](const FInputActionInstance&)
+	{
+		if (UNoFearInventoryComponent* Case = WeakThis.Get())
+		{
+			Case->CloseItemWheel(false);
+		}
+	});
 	for (int32 Slot = 0; Slot < WheelSlotCount; ++Slot)
 	{
 		Input->BindActionInstanceLambda(Actions.Slots[Slot], ETriggerEvent::Started, [WeakThis, Slot](const FInputActionInstance&)
@@ -367,6 +408,18 @@ void UNoFearInventoryComponent::EnsureCaseInput(APlayerController* PC) const
 	{
 		Input->AddMappingContext(Actions.ScreenMapping, ScreenMappingPriority);
 	}
+	if (bItemWheelOpen && !Input->HasMappingContext(Actions.WheelMapping))
+	{
+		Input->AddMappingContext(Actions.WheelMapping, ScreenMappingPriority);
+	}
+}
+
+void UNoFearInventoryComponent::RemoveItemWheelInput(APlayerController* PC) const
+{
+	if (UEnhancedInputLocalPlayerSubsystem* Input = GetInputSubsystem(PC))
+	{
+		Input->RemoveMappingContext(GetCaseInput().WheelMapping);
+	}
 }
 
 bool UNoFearInventoryComponent::OpenScreen()
@@ -376,7 +429,7 @@ bool UNoFearInventoryComponent::OpenScreen()
 		return true;
 	}
 	APlayerController* PC = GetOwnerPlayerController();
-	if (!bCaseActive || !PC || UNoFearHealthComponent::IsActorIncapacitated(GetOwner()))
+	if (!bCaseActive || !PC || bItemWheelOpen || UNoFearHealthComponent::IsActorIncapacitated(GetOwner()))
 	{
 		return false;
 	}
@@ -535,6 +588,7 @@ bool UNoFearInventoryComponent::HoldPickup(ANoFearPickup* Pickup)
 
 void UNoFearInventoryComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	CloseItemWheel(false);
 	CloseScreen();
 	Super::EndPlay(EndPlayReason);
 }
@@ -544,6 +598,10 @@ void UNoFearInventoryComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
 	APlayerController* PC = GetOwnerPlayerController();
+	if (bItemWheelOpen)
+	{
+		UpdateItemWheel(PC);
+	}
 	if (bScreenOpen)
 	{
 		// Упал, сменился контроллер, открылось колесо приказов — экран закрывается.

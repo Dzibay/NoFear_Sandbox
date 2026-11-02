@@ -1,5 +1,5 @@
-// Кейс героя в HUD (Docs/Inventory_Design.md): сообщения о подборе, отладочная мини-сетка (NoFear.Inv.Debug)
-// и экран кейса на I — с колесом или с сеткой открытого хранилища. Колесо предметов на Q — этап 3. Остальной HUD — NoFearHUD.cpp.
+// Кейс героя в HUD (Docs/Inventory_Design.md): сообщения о подборе, отладочная мини-сетка (NoFear.Inv.Debug),
+// экран кейса на I — с колесом или с сеткой открытого хранилища — и колесо предметов на Q. Остальной HUD — NoFearHUD.cpp.
 
 #include "Core/NoFearHUD.h"
 
@@ -8,6 +8,7 @@
 #include "HAL/IConsoleManager.h"
 #include "Inventory/NoFearInventoryComponent.h"
 #include "Inventory/NoFearItemData.h"
+#include "Weapons/NoFearGrenadeComponent.h"
 #include "Weapons/NoFearWeapon.h"
 #include "Weapons/NoFearWeaponComponent.h"
 #include "Weapons/NoFearWeaponData.h"
@@ -24,6 +25,41 @@ namespace NoFearHUDInventory
 	FString ShortName(const UNoFearItemData* Item, int32 MaxChars)
 	{
 		return Item ? Item->GetDisplayName().ToString().Left(MaxChars) : FString(TEXT("?"));
+	}
+
+	/** Обрезать с многоточием, чтобы влезло в ширину. */
+	FString FitText(const AHUD& HUD, UFont* Font, const FString& Text, float MaxWidth, float Scale)
+	{
+		float Width = 0.f;
+		float Height = 0.f;
+		HUD.GetTextSize(Text, Width, Height, Font, Scale);
+		if (Width <= MaxWidth)
+		{
+			return Text;
+		}
+		for (int32 Chars = Text.Len() - 1; Chars > 0; --Chars)
+		{
+			const FString Short = Text.Left(Chars) + TEXT("…");
+			HUD.GetTextSize(Short, Width, Height, Font, Scale);
+			if (Width <= MaxWidth)
+			{
+				return Short;
+			}
+		}
+		return FString();
+	}
+
+	/** Точка на окружности: 0° — вверх, по часовой. */
+	FVector2D PointOnCircle(const FVector2D& Center, float Degrees, float Radius)
+	{
+		const float Radians = FMath::DegreesToRadians(Degrees);
+		return Center + FVector2D(FMath::Sin(Radians), -FMath::Cos(Radians)) * Radius;
+	}
+
+	FLinearColor WithAlpha(FLinearColor Color, float Alpha)
+	{
+		Color.A *= Alpha;
+		return Color;
 	}
 }
 
@@ -138,26 +174,9 @@ void ANoFearHUD::DrawCaseScreen()
 		DrawRect(Color, Min.X, Min.Y + Thickness, Thickness, Size.Y - Thickness * 2.f);
 		DrawRect(Color, Min.X + Size.X - Thickness, Min.Y + Thickness, Thickness, Size.Y - Thickness * 2.f);
 	};
-	// Обрезать с многоточием, чтобы влезло в ширину.
 	auto Fit = [this](const FString& Text, float MaxWidth, float Scale)
 	{
-		float Width = 0.f;
-		float Height = 0.f;
-		GetTextSize(Text, Width, Height, GetFont(), Scale);
-		if (Width <= MaxWidth)
-		{
-			return Text;
-		}
-		for (int32 Chars = Text.Len() - 1; Chars > 0; --Chars)
-		{
-			const FString Short = Text.Left(Chars) + TEXT("…");
-			GetTextSize(Short, Width, Height, GetFont(), Scale);
-			if (Width <= MaxWidth)
-			{
-				return Short;
-			}
-		}
-		return FString();
+		return NoFearHUDInventory::FitText(*this, GetFont(), Text, MaxWidth, Scale);
 	};
 	// Плашка предмета: тёмная заливка с оттенком предмета, рамка его цветом, название и число.
 	auto DrawItem = [&](const UNoFearItemData* Item, const FVector2D& Min, const FVector2D& Size, float Alpha, bool bHighlight,
@@ -479,4 +498,167 @@ void ANoFearHUD::DrawCaseScreen()
 		? TEXT("ЛКМ — взять / положить, тащить между сетками · ПКМ — действия · R — повернуть · за край — выбросить · E / I / Esc — закрыть")
 		: TEXT("ЛКМ — взять / положить · ПКМ — действия, повернуть · R — повернуть · 1–8 — в колесо · за край — выбросить · I / Esc — закрыть");
 	DrawLabel(Hint, CenterX, Layout.PanelMax.Y + 46.f * S, Dim, 0.8f * S, ELabelAlign::Center);
+}
+
+void ANoFearHUD::DrawItemWheel()
+{
+	using namespace NoFearHUDInventory;
+
+	const APawn* Pawn = GetOwningPawn();
+	const UNoFearInventoryComponent* Case = UNoFearInventoryComponent::FindCase(Pawn);
+	if (!Case || !Case->IsItemWheelOpen() || !Canvas)
+	{
+		return;
+	}
+
+	const float S = GetUIScale();
+	const FVector2D Center(Canvas->SizeX * 0.5f, Canvas->SizeY * 0.5f);
+	const float Inner = 80.f * S;
+	const float Outer = 250.f * S;
+	const int32 Count = UNoFearInventoryComponent::WheelSlotCount;
+	const float SectorAngle = 360.f / Count;
+	const float Gap = 1.2f;
+	const int32 Selection = Case->GetItemWheelSelection();
+	const FLinearColor EmptyColor(0.45f, 0.45f, 0.45f, 1.f);
+
+	// Ствол, который в руках или уже достаётся, и граната, которую бросает G.
+	const UNoFearWeaponComponent* Weapons = Pawn->FindComponentByClass<UNoFearWeaponComponent>();
+	const TArray<ANoFearWeapon*> Owned = Weapons ? Weapons->GetWeapons() : TArray<ANoFearWeapon*>();
+	const ANoFearWeapon* InHands = Weapons && Owned.IsValidIndex(Weapons->GetTargetWeaponIndex()) ? Owned[Weapons->GetTargetWeaponIndex()] : nullptr;
+	const UNoFearGrenadeComponent* Grenades = Pawn->FindComponentByClass<UNoFearGrenadeComponent>();
+	const UNoFearItemData* ChosenGrenade = Grenades ? Grenades->GetGrenadeItem() : nullptr;
+
+	// Время замедлено — экран чуть темнее.
+	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.25f), 0.f, 0.f, Canvas->SizeX, Canvas->SizeY);
+
+	FNoFearInventoryEntry SelectedEntry;
+	bool bSelectedFilled = false;
+	for (int32 Slot = 0; Slot < Count; ++Slot)
+	{
+		FNoFearInventoryEntry Entry;
+		const bool bFilled = Case->GetEntry(Case->GetWheelSlot(Slot), Entry) && Entry.Item;
+		const bool bSelected = Slot == Selection;
+		if (bSelected)
+		{
+			SelectedEntry = Entry;
+			bSelectedFilled = bFilled;
+		}
+		const float Angle = Slot * SectorAngle;
+		const float From = Angle - SectorAngle * 0.5f + Gap;
+		const float To = Angle + SectorAngle * 0.5f - Gap;
+		const float SectorOuter = bSelected ? Outer + 12.f * S : Outer;
+		const FLinearColor ItemColor = bFilled ? Entry.Item->Color : EmptyColor;
+
+		// Выбранный — цветом предмета, пустой — серым; по внешнему краю полоска цвета предмета.
+		FLinearColor Fill(0.f, 0.f, 0.f, 0.6f);
+		if (bSelected)
+		{
+			Fill = bFilled ? FMath::Lerp(FLinearColor(0.05f, 0.05f, 0.05f), ItemColor, 0.75f) : FLinearColor(0.4f, 0.4f, 0.4f, 1.f);
+			Fill.A = 0.55f;
+		}
+		DrawWedge(Center, Inner, SectorOuter, From, To, Fill);
+		DrawArc(Center, SectorOuter - 4.f * S, SectorOuter, From, To, WithAlpha(ItemColor, bFilled ? 0.9f : 0.35f));
+
+		// Номер сектора — у внутреннего края.
+		const FVector2D NumberCenter = PointOnCircle(Center, Angle, Inner + 16.f * S);
+		DrawLabel(FString::FromInt(Slot + 1), NumberCenter.X, NumberCenter.Y - 8.f * S, FLinearColor(1.f, 0.85f, 0.3f, bFilled ? 0.9f : 0.5f), 0.8f * S, ELabelAlign::Center);
+
+		const FVector2D LabelCenter = PointOnCircle(Center, Angle, (Inner + Outer) * 0.5f + 12.f * S);
+		if (!bFilled)
+		{
+			DrawLabel(TEXT("—"), LabelCenter.X, LabelCenter.Y - 10.f * S, WithAlpha(EmptyColor, 0.8f), 1.1f * S, ELabelAlign::Center);
+			continue;
+		}
+
+		// Название, под ним магазин / патроны в кейсе у ствола или сколько всего таких в кейсе, ниже — отметка.
+		const UNoFearItemData* Item = Entry.Item;
+		const float MaxWidth = 128.f * S;
+		const FString Name = FitText(*this, GetFont(), Item->GetDisplayName().ToString(), MaxWidth, 1.f * S);
+		FString Detail;
+		if (Item->Kind == ENoFearItemKind::Weapon)
+		{
+			Detail = Item->AmmoItem ? FString::Printf(TEXT("%d / %d"), Entry.GetMagazineAmmo(), Case->CountItem(Item->AmmoItem))
+				: FString::FromInt(Entry.GetMagazineAmmo());
+		}
+		else
+		{
+			Detail = FString::Printf(TEXT("×%d"), Case->CountItem(Item));
+		}
+		FString Mark;
+		if (Entry.Weapon && Entry.Weapon == InHands)
+		{
+			Mark = TEXT("в руках");
+		}
+		else if (Item->Kind == ENoFearItemKind::Grenade && Item == ChosenGrenade)
+		{
+			Mark = TEXT("на G");
+		}
+
+		float NameWidth = 0.f;
+		float NameHeight = 0.f;
+		float DetailWidth = 0.f;
+		float DetailHeight = 0.f;
+		float MarkWidth = 0.f;
+		float MarkHeight = 0.f;
+		GetTextSize(Name, NameWidth, NameHeight, GetFont(), 1.f * S);
+		GetTextSize(Detail, DetailWidth, DetailHeight, GetFont(), 0.85f * S);
+		if (!Mark.IsEmpty())
+		{
+			GetTextSize(Mark, MarkWidth, MarkHeight, GetFont(), 0.7f * S);
+		}
+		float Y = LabelCenter.Y - (NameHeight + DetailHeight + MarkHeight) * 0.5f;
+		DrawLabel(Name, LabelCenter.X, Y, FLinearColor::White, 1.f * S, ELabelAlign::Center);
+		Y += NameHeight;
+		DrawLabel(Detail, LabelCenter.X, Y, FLinearColor(1.f, 1.f, 1.f, 0.8f), 0.85f * S, ELabelAlign::Center);
+		Y += DetailHeight;
+		if (!Mark.IsEmpty())
+		{
+			DrawLabel(Mark, LabelCenter.X, Y, FLinearColor(0.6f, 0.95f, 0.6f, 0.95f), 0.7f * S, ELabelAlign::Center);
+		}
+	}
+
+	// Указатель в сторону выбора — у внутреннего края, центр остаётся прозрачным для прицела.
+	const FVector2D Cursor = Case->GetItemWheelCursor();
+	if (!Cursor.IsNearlyZero())
+	{
+		const FVector2D Direction = FVector2D(Cursor.X, -Cursor.Y).GetSafeNormal();
+		DrawDiamond(Center + Direction * (Inner - 14.f * S), 6.f * S, bSelectedFilled ? SelectedEntry.Item->Color : EmptyColor);
+	}
+	DrawRing(Center, Inner, 1.f, FLinearColor(1.f, 1.f, 1.f, 0.25f), 1.5f * S);
+
+	// Под колесом — что сделает выбранный сектор и как отменить.
+	float Y = Center.Y + Outer + 24.f * S;
+	if (Selection != INDEX_NONE)
+	{
+		FString Action = TEXT("Пусто");
+		if (bSelectedFilled)
+		{
+			const FString Name = SelectedEntry.Item->GetDisplayName().ToString();
+			switch (SelectedEntry.Item->Kind)
+			{
+			case ENoFearItemKind::Weapon:
+				Action = SelectedEntry.Weapon && SelectedEntry.Weapon == InHands ? Name + TEXT(" — уже в руках") : Name + TEXT(" — взять в руки");
+				break;
+			case ENoFearItemKind::Grenade:
+				Action = Name + TEXT(" — бросать на G");
+				break;
+			case ENoFearItemKind::Medicine:
+				Action = Name + TEXT(" — лечиться");
+				break;
+			case ENoFearItemKind::Placeable:
+				Action = Name + TEXT(" — поставить перед собой");
+				break;
+			default:
+				Action = Name;
+				break;
+			}
+		}
+		float ActionWidth = 0.f;
+		float ActionHeight = 0.f;
+		GetTextSize(Action, ActionWidth, ActionHeight, GetFont(), 1.1f * S);
+		DrawLabel(Action, Center.X, Y, bSelectedFilled ? FLinearColor::White : WithAlpha(EmptyColor, 0.9f), 1.1f * S, ELabelAlign::Center);
+		Y += ActionHeight + 2.f * S;
+	}
+	const TCHAR* Hint = Selection == INDEX_NONE ? TEXT("Мышь — выбрать, отпустить Q — применить") : TEXT("Вернуть мышь в центр — отменить");
+	DrawLabel(Hint, Center.X, Y, FLinearColor(0.85f, 0.85f, 0.85f, 0.85f), 0.85f * S, ELabelAlign::Center);
 }

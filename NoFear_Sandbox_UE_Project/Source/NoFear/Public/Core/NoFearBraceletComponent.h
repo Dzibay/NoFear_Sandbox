@@ -283,7 +283,7 @@ struct FNoFearHeroFearTuning
  * успокоенный мирный, убитый монстр.
  *
  * Эффекты по страху: дрожь и увод прицела, разброс, сердцебиение, виньетка и аберрация, медленная перезарядка,
- * при 100 — короткий ступор. Способности: стабилизация (Q) и задержка дыхания (держать Alt, целясь).
+ * при 100 — короткий ступор. Способности: стабилизация (B) и задержка дыхания (держать Alt, целясь).
  */
 UCLASS(ClassGroup = (NoFear), meta = (BlueprintSpawnableComponent))
 class NOFEAR_API UNoFearBraceletComponent : public UActorComponent

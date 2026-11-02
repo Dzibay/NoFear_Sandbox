@@ -538,6 +538,15 @@ void UNoFearWeaponComponent::OnAimCanceled()
 void UNoFearWeaponComponent::OnSwitchWeaponInput(const FInputActionValue& Value)
 {
 	const float Direction = Value.Get<float>();
+	// У героя с кейсом колёсико листает стволы из колеса предметов, по порядку секторов.
+	if (UNoFearInventoryComponent* Case = UNoFearInventoryComponent::FindCase(GetOwner()); Case && Case->bScrollWheelWeaponsOnly)
+	{
+		if (Direction != 0.f)
+		{
+			Case->CycleWheelWeapon(Direction > 0.f ? 1 : -1);
+		}
+		return;
+	}
 	if (Direction > 0.f)
 	{
 		NextWeapon();

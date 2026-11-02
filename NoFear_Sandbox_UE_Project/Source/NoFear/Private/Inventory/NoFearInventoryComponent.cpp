@@ -32,7 +32,7 @@ namespace
 
 UNoFearInventoryComponent::UNoFearInventoryComponent()
 {
-	// Тикает только у героя игрока: курсор экрана кейса и контекст ввода с I.
+	// Тикает только у героя игрока: курсоры экрана кейса и колеса предметов, контексты ввода с I и Q.
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.bStartWithTickEnabled = false;
 
@@ -76,8 +76,9 @@ void UNoFearInventoryComponent::BeginPlay()
 void UNoFearInventoryComponent::HandleControllerChanged()
 {
 	const APawn* Pawn = Cast<APawn>(GetOwner());
-	if (bScreenOpen && (!Pawn || !Pawn->IsPlayerControlled()))
+	if (!Pawn || !Pawn->IsPlayerControlled())
 	{
+		CloseItemWheel(false);
 		CloseScreen();
 	}
 	TryActivate();
@@ -347,6 +348,7 @@ void UNoFearInventoryComponent::NotifyChanged()
 			Entry.Weapon->RefreshAmmo();
 		}
 	}
+	RefreshGrenadeChoice();
 	Super::NotifyChanged();
 }
 
