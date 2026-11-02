@@ -25,7 +25,8 @@ namespace
 
 	bool IsWheelKind(const UNoFearItemData* Item)
 	{
-		return Item && (Item->Kind == ENoFearItemKind::Weapon || Item->Kind == ENoFearItemKind::Grenade || Item->Kind == ENoFearItemKind::Medicine);
+		return Item && (Item->Kind == ENoFearItemKind::Weapon || Item->Kind == ENoFearItemKind::Grenade || Item->Kind == ENoFearItemKind::Medicine
+			|| Item->Kind == ENoFearItemKind::Placeable);
 	}
 }
 
@@ -350,6 +351,64 @@ void UNoFearInventoryComponent::NotifyChanged()
 }
 
 // ---------------------------------------------------------------------------
+// Предметы в мир
+// ---------------------------------------------------------------------------
+
+AActor* UNoFearInventoryComponent::PlaceItem(UNoFearItemData* Item)
+{
+	APawn* Pawn = Cast<APawn>(GetOwner());
+	UWorld* World = GetWorld();
+	if (!Pawn || !World || !Item || Item->Kind != ENoFearItemKind::Placeable || bScreenOpen || CountItem(Item) <= 0)
+	{
+		return nullptr;
+	}
+	UClass* Class = Item->PlaceClass.LoadSynchronous();
+	if (!Class)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("NoFearInventory: у %s нет PlaceClass — ставить нечего"), *Item->GetName());
+		return nullptr;
+	}
+
+	// Место — PlaceDistance перед героем: путь туда не перекрыт стеной, внизу пол, а не обрыв или крутой склон.
+	const FRotator Facing(0.f, Pawn->GetControlRotation().Yaw, 0.f);
+	const FVector Center = Pawn->GetActorLocation();
+	const FVector Spot = Center + Facing.Vector() * PlaceDistance;
+	const float FeetDepth = Pawn->GetSimpleCollisionHalfHeight();
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearPlaceItem), false, Pawn);
+	TArray<AActor*> Attached;
+	Pawn->GetAttachedActors(Attached, true, true);
+	Params.AddIgnoredActors(Attached);
+	FCollisionObjectQueryParams Solid;
+	Solid.AddObjectTypesToQuery(ECC_WorldStatic);
+	Solid.AddObjectTypesToQuery(ECC_WorldDynamic);
+	FHitResult Floor;
+	const bool bBlocked = World->LineTraceTestByObjectType(Center, Spot, Solid, Params);
+	const bool bFloor = !bBlocked && World->LineTraceSingleByObjectType(Floor, Spot, Spot - FVector(0.f, 0.f, FeetDepth + 60.f), Solid, Params)
+		&& Floor.ImpactNormal.Z > 0.7f;
+	if (!bFloor)
+	{
+		PushNotice(LOCTEXT("PlaceNoRoom", "Здесь не поставить"));
+		return nullptr;
+	}
+
+	const FTransform Transform(Facing, Floor.ImpactPoint);
+	AActor* Placed = World->SpawnActorDeferred<AActor>(Class, Transform, Pawn, Pawn, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	if (Placed)
+	{
+		Placed->FinishSpawning(Transform);
+	}
+	// Актор сам проверяет место в BeginPlay и уничтожает себя, если оно не годится: тогда предмет остаётся в кейсе.
+	if (!IsValid(Placed) || Placed->IsActorBeingDestroyed())
+	{
+		PushNotice(LOCTEXT("PlaceNoRoom", "Здесь не поставить"));
+		return nullptr;
+	}
+	RemoveItem(Item, 1);
+	PushNotice(FText::Format(LOCTEXT("Placed", "Поставлено: {0}"), Item->GetDisplayName()));
+	return Placed;
+}
+
+// ---------------------------------------------------------------------------
 // Колесо
 // ---------------------------------------------------------------------------
 
@@ -539,6 +598,17 @@ namespace
 		}
 	}
 
+	void PlaceCommand(const TArray<FString>& Args, UWorld* World)
+	{
+		UNoFearInventoryComponent* Case = GetPlayerCase(World);
+		UNoFearItemData* Item = Case && Args.Num() > 0 ? LoadItem(Args[0]) : nullptr;
+		if (Item)
+		{
+			const AActor* Placed = Case->PlaceItem(Item);
+			UE_LOG(LogTemp, Log, TEXT("NoFear.Inv.Place: %s -> %s"), *Item->GetName(), Placed ? *Placed->GetName() : TEXT("не поставлено"));
+		}
+	}
+
 	void ListCommand(const TArray<FString>& Args, UWorld* World)
 	{
 		const UNoFearInventoryComponent* Case = GetPlayerCase(World);
@@ -584,6 +654,11 @@ namespace
 		TEXT("NoFear.Inv.Drop"),
 		TEXT("Выбросить предмет кейса по номеру (NoFear.Inv.List): NoFear.Inv.Drop 3 [число=вся стопка]."),
 		FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&DropCommand));
+
+	FAutoConsoleCommandWithWorldAndArgs InvPlaceCommand(
+		TEXT("NoFear.Inv.Place"),
+		TEXT("Поставить предмет из кейса перед героем, как с колеса: NoFear.Inv.Place BearTrap."),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&PlaceCommand));
 
 	FAutoConsoleCommandWithWorldAndArgs InvListCommand(
 		TEXT("NoFear.Inv.List"),

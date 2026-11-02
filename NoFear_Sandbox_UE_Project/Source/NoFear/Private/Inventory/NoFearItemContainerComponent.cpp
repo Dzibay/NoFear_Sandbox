@@ -212,6 +212,22 @@ int32 UNoFearItemContainerComponent::CountItem(const UNoFearItemData* Item) cons
 	return Total;
 }
 
+UNoFearItemData* UNoFearItemContainerComponent::FindItemByKeyId(FName KeyId) const
+{
+	if (KeyId.IsNone())
+	{
+		return nullptr;
+	}
+	for (const FNoFearInventoryEntry& Entry : Entries)
+	{
+		if (Entry.Item && Entry.Item->Kind == ENoFearItemKind::Key && Entry.Item->KeyId == KeyId)
+		{
+			return Entry.Item;
+		}
+	}
+	return nullptr;
+}
+
 int32 UNoFearItemContainerComponent::GetRoomFor(UNoFearItemData* Item, int32 Count) const
 {
 	// Без bApply AddInternal ничего не меняет, только считает.

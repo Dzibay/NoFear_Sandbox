@@ -6,6 +6,7 @@
 
 class UNoFearGrenadeData;
 class UNoFearWeaponData;
+class AActor;
 class UStaticMesh;
 class UTexture2D;
 
@@ -17,7 +18,13 @@ enum class ENoFearItemKind : uint8
 	Grenade,
 	Medicine,
 	/** Не ложится в сетку: при подборе кейс сразу становится больше. */
-	CaseExpansion
+	CaseExpansion,
+	/** Расходник без своего действия (доски): его забирают объекты мира через CountItem и RemoveItem. */
+	Material,
+	/** Ставится в мир с колеса: актор PlaceClass появляется на полу перед героем. */
+	Placeable,
+	/** Ключ: двери и сундуки ищут его в кейсе по KeyId. */
+	Key
 };
 
 /**
@@ -94,6 +101,17 @@ public:
 	/** Сколько секунд длится лечение. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Item|Medicine", meta = (EditCondition = "Kind == ENoFearItemKind::Medicine", EditConditionHides, ClampMin = "0"))
 	float UseTime = 3.f;
+
+	/**
+	 * Что появляется в мире: актор на полу перед героем, с его поворотом, владелец и инстигатор — герой.
+	 * Если актор уничтожил себя в BeginPlay (место не годится), предмет не тратится.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Item|Placeable", meta = (EditCondition = "Kind == ENoFearItemKind::Placeable", EditConditionHides))
+	TSoftClassPtr<AActor> PlaceClass;
+
+	/** Какой замок открывает: дверь или сундук сравнивает со своим ключом. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Item|Key", meta = (EditCondition = "Kind == ENoFearItemKind::Key", EditConditionHides))
+	FName KeyId;
 
 	UFUNCTION(BlueprintPure, Category = "NoFear|Item")
 	FText GetDisplayName() const;

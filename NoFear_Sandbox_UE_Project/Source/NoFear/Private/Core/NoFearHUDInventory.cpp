@@ -406,6 +406,10 @@ void ANoFearHUD::DrawCaseScreen()
 				? FString::Printf(TEXT("Лечит полностью за %.0f с"), Item->UseTime)
 				: FString::Printf(TEXT("Лечит %.0f за %.0f с"), Item->HealAmount, Item->UseTime));
 		}
+		else if (Item->Kind == ENoFearItemKind::Placeable)
+		{
+			Details.Add(TEXT("Ставится с колеса перед собой"));
+		}
 		const int32 Slot = bInCase ? Case->FindWheelSlotOf(Hovered.Id) : INDEX_NONE;
 		if (Slot != INDEX_NONE)
 		{

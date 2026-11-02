@@ -137,13 +137,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Inventory")
 	bool bEquipOnStart = true;
 
-	/** Новые стволы, гранаты и медицина сами занимают свободные сектора колеса. */
+	/** Новые стволы, гранаты, медицина и то, что ставится в мир, сами занимают свободные сектора колеса. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Inventory")
 	bool bAutoAssignWheel = true;
 
 	/** На каком расстоянии перед героем появляется выброшенный предмет, см. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Inventory", meta = (ClampMin = "0"))
 	float DropDistance = 70.f;
+
+	/** На каком расстоянии перед героем встаёт предмет из колеса (капкан, растяжка), см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Inventory", meta = (ClampMin = "0"))
+	float PlaceDistance = 120.f;
 
 	/** Сколько секунд видна строка «Подобрано…» / «Нет места». */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Inventory", meta = (ClampMin = "0"))
@@ -208,6 +212,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory")
 	void ClearCase();
 
+	/**
+	 * Поставить предмет вида Placeable: на полу в PlaceDistance перед героем появляется актор PlaceClass с его поворотом,
+	 * владелец и инстигатор — герой. Предмет тратится, только если актор пережил FinishSpawning.
+	 * nullptr — предмета нет в кейсе, открыт экран, впереди стена или нет пола, актор уничтожил себя в BeginPlay.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Inventory")
+	AActor* PlaceItem(UNoFearItemData* Item);
+
 	// --- Колесо ---
 
 	/** Номер предмета в секторе колеса или 0. */
@@ -225,7 +237,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory")
 	int32 FindWheelSlotOf(int32 EntryId) const;
 
-	/** В колесо можно только стволы, гранаты и медицину. */
+	/** В колесо можно только стволы, гранаты, медицину и то, что ставится в мир. */
 	static bool IsWheelItem(const UNoFearItemData* Item);
 
 	// --- Экран кейса (I) ---

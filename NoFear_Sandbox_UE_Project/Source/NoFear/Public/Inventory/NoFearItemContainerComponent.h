@@ -122,6 +122,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory")
 	int32 CountItem(const UNoFearItemData* Item) const;
 
+	/** Ключ с этим KeyId, если он здесь лежит, иначе nullptr. Пустой KeyId ничего не находит. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory")
+	UNoFearItemData* FindItemByKeyId(FName KeyId) const;
+
 	/** Сколько из Count влезет, если положить автораскладкой. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Inventory")
 	int32 GetRoomFor(UNoFearItemData* Item, int32 Count) const;
