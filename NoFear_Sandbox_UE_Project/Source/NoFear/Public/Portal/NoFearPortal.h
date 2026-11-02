@@ -58,6 +58,24 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Portal")
 	float GetCoreRadius() const;
 
+	/**
+	 * Шептун у портала (Docs/Monsters_Design.md, 4.6): следующие Duration секунд рост от проводников ×GrowthScale,
+	 * освобождение проводников ×FreeScale. Шептун обновляет буст каждый пересчёт, пока стоит рядом.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Portal")
+	void ApplyWhisperBoost(float GrowthScale, float FreeScale, float Duration);
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Portal")
+	bool IsWhisperBoosted() const;
+
+	/** Множитель роста от проводников сейчас (1 — без буста). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Portal")
+	float GetGrowthScale() const { return IsWhisperBoosted() ? WhisperGrowthScale : 1.f; }
+
+	/** Множитель освобождения проводников сейчас (1 — без буста). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Portal")
+	float GetFreeScale() const { return IsWhisperBoosted() ? WhisperFreeScale : 1.f; }
+
 	/** Цвет провала. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NoFear|Portal")
 	FLinearColor CoreColor = FLinearColor(0.02f, 0.f, 0.04f, 1.f);
@@ -132,4 +150,8 @@ private:
 
 	/** Размер на экране догоняет настоящий плавно. */
 	float DisplaySize = 0.f;
+
+	double WhisperBoostUntil = -1.0;
+	float WhisperGrowthScale = 1.f;
+	float WhisperFreeScale = 1.f;
 };

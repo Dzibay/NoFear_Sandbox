@@ -911,7 +911,9 @@ void UNoFearPortalSubsystem::UpdateGrowth(float DeltaTime, double Now)
 		const int32 Count = Portal->Feeders.Num();
 		if (Count > 0)
 		{
-			Portal->Size = FMath::Min(Portal->Size + FeedRate * FMath::Pow(static_cast<float>(Count), FeedExponent) * DeltaTime, 100.f);
+			// Шептун у портала ускоряет рост (ApplyWhisperBoost).
+			const float Growth = FeedRate * FMath::Pow(static_cast<float>(Count), FeedExponent) * Portal->GetGrowthScale();
+			Portal->Size = FMath::Min(Portal->Size + Growth * DeltaTime, 100.f);
 		}
 		else
 		{
@@ -1191,6 +1193,11 @@ bool UNoFearPortalSubsystem::ApplyFreeing(APawn* Feeder, float Amount, AActor* F
 	if (!State || !World || Amount <= 0.f)
 	{
 		return false;
+	}
+	// Шептун у портала замедляет освобождение.
+	if (const ANoFearPortal* Portal = State->Portal.Get())
+	{
+		Amount *= Portal->GetFreeScale();
 	}
 	State->FreeProgress = FMath::Min(State->FreeProgress + Amount, 1.f);
 	State->LastFreeTime = World->GetTimeSeconds();

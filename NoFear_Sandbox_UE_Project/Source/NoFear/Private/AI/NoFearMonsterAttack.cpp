@@ -250,12 +250,12 @@ UNoFearMonsterAttack_Spit::UNoFearMonsterAttack_Spit()
 	AttackName = TEXT("Spit");
 	MinRange = 500.f;
 	MaxRange = 1600.f;
-	Cooldown = 2.2f;
+	Cooldown = 1.8f;
 	Weight = 1.f;
 	MaxHeightDifference = 400.f;
 	Damage = 10.f;
 	bSweepHits = false;
-	WindupTime = 0.45f;
+	WindupTime = 0.6f;
 	HitWindow = 0.1f;
 	RecoveryTime = 0.45f;
 	Pose = ENoFearPose::Spit;
@@ -388,8 +388,14 @@ void UNoFearMonsterAttack_Charge::BeginStrike(UNoFearMeleeComponent* Melee, ACha
 	{
 		return;
 	}
-	// Направление выбирается один раз в конце замаха: от тарана можно уйти в сторону.
-	ChargeDirection = Owner->GetActorForwardVector().GetSafeNormal2D();
+	// Направление выбирается один раз в конце замаха: от тарана можно уйти в сторону. На цель, а не по лицу:
+	// тело GASP доворачивается с запаздыванием.
+	ChargeDirection = Target ? (Target->GetActorLocation() - Owner->GetActorLocation()).GetSafeNormal2D() : FVector::ZeroVector;
+	if (ChargeDirection.IsNearlyZero())
+	{
+		ChargeDirection = Owner->GetActorForwardVector().GetSafeNormal2D();
+	}
+	Owner->SetActorRotation(ChargeDirection.Rotation());
 	bWallHitThisCharge = false;
 	if (AController* Controller = Owner->GetController())
 	{
@@ -444,6 +450,8 @@ bool UNoFearMonsterAttack_Charge::TickStrike(UNoFearMeleeComponent* Melee, AChar
 	}
 
 	Movement->Velocity = FVector(ChargeDirection.X * ChargeSpeed, ChargeDirection.Y * ChargeSpeed, Movement->Velocity.Z);
+	// Скорость задана напрямую, без ускорения: тело само не повернётся по ходу.
+	Owner->SetActorRotation(ChargeDirection.Rotation());
 	return true;
 }
 

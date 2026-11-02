@@ -362,7 +362,16 @@ protected:
 	/** Стая ведёт монстра к точке (место в строю, в кольце, бегство). */
 	bool GetPackGoal(FVector& OutGoal) const;
 
+	/**
+	 * Идёт атака, во время которой тело смотрит на цель: замах любой атаки, удар и отход атак без своего
+	 * движения (плевок, взмах, захват). Прыжок, выпад и таран смотрят по ходу.
+	 */
+	bool IsFacingAttack() const;
+
 private:
+	UFUNCTION()
+	void HandleAttackStarted(AActor* Target);
+
 	UFUNCTION()
 	void HandleAttackFinished(AActor* Target);
 

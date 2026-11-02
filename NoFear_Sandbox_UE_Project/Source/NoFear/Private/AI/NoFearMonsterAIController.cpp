@@ -153,6 +153,7 @@ void ANoFearMonsterAIController::OnPossess(APawn* InPawn)
 
 	if (UNoFearMeleeComponent* Melee = GetMeleeComponent())
 	{
+		Melee->OnAttackStarted.AddUniqueDynamic(this, &ANoFearMonsterAIController::HandleAttackStarted);
 		Melee->OnAttackFinished.AddUniqueDynamic(this, &ANoFearMonsterAIController::HandleAttackFinished);
 		ConfigureMelee(Melee);
 		ConfiguredMelee = Melee;
@@ -201,6 +202,7 @@ void ANoFearMonsterAIController::OnUnPossess()
 	TokenTarget.Reset();
 	if (UNoFearMeleeComponent* Melee = GetMeleeComponent())
 	{
+		Melee->OnAttackStarted.RemoveDynamic(this, &ANoFearMonsterAIController::HandleAttackStarted);
 		Melee->OnAttackFinished.RemoveDynamic(this, &ANoFearMonsterAIController::HandleAttackFinished);
 	}
 	GetWorldTimerManager().ClearTimer(RoarTimer);
@@ -267,6 +269,10 @@ void ANoFearMonsterAIController::UpdateBot()
 		if (!Melee->OnAttackFinished.IsAlreadyBound(this, &ANoFearMonsterAIController::HandleAttackFinished))
 		{
 			Melee->OnAttackFinished.AddDynamic(this, &ANoFearMonsterAIController::HandleAttackFinished);
+		}
+		if (!Melee->OnAttackStarted.IsAlreadyBound(this, &ANoFearMonsterAIController::HandleAttackStarted))
+		{
+			Melee->OnAttackStarted.AddDynamic(this, &ANoFearMonsterAIController::HandleAttackStarted);
 		}
 		if (ConfiguredMelee.Get() != Melee)
 		{
@@ -499,9 +505,32 @@ void ANoFearMonsterAIController::UpdateAttackToken()
 	bHasAttackToken = AcquireToken(Target);
 }
 
+void ANoFearMonsterAIController::HandleAttackStarted(AActor* Target)
+{
+	// Тело GASP поворачивается только к фокусу и только боком: на замахе смотрим на цель.
+	if (Target && !IsPortalControlled())
+	{
+		SetFocus(Target);
+	}
+	UpdateMovementStance();
+}
+
+bool ANoFearMonsterAIController::IsFacingAttack() const
+{
+	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	if (!Melee || !Melee->IsAttacking())
+	{
+		return false;
+	}
+	const UNoFearMonsterAttack* Attack = Melee->GetCurrentAttack();
+	return Melee->IsInWindup()
+		|| !(Attack && (Attack->IsA<UNoFearMonsterAttack_Charge>() || Attack->IsA<UNoFearMonsterAttack_Leap>() || Attack->IsA<UNoFearMonsterAttack_Lunge>()));
+}
+
 void ANoFearMonsterAIController::HandleAttackFinished(AActor* Target)
 {
 	OnMeleeAttackFinished(Target);
+	UpdateMovementStance();
 
 	if (IsAggro())
 	{
@@ -892,6 +921,12 @@ bool ANoFearMonsterAIController::ShouldWalk() const
 
 void ANoFearMonsterAIController::UpdateMovementStance()
 {
+	if (IsFacingAttack())
+	{
+		// Атакует стоя: боком к фокусу (цели), шагом — так тело доворачивается к цели.
+		SetMovementFlags(true, false, true, false);
+		return;
+	}
 	if (bScaring)
 	{
 		// Гонит человека бегом, рядом — наступает шагом.

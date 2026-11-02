@@ -54,7 +54,11 @@ public:
 
 	/** Уклоняется не чаще, чем раз в столько секунд. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Dodge", meta = (ClampMin = "0"))
-	float DodgeCooldown = 2.5f;
+	float DodgeCooldown = 4.f;
+
+	/** Уклоняется, только если на мушке хотя бы столько секунд подряд (не от каждого взмаха ствола), с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Dodge", meta = (ClampMin = "0"))
+	float DodgeAimTime = 0.3f;
 
 	/** Сколько раз уклонился с появления. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Dodge")
@@ -74,6 +78,14 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Stalk", meta = (ClampMin = "0", ClampMax = "180"))
 	float StalkAngle = 80.f;
+
+	/** Выбранный бок (фланг) держит не меньше столько секунд, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Stalk", meta = (ClampMin = "0"))
+	float StalkSideHoldTime = 4.f;
+
+	/** Меняет бок, только если ушёл на другую сторону взгляда цели хотя бы на столько градусов. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Stalk", meta = (ClampMin = "0", ClampMax = "90"))
+	float StalkSideMargin = 25.f;
 
 	/** Цель отвернулась от прыгуна больше чем на столько градусов — «стоит спиной». */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Stalk", meta = (ClampMin = "0", ClampMax = "180"))
@@ -121,7 +133,11 @@ public:
 
 	/** Уступ выше ног цели на столько, см. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Perch", meta = (ClampMin = "0"))
-	float PerchMinHeight = 200.f;
+	float PerchMinHeight = 300.f;
+
+	/** Насест, на который не удалось забраться, не выбирает столько секунд, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Perch", meta = (ClampMin = "0"))
+	float PerchRetryTime = 20.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Perch", meta = (ClampMin = "0"))
 	float PerchMaxHeight = 600.f;
@@ -296,6 +312,12 @@ private:
 
 	int32 DodgeCount = 0;
 	double NextDodgeTime = 0.0;
+	/** С какого времени на мушке (<0 — не на мушке). */
+	double AimedSince = -1.0;
+
+	/** Бок подкрадывания: +1/-1 от взгляда цели, 0 — не выбран. Меняется из const GetStandoffPoint. */
+	mutable float StalkSide = 0.f;
+	mutable double StalkSideTime = 0.0;
 
 	/** Решил прыгать — держит решение до конца атаки. */
 	bool bLeapCommitted = false;
@@ -316,6 +338,8 @@ private:
 	FVector PerchFoot = FVector::ZeroVector;
 	double PerchStateTime = 0.0;
 	double NextPerchSearchTime = 0.0;
+	/** Насесты, на которые не забрался: верх и время неудачи. */
+	TArray<TPair<FVector, double>> FailedPerches;
 	double NextHopTime = 0.0;
 	bool bOverHopped = false;
 	double NoSightSince = -1.0;
@@ -379,11 +403,11 @@ public:
 
 	/** Дальше этого от своего места — после плевка сначала перебирается, потом плюёт снова, см. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Spitter", meta = (ClampMin = "0"))
-	float StandTolerance = 300.f;
+	float StandTolerance = 450.f;
 
 	/** Перебирается не дольше столько секунд после плевка — потом плюёт откуда стоит. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Spitter", meta = (ClampMin = "0"))
-	float RelocateTime = 3.f;
+	float RelocateTime = 1.2f;
 
 	/** Встаёт за союзником, который ближе к цели, на столько дальше него, см. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Spitter", meta = (ClampMin = "0"))
@@ -626,19 +650,23 @@ class UNoFearHealthComponent;
 struct FNoFearDamageInfo;
 
 /**
- * Шептун (раздел 4.6 Docs/Monsters_Design.md): слабый, сам не дерётся — пугает людей, ослабляет их и усиливает своих.
- * - Держится в KeepMinDistance–KeepMaxDistance от ближайшего вооружённого человека, за колоссом, если тот рядом.
+ * Шептун (раздел 4.6 Docs/Monsters_Design.md): слабый, сам не дерётся — гипнотизирует мирных и кормит ими порталы,
+ * пугает людей, ослабляет их и усиливает своих.
+ * - Охота: ближайший мирный в HuntRange (не проводник, не в трансе, не на повторе) — бегом (HuntRunSpeed) до
+ *   HuntApproachDistance; видно и ближе HypnoStartRange — гипноз сразу. Не добрался за HuntTimeout — другая жертва.
+ * - Гипноз: жертва в трансе лицом к шептуну, её страх растёт на HypnoFearPerSecond (прямой испуг) до слома — она
+ *   становится проводником (UNoFearPortalSubsystem). Голова ×3 и светится. Срыв: урон от HypnoInterruptDamage
+ *   (оглушение HypnoStunTime), нет видимости дольше HypnoLostSightTime, дальше HypnoBreakRange, жертву ранили или
+ *   успокоили (страх ниже HypnoCalmFear). Сорвавшаяся жертва убегает, повтор по ней через HypnoRetryTime.
+ * - У портала: мирных нет, а в TendSearchRange есть портал с проводниками — стоит в TendDistance от него со стороны
+ *   от стрелков; пока ближе TendRadius, рост портала ×PortalGrowthScale, освобождение ×PortalFreeScale.
+ * - Иначе держится в KeepMinDistance–KeepMaxDistance от ближайшего вооружённого человека, за колоссом, если тот рядом.
  * - Аура: люди в AuraRadius (сквозь стены) получают страх, герой — через браслет (источник «Шёпот»). Слышен шёпот.
- * - Крик-волна раз в ScreamInterval: замах ScreamWindup (голова светится и получает ×3), потом страх в ScreamRadius и
- *   паника мирных. Урон не меньше ScreamInterruptDamage за замах срывает крик и оглушает шептуна.
- * - Метка жертвы раз в MarkInterval: самый напуганный человек в MarkRange, канал MarkChannelTime с лучом. Метка
- *   (ENoFearOpportunity::Marked) висит MarkDuration: страх помеченного не спадает и растёт, монстры бьют его первым.
- *   Канал срывает урон не меньше MarkInterruptFraction здоровья или потеря видимости.
  * - Видения: боты-люди в ауре со страхом от VisionMinFear время от времени стреляют в пустоту (UNoFearCombatComponent::SeePhantom).
  * - Бафф: монстры в BuffRadius быстрее, сильнее, чаще бьют (ApplyWhisperBuff).
- * - Охрана: ранили или человек ближе GuardTriggerRadius — два ближайших загонщика или ловчих идут на обидчика,
- *   колосс закрывает линию огня, сам шептун уходит фазовым шагом.
- * - Смерть: всё пропадает сразу, колоссы рядом впадают в ярость.
+ * - Охрана: ранили или вооружённый человек ближе GuardTriggerRadius — два ближайших загонщика или ловчих идут на
+ *   обидчика, колосс закрывает линию огня, сам шептун уходит фазовым шагом (гипноз срывается).
+ * - Смерть: всё пропадает сразу, жертва приходит в себя, колоссы рядом впадают в ярость.
  * Тело: CBP_Bot_Whisperer.
  */
 UCLASS(Blueprintable)
@@ -651,7 +679,7 @@ public:
 
 	// --- Место ---
 
-	/** Держится в этом коридоре расстояний от ближайшего вооружённого человека, см. */
+	/** Без жертв и портала держится в этом коридоре расстояний от ближайшего вооружённого человека, см. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Position", meta = (ClampMin = "0"))
 	float KeepMinDistance = 1500.f;
 
@@ -664,6 +692,77 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Position", meta = (ClampMin = "0"))
 	float TankShadeDistance = 250.f;
+
+	// --- Охота ---
+
+	/** Ищет мирных не дальше этого, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hunt", meta = (ClampMin = "0"))
+	float HuntRange = 3500.f;
+
+	/** Скорость бега к жертве, см/с (тело ускоряется временем). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hunt", meta = (ClampMin = "0"))
+	float HuntRunSpeed = 600.f;
+
+	/** Добегает до жертвы на это расстояние, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hunt", meta = (ClampMin = "0"))
+	float HuntApproachDistance = 450.f;
+
+	/** Не добежал за столько секунд — ищет другую жертву, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hunt", meta = (ClampMin = "0"))
+	float HuntTimeout = 12.f;
+
+	// --- Гипноз ---
+
+	/** Начинает гипноз, если жертву видно и она ближе этого, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis", meta = (ClampMin = "0"))
+	float HypnoStartRange = 700.f;
+
+	/** Жертва дальше этого — гипноз сорван, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis", meta = (ClampMin = "0"))
+	float HypnoBreakRange = 1100.f;
+
+	/** Страх жертвы растёт на столько в секунду (прямой испуг, до 100). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis", meta = (ClampMin = "0"))
+	float HypnoFearPerSecond = 35.f;
+
+	/** Столько урона за гипноз срывает его и оглушает шептуна. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis", meta = (ClampMin = "0"))
+	float HypnoInterruptDamage = 15.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis", meta = (ClampMin = "0"))
+	float HypnoStunTime = 1.5f;
+
+	/** Жертву не видно дольше столько секунд — гипноз сорван, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis", meta = (ClampMin = "0"))
+	float HypnoLostSightTime = 1.f;
+
+	/** Страх жертвы упал ниже этого (успокоили) — гипноз сорван. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis", meta = (ClampMin = "0", ClampMax = "100"))
+	float HypnoCalmFear = 40.f;
+
+	/** Сорвавшуюся жертву снова не выбирает столько секунд, с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis", meta = (ClampMin = "0"))
+	float HypnoRetryTime = 8.f;
+
+	// --- У портала ---
+
+	/** Ищет портал с проводниками не дальше этого, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Portal", meta = (ClampMin = "0"))
+	float TendSearchRange = 5000.f;
+
+	/** Встаёт на столько от портала, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Portal", meta = (ClampMin = "0"))
+	float TendDistance = 350.f;
+
+	/** Ближе этого к порталу — буст роста, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Portal", meta = (ClampMin = "0"))
+	float TendRadius = 600.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Portal", meta = (ClampMin = "0"))
+	float PortalGrowthScale = 1.75f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Portal", meta = (ClampMin = "0"))
+	float PortalFreeScale = 0.5f;
 
 	// --- Аура ---
 
@@ -679,57 +778,6 @@ public:
 	/** Шёпот (зацикливается), громче ближе к шептуну. Пусто — без звука. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Aura")
 	TSoftObjectPtr<USoundBase> WhisperSound;
-
-	// --- Крик-волна ---
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Scream", meta = (ClampMin = "0"))
-	float ScreamInterval = 14.f;
-
-	/** Замах: шептун стоит, голова светится и уязвима. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Scream", meta = (ClampMin = "0.1"))
-	float ScreamWindup = 1.5f;
-
-	/** Кричит, только если цель ближе этого, см. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Scream", meta = (ClampMin = "0"))
-	float ScreamTargetRange = 2500.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Scream", meta = (ClampMin = "0"))
-	float ScreamRadius = 1800.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Scream", meta = (ClampMin = "0"))
-	float ScreamFear = 22.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Scream", meta = (ClampMin = "0", ClampMax = "100"))
-	float ScreamFearCap = 95.f;
-
-	/** Столько урона за замах срывает крик. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Scream", meta = (ClampMin = "0"))
-	float ScreamInterruptDamage = 15.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Scream", meta = (ClampMin = "0"))
-	float ScreamStunTime = 1.5f;
-
-	// --- Метка ---
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Mark", meta = (ClampMin = "0"))
-	float MarkInterval = 20.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Mark", meta = (ClampMin = "0"))
-	float MarkRange = 2500.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Mark", meta = (ClampMin = "0.1"))
-	float MarkChannelTime = 3.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Mark", meta = (ClampMin = "0"))
-	float MarkDuration = 20.f;
-
-	/** Страх помеченного растёт на столько в секунду (и не спадает). */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Mark", meta = (ClampMin = "0"))
-	float MarkFearPerSecond = 1.f;
-
-	/** Урон за канал от этой доли здоровья срывает метку. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Mark", meta = (ClampMin = "0", ClampMax = "1"))
-	float MarkInterruptFraction = 0.2f;
 
 	// --- Видения ---
 
@@ -754,7 +802,7 @@ public:
 
 	// --- Охрана ---
 
-	/** Человек ближе этого — охрана поднимается, см. */
+	/** Вооружённый человек ближе этого — охрана поднимается, см. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Guard", meta = (ClampMin = "0"))
 	float GuardTriggerRadius = 900.f;
 
@@ -790,26 +838,34 @@ public:
 
 	// --- Состояние (для тестов) ---
 
+	/** Бежит к жертве. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
-	bool IsScreamWindup() const { return bScreamWindup; }
+	bool IsHunting() const { return Mode == EMode::Hunt; }
 
 	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
-	int32 GetScreamCount() const { return ScreamCount; }
+	bool IsHypnotizing() const { return Mode == EMode::Hypnotize; }
+
+	/** Стоит у портала (буст роста, если ближе TendRadius). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	bool IsTendingPortal() const { return Mode == EMode::Tend; }
+
+	/** Жертва охоты или гипноза (или nullptr). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	APawn* GetHuntVictim() const { return Victim.Get(); }
+
+	/** Портал, у которого стоит (или nullptr). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	AActor* GetTendedPortal() const;
 
 	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
-	int32 GetScreamInterruptCount() const { return ScreamInterruptCount; }
+	int32 GetHypnoCount() const { return HypnoCount; }
 
 	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
-	AActor* GetMarkTarget() const;
+	int32 GetHypnoInterruptCount() const { return HypnoInterruptCount; }
 
+	/** Сколько жертв гипноза сломалось в проводников. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
-	bool IsChannelingMark() const { return bChanneling; }
-
-	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
-	int32 GetMarkCount() const { return MarkCount; }
-
-	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
-	int32 GetMarkInterruptCount() const { return MarkInterruptCount; }
+	int32 GetBrokenCount() const { return BrokenCount; }
 
 	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
 	int32 GetVisionCount() const { return VisionCount; }
@@ -824,9 +880,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
 	int32 GetBuffedCount() const { return BuffedCount; }
 
-	/** Начать канал метки на Victim сейчас (отладка и тесты). */
+	/** Начать гипноз NewVictim сейчас, без проверок дистанции и видимости (отладка и тесты). */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Whisperer")
-	bool StartMark(AActor* Victim);
+	bool StartHypnosis(APawn* NewVictim);
 
 	/** Фазовый шаг прочь от From (отладка и тесты). */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Whisperer")
@@ -838,11 +894,13 @@ public:
 
 	/** Видение у бота сейчас (отладка и тесты). */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Whisperer")
-	bool SendVision(APawn* Victim);
+	bool SendVision(APawn* VisionVictim);
 
-	/** Замах крика вместо рыка. */
-	virtual void Roar() override;
+	/** Не рычит: крик-волну заменил гипноз. */
+	virtual void Roar() override {}
 	virtual bool IsRingFighter() const override { return false; }
+
+	virtual void Tick(float DeltaSeconds) override;
 
 protected:
 	virtual void OnPossess(APawn* InPawn) override;
@@ -851,6 +909,14 @@ protected:
 	virtual bool WantsFreeAttack(AActor* Target) override;
 
 private:
+	enum class EMode : uint8
+	{
+		Keep,
+		Hunt,
+		Hypnotize,
+		Tend
+	};
+
 	UFUNCTION()
 	void HandleDamaged(UNoFearHealthComponent* Component, const FNoFearDamageInfo& Info);
 
@@ -863,12 +929,21 @@ private:
 	void UpdateAura(float DeltaTime);
 	void UpdateBuff();
 	void UpdateVisions();
-	void UpdateMark(float DeltaTime);
 	void UpdateGuardTrigger();
+	/** Выбор дела: гипноз идёт — держит, иначе охота, портал или коридор от стрелков. */
+	void UpdateMode();
+	void UpdateHunt();
+	void UpdateHypnosis(float DeltaTime);
+	void UpdateTend();
 	void UpdatePosition();
-	void FinishScream();
-	void CancelScream();
-	void CancelMark();
+	/** Гипноз кончился: жертва сломалась (bBroken) или сорвался — жертва очнулась и убегает. */
+	void EndHypnosis(bool bBroken);
+	void SetMode(EMode NewMode);
+	/** Ближайший мирный в HuntRange, годный в жертвы. */
+	APawn* FindHuntVictim() const;
+	bool IsValidVictim(const APawn* Candidate) const;
+	/** Ближайший портал с проводниками в TendSearchRange. */
+	AActor* FindTendPortal() const;
 	/** Всё, что держит шептун, пропадает: смерть или уход тела. */
 	void ClearEffects();
 	/** Ближайший живой враждебный человек (вооружённый, если bArmed) и расстояние до него. */
@@ -879,24 +954,19 @@ private:
 	TWeakObjectPtr<UAudioComponent> WhisperAudio;
 	TWeakObjectPtr<UNoFearHealthComponent> BoundHealth;
 
-	bool bScreamWindup = false;
-	float ScreamDamage = 0.f;
-	double NextScreamTime = 0.0;
-	FTimerHandle ScreamTimer;
-	int32 ScreamCount = 0;
-	int32 ScreamInterruptCount = 0;
-
-	TWeakObjectPtr<AActor> MarkVictim;
-	TWeakObjectPtr<AActor> ChannelVictim;
-	bool bChanneling = false;
-	double ChannelEndTime = 0.0;
-	double MarkUntil = 0.0;
-	double NextMarkTime = 0.0;
-	float ChannelDamage = 0.f;
-	/** Ниже этого страх помеченного не опускается (растёт на MarkFearPerSecond). */
-	float MarkFearFloor = 0.f;
-	int32 MarkCount = 0;
-	int32 MarkInterruptCount = 0;
+	EMode Mode = EMode::Keep;
+	double ModeStartTime = 0.0;
+	TWeakObjectPtr<APawn> Victim;
+	TWeakObjectPtr<AActor> TendPortal;
+	/** Сорвавшиеся жертвы: до какого времени их не трогать. */
+	TMap<TWeakObjectPtr<APawn>, double> RetryUntil;
+	float HypnoDamage = 0.f;
+	/** Здоровье жертвы в начале гипноза: ранили — гипноз сорван. */
+	float VictimStartHealth = 0.f;
+	double LastSeenVictimTime = 0.0;
+	int32 HypnoCount = 0;
+	int32 HypnoInterruptCount = 0;
+	int32 BrokenCount = 0;
 
 	double NextVisionTime = 0.0;
 	int32 VisionCount = 0;
@@ -991,6 +1061,10 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Cloak")
 	TSoftObjectPtr<USoundBase> HissSound;
+
+	/** Сколько звучит шипение на замахе, с (звук зациклен, обрезается затуханием). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Cloak", meta = (ClampMin = "0.1"))
+	float HissDuration = 0.6f;
 
 	// --- Тело ---
 
@@ -1117,6 +1191,10 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Decoy", meta = (ClampMin = "0.1"))
 	float CryPitch = 1.8f;
+
+	/** Сколько звучит ложный звук (крик, шаги, выстрел), с: звуки зациклены и обрезаются затуханием. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Decoy", meta = (ClampMin = "0.1"))
+	float CryDuration = 1.5f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Shade|Decoy")
 	TSoftObjectPtr<USoundBase> StepsSound;

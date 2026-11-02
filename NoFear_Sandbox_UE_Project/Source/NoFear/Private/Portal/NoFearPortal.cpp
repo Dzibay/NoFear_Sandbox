@@ -116,6 +116,24 @@ float ANoFearPortal::GetCoreRadius() const
 	return CoreRadius + CoreRadiusPerSize * Size;
 }
 
+void ANoFearPortal::ApplyWhisperBoost(float GrowthScale, float FreeScale, float Duration)
+{
+	const UWorld* World = GetWorld();
+	if (!World || bClosing)
+	{
+		return;
+	}
+	WhisperGrowthScale = FMath::Max(GrowthScale, 0.f);
+	WhisperFreeScale = FMath::Max(FreeScale, 0.f);
+	WhisperBoostUntil = World->GetTimeSeconds() + Duration;
+}
+
+bool ANoFearPortal::IsWhisperBoosted() const
+{
+	const UWorld* World = GetWorld();
+	return World && !bClosing && World->GetTimeSeconds() < WhisperBoostUntil;
+}
+
 FVector ANoFearPortal::GetCoreLocation() const
 {
 	return GetActorLocation() + FVector(0.f, 0.f, CoreLift + GetCoreRadius());
@@ -157,7 +175,11 @@ void ANoFearPortal::Tick(float DeltaSeconds)
 	SetMeshColor(Crack, GlowColor * (0.55f + 0.45f * (Pulse - 1.f) / FMath::Max(PulseDepth, KINDA_SMALL_NUMBER)));
 
 	Light->SetRelativeLocation(FVector(0.f, 0.f, CoreZ));
-	Light->SetIntensity((LightIntensity + LightIntensityPerSize * DisplaySize) * Pulse * Collapse);
+	// Шептун рядом: свет мерцает густо-фиолетовым.
+	const bool bBoosted = IsWhisperBoosted();
+	const float Flicker = bBoosted ? 0.5f + 0.5f * FMath::Sin(Now * 9.f) : 0.f;
+	Light->SetLightColor(FLinearColor::LerpUsingHSV(GlowColor, FLinearColor(0.45f, 0.05f, 1.f), Flicker));
+	Light->SetIntensity((LightIntensity + LightIntensityPerSize * DisplaySize) * Pulse * Collapse * (1.f + 0.4f * Flicker));
 	Light->SetAttenuationRadius(300.f + 8.f * DisplaySize);
 
 	UpdateBeams(Pulse);
