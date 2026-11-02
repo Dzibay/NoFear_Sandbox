@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # Генератор демо-уровня /Game/Levels/L_Demo из серых блоков. DefaultLevel только читается.
 # Координаты в таблицах — метры (X на восток, Y на север, пол z=0). LevelBlock: пивот в мин. углу, размер = scale*100.
+import math
 import unreal
 
 TAG = 'NFB '
@@ -131,14 +132,26 @@ def box(label, folder, x0, y0, x1, y1, h, z0=0.0, trav=False, group=0):
 WALL, COVER, PROP = 0, 1, 2
 
 # ---------------------------------------------------------------- 3. окружение
-floor = box('Floor', 'Lighting', -1000, -1000, 1000, 1000, 1, z0=-1)
-if 'floor' in src:
-    for k, v in src['floor'].items():
+# Пол — четыре плиты вокруг подвала зоны Z6 (CELLAR): там пол тонкий, с люком.
+CELLAR = (49.5, 38, 58, 44)
+
+
+def floor_box(label, x0, y0, x1, y1):
+    a = box(label, 'Lighting', x0, y0, x1, y1, 1, z0=-1)
+    for k, v in src.get('floor', {}).items():
         if v is not None:
             try:
-                floor.set_editor_property(k, v)
+                a.set_editor_property(k, v)
             except Exception as ex:
                 log('floor set %s err %s' % (k, ex))
+    return a
+
+
+cx0, cy0, cx1, cy1 = CELLAR
+floor = floor_box('Floor', -1000, -1000, cx0, 1000)
+floor_box('Floor_E', cx1, -1000, 1000, 1000)
+floor_box('Floor_S', cx0, -1000, cx1, cy0)
+floor_box('Floor_N', cx0, cy1, cx1, 1000)
 
 lv = place(eas.spawn_actor_from_class(bpc(LV), V(0, 0, 0), R()), 'LevelVisuals', 'Lighting')
 for k in ['Style Index', 'StyleIndex']:
@@ -187,6 +200,8 @@ navvol('C3_Cell', 59, 274.5, 61, 276.5)
 navvol('C1_Corr', 28.4, 214, 40, 218)
 navvol('C2_Corr', 28.4, 232.5, 40, 236.5)
 navvol('C3_Corr', 58, 245, 62, 258)
+navvol('Z6_Cellar', CELLAR[0], CELLAR[1], CELLAR[2], CELLAR[3], z0=-3.6, z1=1.5)  # подвал под люком
+navvol('Z7_Tower', 93, 26, 101, 33, z0=1.5, z1=4.5)  # площадка вышки укрытия (3 м)
 
 
 def navlink(label, lx, ly, rx, ry):
@@ -415,6 +430,288 @@ box('Cell3_S2', f, 60.75, 273.5, 62, 274.5, 3, group=WALL)
 box('Cell3_CorrW', f, 58.25, 246, 59.25, 273.5, 3, group=WALL)
 box('Cell3_CorrE', f, 60.75, 246, 61.75, 273.5, 3, group=WALL)
 
+# ---------------------------------------------------------------- 6b. двери, люки, сундуки (Docs/Interactables.md)
+doors = []
+
+
+def door(label, folder, x, y, yaw, w=1.2, h=2.2, double=False, locked=False, hp=None, cls=None, start_open=False):
+    # Точка двери — центр проёма; ось X двери — нормаль проёма (yaw 90 — проём в стене вдоль X).
+    a = eas.spawn_actor_from_class(cls or unreal.NoFearDoor, V(x, y, h / 2), R(yaw))
+    place(a, label, folder)
+    a.set_editor_property('width', w * 100.0)
+    a.set_editor_property('height', h * 100.0)
+    a.set_editor_property('double_door', double)
+    a.set_editor_property('locked', locked)
+    a.set_editor_property('start_open', start_open)
+    if cls is None:
+        a.set_editor_property('open_angle', 90.0)  # в толстой стене створка дальше 90° уходит в откос
+    if hp:
+        a.set_editor_property('max_health', hp)
+    doors.append(a)
+    return a
+
+
+def item(name):
+    return EAL.load_asset('/Game/Items/DA_Item_%s.DA_Item_%s' % (name, name))
+
+
+def chest(label, folder, x, y, yaw, contents, locked=False, z=0.0):
+    a = eas.spawn_actor_from_class(unreal.NoFearChest, V(x, y, z), R(yaw))
+    place(a, label, folder)
+    items = []
+    for name, count in contents:
+        e = unreal.NoFearChestItem()
+        e.set_editor_property('item', item(name))
+        e.set_editor_property('count', count)
+        items.append(e)
+    a.set_editor_property('contents', items)
+    a.set_editor_property('locked', locked)
+    doors.append(a)
+    return a
+
+
+# Проёмы существующих зон: перемычка над дверью, чтобы над створками не было дыры.
+# Открыта: герой в t4 начинает в доме и выходит с Максом.
+door('Door_YardHouse', 'Z3b_Yard', 156, 160.25, 90, w=3, h=2.5, double=True, start_open=True)
+box('House_Lintel', 'Z3b_Yard', 154.5, 160, 157.5, 160.5, 1, z0=2.5, group=WALL)
+door('Door_WHPrisoners', 'Z4_Warehouse', 135, 232.25, 90, w=2, h=2.4, double=True)
+box('WH_RoomLintel', 'Z4_Warehouse', 134, 232, 136, 232.5, 1.6, z0=2.4, group=WALL)
+door('Door_WHEast', 'Z4_Warehouse', 164.5, 227, 0, w=2, h=2.4, double=True)
+box('WH_EastLintel', 'Z4_Warehouse', 164, 226, 165, 228, 1.6, z0=2.4, group=WALL)
+
+# Z6: испытательный дворик к востоку от деревни — запертая кладовая, подвал под люком.
+F = 'Z6_Doors'
+box('Vault_WallS1', F, 62, 36, 64, 36.3, 3, group=WALL)
+box('Vault_WallS2', F, 65.2, 36, 67, 36.3, 3, group=WALL)
+box('Vault_Lintel', F, 64, 36, 65.2, 36.3, 0.8, z0=2.2, group=WALL)
+box('Vault_WallN', F, 62, 40.7, 67, 41, 3, group=WALL)
+box('Vault_WallW', F, 62, 36.3, 62.3, 40.7, 3, group=WALL)
+box('Vault_WallE', F, 66.7, 36.3, 67, 40.7, 3, group=WALL)
+box('Vault_Roof', F, 62, 36, 67, 41, 0.2, z0=3, group=WALL)
+vault_door = door('Door_VaultLocked', F, 64.6, 36.15, 90, locked=True, hp=200.0)
+# Ключ от склада — на теле во дворе укрытия (Z7).
+vault_door.set_editor_property('key_id', 'Vault')
+chest('Chest_Vault', F, 65.5, 39.8, 270, [('RifleAmmo', 60), ('Grenade', 2), ('Medkit', 1)])
+box('Shack_WallS', F, 68, 30, 72, 30.3, 3, group=WALL)
+box('Shack_WallN1', F, 68, 33.7, 69.4, 34, 3, group=WALL)
+box('Shack_WallN2', F, 70.6, 33.7, 72, 34, 3, group=WALL)
+box('Shack_Lintel', F, 69.4, 33.7, 70.6, 34, 0.8, z0=2.2, group=WALL)
+box('Shack_WallW', F, 68, 30.3, 68.3, 33.7, 3, group=WALL)
+box('Shack_WallE', F, 71.7, 30.3, 72, 33.7, 3, group=WALL)
+door('Door_Shack', F, 70, 33.85, 90)
+chest('Chest_ShackLocked', F, 71, 31, 180, [('Shells', 16), ('Bandage', 2)], locked=True)
+# Подвал: тонкий потолок с проёмом 3.4 x 1.4 м, пандус 38° вниз на -3 м (проём длинный, чтобы над пандусом было 2+ м).
+HX0, HY0, HX1, HY1 = 50, 40, 53.4, 41.4
+box('Cellar_CeilW', F, cx0, cy0, HX0, cy1, 0.2, z0=-0.2, group=WALL)
+box('Cellar_CeilE', F, HX1, cy0, cx1, cy1, 0.2, z0=-0.2, group=WALL)
+box('Cellar_CeilS', F, HX0, cy0, HX1, HY0, 0.2, z0=-0.2, group=WALL)
+box('Cellar_CeilN', F, HX0, HY1, HX1, cy1, 0.2, z0=-0.2, group=WALL)
+box('Cellar_Floor', F, cx0, cy0, cx1, cy1, 0.2, z0=-3.2, group=WALL)
+box('Cellar_WallW', F, cx0, cy0, cx0 + 0.5, cy1, 2.8, z0=-3, group=WALL)
+box('Cellar_WallE', F, cx1 - 0.5, cy0, cx1, cy1, 2.8, z0=-3, group=WALL)
+box('Cellar_WallS', F, cx0 + 0.5, cy0, cx1 - 0.5, cy0 + 0.5, 2.8, z0=-3, group=WALL)
+box('Cellar_WallN', F, cx0 + 0.5, cy1 - 0.5, cx1 - 0.5, cy1, 2.8, z0=-3, group=WALL)
+RAMP_A, RAMP_T, RAMP_DROP = 38.0, 0.3, 3.0
+ra = math.radians(RAMP_A)
+ramp = eas.spawn_actor_from_class(bpc(LB), V(HX0 - RAMP_T * math.sin(ra), HY0, -RAMP_T * math.cos(ra)), unreal.Rotator(0.0, -RAMP_A, 0.0))
+ramp.set_actor_scale3d(unreal.Vector(RAMP_DROP / math.sin(ra), HY1 - HY0, RAMP_T))
+place(ramp, 'Cellar_Ramp', F)
+if CG:
+    ramp.set_editor_property(CG, gb[WALL % len(gb)] or ramp.get_editor_property(CG))
+door('Hatch_Cellar', F, (HX0 + HX1) / 2, (HY0 + HY1) / 2, 0, w=HY1 - HY0, h=HX1 - HX0, double=True, cls=unreal.NoFearHatch)
+doors[-1].set_actor_location(V((HX0 + HX1) / 2, (HY0 + HY1) / 2, 0), False, False)
+chest('Chest_Cellar', F, 56.5, 42.3, 180, [('Rifle', 1), ('RifleAmmo', 30), ('CaseExpansion', 1)], z=-3.0)
+lamp = eas.spawn_actor_from_class(unreal.PointLight, V(55, 41, -0.6), R())
+place(lamp, 'Cellar_Lamp', F)
+lc = lamp.get_component_by_class(unreal.PointLightComponent)
+lc.set_mobility(unreal.ComponentMobility.MOVABLE)
+lc.set_editor_property('intensity', 3000.0)
+lc.set_editor_property('attenuation_radius', 700.0)
+
+# Z7: укрытие — комната с дверью под баррикаду, проём с досками, шкафы-укрытия; коридор с растяжкой и капкан на подходе.
+F = 'Z7_Shelter'
+box('Shelter_WallS1', F, 80, 27, 82.4, 27.3, 3, group=WALL)
+box('Shelter_WallS2', F, 83.6, 27, 86, 27.3, 3, group=WALL)
+box('Shelter_GapLintel', F, 82.4, 27, 83.6, 27.3, 0.8, z0=2.2, group=WALL)
+box('Shelter_WallN', F, 80, 32.7, 86, 33, 3, group=WALL)
+# Восточная стена с окном: подоконник 0,9 м, окно до 2 м.
+box('Shelter_WallE1', F, 85.7, 27.3, 86, 29.4, 3, group=WALL)
+box('Shelter_WallE2', F, 85.7, 30.6, 86, 32.7, 3, group=WALL)
+box('Shelter_WinSill', F, 85.7, 29.4, 86, 30.6, 0.9, group=WALL)
+box('Shelter_WinTop', F, 85.7, 29.4, 86, 30.6, 1.0, z0=2.0, group=WALL)
+box('Shelter_WallW1', F, 80, 27.3, 80.3, 29.4, 3, group=WALL)
+box('Shelter_WallW2', F, 80, 30.6, 80.3, 32.7, 3, group=WALL)
+box('Shelter_Lintel', F, 80, 29.4, 80.3, 30.6, 0.8, z0=2.2, group=WALL)
+shelter_door = door('Door_Shelter', F, 80.15, 30, 0)
+interact = []
+
+
+def barricade(label, x, y, yaw, w=1.2, h=2.2, boards=0, linked=None):
+    # Точка — середина проёма на полу, ось X — нормаль проёма.
+    a = eas.spawn_actor_from_class(unreal.NoFearBarricade, V(x, y, 0), R(yaw))
+    place(a, label, F)
+    a.set_editor_property('width', w * 100.0)
+    a.set_editor_property('height', h * 100.0)
+    a.set_editor_property('initial_boards', boards)
+    if linked:
+        a.set_editor_property('linked_door', linked)
+    interact.append(a)
+    return a
+
+
+# Доски у двери — изнутри, чтобы не задевать створку.
+barricade('Barricade_ShelterDoor', 80.45, 30, 0, linked=shelter_door)
+barricade('Barricade_ShelterGap', 83, 27.15, 90, boards=2)
+for i, x in enumerate([81.6, 82.8]):
+    # Шкаф: точка — середина основания, дверца смотрит по +X (yaw 270 — в комнату от северной стены).
+    a = eas.spawn_actor_from_class(unreal.NoFearHideSpot, V(x, 32.7 - 0.33, 0), R(270))
+    place(a, 'Locker_%d' % (i + 1), F)
+    interact.append(a)
+dark = eas.spawn_actor_from_class(unreal.NoFearDarkVolume, V(83, 30, 1.5), R())
+place(dark, 'Shelter_Dark', F)
+dark.set_editor_property('extent', unreal.Vector(300.0, 300.0, 200.0))
+# Коридор с растяжкой: проволока натягивается до стен сама.
+box('TrapCorr_WallS', F, 74, 23, 80, 23.3, 2.5, group=WALL)
+box('TrapCorr_WallN', F, 74, 25.3, 80, 25.6, 2.5, group=WALL)
+a = eas.spawn_actor_from_class(unreal.NoFearTripwire, V(77, 24.3, 0), R(0))
+place(a, 'Trap_Tripwire', F)
+interact.append(a)
+a = eas.spawn_actor_from_class(unreal.NoFearBearTrap, V(76.5, 30, 0), R(0))
+place(a, 'Trap_Bear', F)
+interact.append(a)
+# Окно в восточной стене, бочки и ящики во дворе за ним.
+a = eas.spawn_actor_from_class(unreal.NoFearWindow, V(85.85, 30, 0), R(0))
+place(a, 'Window_Shelter', F)
+interact.append(a)
+for i, (x, y) in enumerate([(88, 24), (88.8, 24.4), (88.3, 25.2), (93, 19)]):
+    a = eas.spawn_actor_from_class(unreal.NoFearExplosiveBarrel, V(x, y, 0), R(i * 40))
+    place(a, 'Barrel_%d' % (i + 1), F)
+    interact.append(a)
+
+
+def crate(label, x, y, yaw, contents):
+    a = eas.spawn_actor_from_class(unreal.NoFearBreakableCrate, V(x, y, 0), R(yaw))
+    place(a, label, F)
+    items = []
+    for name, count in contents:
+        e = unreal.NoFearChestItem()
+        e.set_editor_property('item', item(name))
+        e.set_editor_property('count', count)
+        items.append(e)
+    a.set_editor_property('contents', items)
+    interact.append(a)
+    return a
+
+
+crate('Crate_Planks', 90, 30, 10, [('Planks', 2)])
+crate('Crate_Supplies', 91.2, 31.2, 35, [('PistolAmmo', 12), ('Bandage', 1)])
+crate('Crate_Traps', 90.2, 32.4, 0, [('Tripwire', 1)])
+
+# Генератор к северу от комнаты питает линию Shelter: две лампы в комнате, выключатель на западной стене южнее двери.
+# Лампа над капканом без линии — горит всегда и мигает.
+gen = eas.spawn_actor_from_class(unreal.NoFearGenerator, V(83, 34.6, 0), R(0))
+place(gen, 'Generator_Shelter', F)
+gen.set_editor_property('circuit', 'Shelter')
+gen.set_editor_property('start_fuel_fraction', 0.5)
+interact.append(gen)
+shelter_lamps = []
+for i, (x, y) in enumerate([(81.8, 30), (84.2, 30)]):
+    a = eas.spawn_actor_from_class(unreal.NoFearLamp, V(x, y, 2.6), R())
+    place(a, 'Lamp_Shelter_%d' % (i + 1), F)
+    a.set_editor_property('circuit', 'Shelter')
+    shelter_lamps.append(a)
+a = eas.spawn_actor_from_class(unreal.NoFearLightSwitch, V(80.32, 28.6, 1.3), R(0))
+place(a, 'Switch_Shelter', F)
+a.set_editor_property('lamps', shelter_lamps)
+interact.append(a)
+a = eas.spawn_actor_from_class(unreal.NoFearLamp, V(76.5, 31.2, 2.4), R())
+place(a, 'Lamp_Porch', F)
+a.set_editor_property('flicker', True)
+a.set_editor_property('radius', 500.0)
+
+# Тело во дворе к северо-востоку от комнаты: при нём ключ от склада Z6 (Door_VaultLocked), карта лаборатории, патроны и бинт.
+a = eas.spawn_actor_from_class(unreal.NoFearBody, V(87.6, 35.6, 0), R(200))
+place(a, 'Body_Courier', F)
+items = []
+for name, count in [('Key_Vault', 1), ('KeyCard_Lab', 1), ('PistolAmmo', 8), ('Bandage', 1)]:
+    e = unreal.NoFearChestItem()
+    e.set_editor_property('item', item(name))
+    e.set_editor_property('count', count)
+    items.append(e)
+a.set_editor_property('contents', items)
+a.set_editor_property('display_name', 'Тело курьера')
+interact.append(a)
+# Радио на столе у крыльца — приманка: пока играет, монстры идут к нему.
+box('Radio_Table', F, 77.1, 32.2, 77.9, 32.7, 0.75, group=PROP)
+a = eas.spawn_actor_from_class(unreal.NoFearRadio, V(77.5, 32.45, 0.75), R(180))
+place(a, 'Radio_Porch', F)
+a.set_editor_property('broadcast', '«...всем, кто слышит: эвакуация с крыши больницы отменена. Повторяю, отменена...»')
+interact.append(a)
+# Сирена во дворе на линии Shelter: воет, только пока работает генератор.
+a = eas.spawn_actor_from_class(unreal.NoFearSiren, V(92.5, 27.5, 0), R(180))
+place(a, 'Siren_Yard', F)
+a.set_editor_property('circuit', 'Shelter')
+interact.append(a)
+
+# Вышка к востоку от двора: площадка 3x3 м на высоте 3 м, на неё — лестница с запада и лифт с востока (линия Shelter).
+box('Tower_Deck', F, 95, 28, 98, 31, 0.2, z0=2.8, group=WALL)
+for i, (x, y) in enumerate([(95, 28), (97.8, 28), (95, 30.8), (97.8, 30.8)]):
+    box('Tower_Post%d' % (i + 1), F, x, y, x + 0.2, y + 0.2, 2.8, group=WALL)
+box('Tower_RailS', F, 95, 28, 98, 28.15, 1.0, z0=3.0, group=PROP)
+box('Tower_RailN', F, 95, 30.85, 98, 31, 1.0, z0=3.0, group=PROP)
+box('Tower_RailW1', F, 95, 28.15, 95.15, 29.1, 1.0, z0=3.0, group=PROP)
+box('Tower_RailW2', F, 95, 29.9, 95.15, 30.85, 1.0, z0=3.0, group=PROP)
+a = eas.spawn_actor_from_class(unreal.NoFearLadder, V(95, 29.5, 0), R(180))
+place(a, 'Ladder_Tower', F)
+a.set_editor_property('height', 300.0)
+interact.append(a)
+lift = eas.spawn_actor_from_class(unreal.NoFearLift, V(99.15, 29.5, 0), R())
+place(lift, 'Lift_Tower', F)
+lift.set_editor_property('circuit', 'Shelter')
+interact.append(lift)
+for label, (x, y, z), floor in [('LiftButton_Ground', (99.15, 27.7, 0), 0), ('LiftButton_Deck', (97.7, 30.6, 3.0), 1)]:
+    a = eas.spawn_actor_from_class(unreal.NoFearLiftButton, V(x, y, z), R())
+    place(a, label, F)
+    a.set_editor_property('lift', lift)
+    a.set_editor_property('floor', floor)
+    interact.append(a)
+# Забор по пояс вдоль x = 102 (y 22-38): в середине перелаз, его можно перелезть по E, монстры лезут следом.
+box('Fence_S', F, 101.9, 22, 102.1, 28.5, 1.1, group=PROP)
+box('Fence_N', F, 101.9, 31.5, 102.1, 38, 1.1, group=PROP)
+a = eas.spawn_actor_from_class(unreal.NoFearVault, V(102, 30, 0), R())
+place(a, 'Vault_Fence', F)
+interact.append(a)
+
+# Лаборатория к северу от вышки: дверь без ключа, её отпирает терминал у входа (линия Shelter). Войти — картой с тела
+# курьера, паролем из записки на площадке вышки или взломом (держать E, пищит). Внутри сундук с припасами.
+box('Lab_WallS1', F, 94, 34, 96.4, 34.3, 3, group=WALL)
+box('Lab_WallS2', F, 97.6, 34, 100, 34.3, 3, group=WALL)
+box('Lab_Lintel', F, 96.4, 34, 97.6, 34.3, 0.8, z0=2.2, group=WALL)
+box('Lab_WallN', F, 94, 37.7, 100, 38, 3, group=WALL)
+box('Lab_WallW', F, 94, 34.3, 94.3, 37.7, 3, group=WALL)
+box('Lab_WallE', F, 99.7, 34.3, 100, 37.7, 3, group=WALL)
+box('Lab_Roof', F, 94, 34, 100, 38, 0.2, z0=3, group=WALL)
+lab_door = door('Door_Lab', F, 97, 34.15, 90, locked=True, hp=300.0)
+chest('Chest_Lab', F, 98.8, 37.2, 270, [('Medkit', 1), ('RifleAmmo', 30), ('Grenade', 1)])
+a = eas.spawn_actor_from_class(unreal.NoFearTerminal, V(95.3, 33.6, 0), R(-90))
+place(a, 'Terminal_Lab', F)
+a.set_editor_property('circuit', 'Shelter')
+a.set_editor_property('key_id', 'Lab')
+a.set_editor_property('code_id', 'LabCode')
+a.set_editor_property('doors', [lab_door])
+a.set_editor_property('title', 'Терминал лаборатории')
+a.set_editor_property('text', 'Журнал доступа.\n\n03:12 — партия образцов перенесена в подвал склада.\n'
+                      '03:40 — связь с больницей потеряна. Генератор во дворе барахлит, без него терминал не работает.\n'
+                      '04:05 — замок двери лаборатории переведён на терминал. Ключей больше нет.')
+interact.append(a)
+a = eas.spawn_actor_from_class(unreal.NoFearNote, V(97.3, 28.6, 3.0), R(20))
+place(a, 'Note_LabCode', F)
+a.set_editor_property('title', 'Записка лаборанта')
+a.set_editor_property('text', 'Если меня не будет — пароль от терминала лаборатории: 4-1-7-7.\n'
+                      'Сначала заведи генератор. И не шуми у двери: они слышат писк.')
+a.set_editor_property('code_id', 'LabCode')
+interact.append(a)
+
 # ---------------------------------------------------------------- 6c. предметы на земле (Docs/Inventory_Design.md)
 # Герой стартует с пистолетом, 24 патронами и бинтом; остальное лежит по уровню. Пары «ствол и патроны к нему» лежат рядом,
 # у ящиков и укрытий: места открытые, вне Z6/Z7 и дворика к востоку от деревни.
@@ -599,6 +896,10 @@ for a, lab, r in navvols:
 for a, to in senders:
     d = a.get_editor_property(send_prop)
     log('sender %s -> %s' % (a.get_actor_label(), d.get_actor_label() if d else None))
+for a in doors:
+    log('door %s %s at %s' % (a.get_actor_label(), a.get_class().get_name(), a.get_actor_location()))
+for a in interact:
+    log('interact %s %s at %s' % (a.get_actor_label(), a.get_class().get_name(), a.get_actor_location()))
 for a in bots:
     log('bot %s %s team=%s squad=%s role=%s pack=%s name=%s scale=%.2f z=%.0f' % (
         a.get_actor_label(), a.get_class().get_name(), a.get_editor_property('team'), a.get_editor_property('squad'),

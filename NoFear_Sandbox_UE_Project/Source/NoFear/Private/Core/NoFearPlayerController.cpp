@@ -25,6 +25,7 @@
 #include "UObject/ConstructorHelpers.h"
 #include "Weapons/NoFearGrenadeComponent.h"
 #include "Weapons/NoFearWeaponComponent.h"
+#include "World/NoFearHideSpot.h"
 
 #define LOCTEXT_NAMESPACE "NoFearPlayerController"
 
@@ -557,6 +558,13 @@ void ANoFearPlayerController::UpdateFocusedInteractable()
 	APawn* User = GetPawn();
 	if (!User || bWaitingForRespawn || bOrderWheelOpen || UNoFearHealthComponent::IsActorIncapacitated(User))
 	{
+		return;
+	}
+
+	// Из шкафа-укрытия E только выводит наружу.
+	if (const ANoFearHideSpot* HideSpot = ANoFearHideSpot::GetSpotOf(User))
+	{
+		FocusedInteractable = HideSpot->GetInteraction();
 		return;
 	}
 
