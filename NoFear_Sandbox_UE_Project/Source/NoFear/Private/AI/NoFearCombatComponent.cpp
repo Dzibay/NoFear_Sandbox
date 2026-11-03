@@ -25,6 +25,7 @@
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Kismet/GameplayStatics.h"
 
 UNoFearCombatComponent::UNoFearCombatComponent()
 {
@@ -137,6 +138,7 @@ void UNoFearCombatComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 	UpdateLineOfSight();
 	UpdateSuppression(DeltaTime);
 	UpdatePhantom();
+	UpdatePinRescue();
 	WriteBlackboard();
 }
 
@@ -255,6 +257,197 @@ void UNoFearCombatComponent::UpdatePhantom()
 	}
 }
 
+// --- Спасение из-под ловчего ---
+
+APawn* UNoFearCombatComponent::FindPinnedAllyCatcher() const
+{
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	const ANoFearAIController* Bot = Pawn ? Cast<ANoFearAIController>(Pawn->GetController()) : nullptr;
+	UWorld* World = GetWorld();
+	if (!Bot || !World || Bot->PinRescueRadius <= 0.f)
+	{
+		return nullptr;
+	}
+	TArray<ANoFearJumperAIController*> Pinners;
+	ANoFearJumperAIController::GetActivePinners(World, Pinners);
+	const FVector Eyes = GetEyesLocation();
+	APawn* Best = nullptr;
+	float BestDistance = Bot->PinRescueRadius;
+	for (const ANoFearJumperAIController* Pinner : Pinners)
+	{
+		APawn* Catcher = Pinner ? Pinner->GetPawn() : nullptr;
+		const AActor* Victim = Pinner ? Pinner->GetPinVictim() : nullptr;
+		if (!Catcher || !Victim || Victim == Pawn || UNoFearHealthComponent::IsActorDead(Catcher)
+			|| UNoFearTeamLibrary::AreHostile(Pawn, Victim) || !UNoFearTeamLibrary::AreHostile(Pawn, Catcher))
+		{
+			continue;
+		}
+		const float Distance = FVector::Dist(Pawn->GetActorLocation(), Catcher->GetActorLocation());
+		if (Distance > BestDistance)
+		{
+			continue;
+		}
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearPinRescueSight), false, Pawn);
+		Params.AddIgnoredActor(Victim);
+		Params.AddIgnoredActor(Catcher);
+		if (World->LineTraceTestByChannel(Eyes, Catcher->GetActorLocation(), ECC_Visibility, Params))
+		{
+			continue;
+		}
+		Best = Catcher;
+		BestDistance = Distance;
+	}
+	return Best;
+}
+
+void UNoFearCombatComponent::UpdatePinRescue()
+{
+	ANoFearCharacter* Character = Cast<ANoFearCharacter>(GetOwner());
+	ANoFearAIController* Bot = Character ? Cast<ANoFearAIController>(Character->GetController()) : nullptr;
+	UNoFearWeaponComponent* Weapons = Character ? Character->GetWeaponComponent() : nullptr;
+	ANoFearWeapon* Weapon = Weapons ? Weapons->GetCurrentWeapon() : nullptr;
+	const double Now = GetNow();
+	if (!Bot || !Weapon || UNoFearHealthComponent::IsActorIncapacitated(Character) || IsSeeingPhantom()
+		|| Bot->IsEvadingGrenade() || Bot->IsPortalControlled())
+	{
+		ClearPinRescue();
+		return;
+	}
+
+	APawn* Catcher = RescueCatcher.Get();
+	if (!Catcher)
+	{
+		// Берётся спасать, только если дерево свободно: пошатывание и прочие паузы важнее.
+		UBrainComponent* Brain = Bot->BrainComponent;
+		if (Brain && Brain->IsPaused())
+		{
+			return;
+		}
+		Catcher = FindPinnedAllyCatcher();
+		if (!Catcher)
+		{
+			return;
+		}
+		if (Brain)
+		{
+			Brain->PauseLogic(TEXT("PinRescue"));
+		}
+		RescueCatcher = Catcher;
+		RescueLastSeenTime = Now;
+		NextRescueTrigger = 0.0;
+		bRescueTriggerHeld = false;
+		++PinRescueCount;
+		Bot->StopMovement();
+		Bot->SetFocus(Catcher, EAIFocusPriority::Gameplay);
+		SetTarget(Catcher);
+	}
+
+	// Ловчий отпустил (сбили, умер) или пропал из виду дольше секунды — назад к дереву.
+	const ANoFearJumperAIController* Pinner = Cast<ANoFearJumperAIController>(Catcher->GetController());
+	if (!Pinner || !Pinner->IsPinning() || UNoFearHealthComponent::IsActorDead(Catcher))
+	{
+		ClearPinRescue();
+		return;
+	}
+	if (FindPinnedAllyCatcher() == Catcher)
+	{
+		RescueLastSeenTime = Now;
+	}
+	else if (Now - RescueLastSeenTime > 1.0)
+	{
+		ClearPinRescue();
+		return;
+	}
+
+	// Вплотную — прикладом: ловчий слетает с жертвы от удара.
+	const float Distance = FVector::Dist(Character->GetActorLocation(), Catcher->GetActorLocation());
+	if (Distance <= ButtStrikeRange && Now >= NextButtStrikeTime)
+	{
+		NextButtStrikeTime = Now + ButtStrikeCooldown;
+		Weapons->StopFire();
+		bRescueTriggerHeld = false;
+		++ButtStrikeCount;
+		if (UNoFearPoseComponent* Pose = Character->GetPoseComponent())
+		{
+			Pose->PlayPose(ENoFearPose::Swing, 0.25f, 0.6f);
+		}
+		UGameplayStatics::ApplyDamage(Catcher, ButtStrikeDamage, Bot, Character, UDamageType::StaticClass());
+		return;
+	}
+
+	if (!Weapon->GetWeaponData() || Weapon->GetWeaponState() != ENoFearWeaponState::Idle)
+	{
+		return;
+	}
+	if (Weapon->GetMagazineAmmo() <= 0)
+	{
+		Weapons->StopFire();
+		bRescueTriggerHeld = false;
+		Weapons->Reload();
+		return;
+	}
+	// Ствол сначала доворачивается на ловчего.
+	const FVector ToCatcher = (Catcher->GetActorLocation() - Character->GetActorLocation()).GetSafeNormal2D();
+	if (FVector::DotProduct(Character->GetBaseAimRotation().Vector().GetSafeNormal2D(), ToCatcher) < 0.9f)
+	{
+		return;
+	}
+	if (Weapon->GetWeaponData()->FireMode == ENoFearFireMode::Auto)
+	{
+		if (!bRescueTriggerHeld)
+		{
+			Weapons->StartFire();
+			bRescueTriggerHeld = true;
+		}
+	}
+	else if (Now >= NextRescueTrigger)
+	{
+		Weapons->StartFire();
+		Weapons->StopFire();
+		NextRescueTrigger = Now + FMath::FRandRange(0.2f, 0.4f);
+	}
+}
+
+void UNoFearCombatComponent::ClearPinRescue()
+{
+	if (!RescueCatcher.IsValid() && !bRescueTriggerHeld)
+	{
+		RescueCatcher.Reset();
+		return;
+	}
+	const bool bWasRescuing = RescueCatcher.IsValid() || bRescueTriggerHeld;
+	RescueCatcher.Reset();
+	bRescueTriggerHeld = false;
+	APawn* Pawn = Cast<APawn>(GetOwner());
+	if (const ANoFearCharacter* Character = Cast<ANoFearCharacter>(Pawn))
+	{
+		if (UNoFearWeaponComponent* Weapons = Character->GetWeaponComponent())
+		{
+			Weapons->StopFire();
+		}
+	}
+	AAIController* Controller = Pawn ? Cast<AAIController>(Pawn->GetController()) : nullptr;
+	if (!Controller || !bWasRescuing)
+	{
+		return;
+	}
+	if (bManualTarget)
+	{
+		SetTarget(nullptr);
+	}
+	// Паузу перехватили видение, граната или портал — фокус и дерево теперь их.
+	const ANoFearAIController* Bot = Cast<ANoFearAIController>(Controller);
+	if (IsSeeingPhantom() || (Bot && (Bot->IsEvadingGrenade() || Bot->IsPortalControlled())))
+	{
+		return;
+	}
+	Controller->ClearFocus(EAIFocusPriority::Gameplay);
+	if (Controller->BrainComponent && Controller->BrainComponent->IsPaused() && !UNoFearHealthComponent::IsActorIncapacitated(Pawn))
+	{
+		Controller->BrainComponent->ResumeLogic(TEXT("PinRescue over"));
+	}
+}
+
 AActor* UNoFearCombatComponent::GetThreatActor() const
 {
 	if (AActor* Target = CurrentTarget.Get())
@@ -351,6 +544,11 @@ FVector UNoFearCombatComponent::ComputeShotDirection(FVector MuzzleLocation)
 	{
 		// Видение: огонь по пустому месту.
 		AimPoint = PhantomPoint;
+	}
+	else if (const APawn* Catcher = RescueCatcher.Get())
+	{
+		// Спасает прижатого: в тело ловчего, без упреждения — он сидит на жертве.
+		AimPoint = GetTargetAimPoint(Catcher, false);
 	}
 	else if (Target && bHasLineOfSight)
 	{

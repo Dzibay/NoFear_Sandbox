@@ -32,6 +32,7 @@
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "NavigationSystem.h"
+#include "NavigationPath.h"
 #include "TimerManager.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Weapons/NoFearWeapon.h"
@@ -39,6 +40,22 @@
 #include "Weapons/NoFearWeaponData.h"
 #include "Portal/NoFearPortal.h"
 #include "Portal/NoFearPortalSubsystem.h"
+
+namespace
+{
+	/** Звуки ловчего (заглушки): отрыв, приземление, удар/рвущий урон — удар по телу из Lyra. */
+	const TCHAR* CatcherJumpSoundPath = TEXT("/Game/Audio/Foley/MetaSounds/MSS_FoleySound_Jump.MSS_FoleySound_Jump");
+	const TCHAR* CatcherLandSoundPath = TEXT("/Game/Audio/Foley/MetaSounds/MSS_FoleySound_Land.MSS_FoleySound_Land");
+	const TCHAR* CatcherTearSounds[] = {
+		TEXT("/Game/External/LyraContent/Audio/Sounds/Impacts/Lyra_Plyr_BulletImpact_01.Lyra_Plyr_BulletImpact_01"),
+		TEXT("/Game/External/LyraContent/Audio/Sounds/Impacts/Lyra_Plyr_BulletImpact_03.Lyra_Plyr_BulletImpact_03"),
+		TEXT("/Game/External/LyraContent/Audio/Sounds/Impacts/Lyra_Plyr_BulletImpact_05.Lyra_Plyr_BulletImpact_05"),
+	};
+
+	/** Дуги на насест и через низкий блок (доля высоты, см. FindClearArc). */
+	const float PerchArcParams[] = { 0.6f, 0.75f, 0.85f };
+	const float VaultArcParams[] = { 0.5f, 0.65f, 0.8f };
+}
 
 // --- Прыгун ---
 
@@ -457,9 +474,21 @@ void ANoFearTankAIController::Tick(float DeltaSeconds)
 
 void ANoFearJumperAIController::OnPossess(APawn* InPawn)
 {
+	// До базы: она настраивает атаки (ConfigureMelee), а им нужен звук отрыва.
+	if (!JumpSound)
+	{
+		JumpSound = LoadObject<USoundBase>(nullptr, CatcherJumpSoundPath);
+	}
+	if (!PinTearSound)
+	{
+		PinTearSound = LoadObject<USoundBase>(nullptr, CatcherTearSounds[0]);
+	}
 	Super::OnPossess(InPawn);
 
 	PerchState = EPerchState::None;
+	CatapultState = ECatapultState::None;
+	CatapultTank.Reset();
+	GuardPortal.Reset();
 	bPouncing = false;
 	bKnockedFromAir = false;
 	bLogicPausedByCatcher = false;
@@ -477,6 +506,8 @@ void ANoFearJumperAIController::OnUnPossess()
 	bLogicPausedByCatcher = false;
 	ReleasePin();
 	PerchState = EPerchState::None;
+	CatapultState = ECatapultState::None;
+	GuardPortal.Reset();
 	bPouncing = false;
 	GetWorldTimerManager().ClearTimer(CatcherTimer);
 	if (UNoFearMeleeComponent* Melee = GetMeleeComponent())
@@ -494,9 +525,52 @@ void ANoFearJumperAIController::OnUnPossess()
 void ANoFearJumperAIController::ConfigureMelee(UNoFearMeleeComponent* Melee)
 {
 	Super::ConfigureMelee(Melee);
-	if (Melee)
+	if (!Melee)
 	{
-		Melee->OnAttackHit.AddUniqueDynamic(this, &ANoFearJumperAIController::HandleAttackHit);
+		return;
+	}
+	Melee->OnAttackHit.AddUniqueDynamic(this, &ANoFearJumperAIController::HandleAttackHit);
+	// Прыжки: отрыв (SwingSound в начале удара), приземление и удар по телу.
+	for (const FName Name : { FName(TEXT("Leap")), FName(TEXT("Pounce")), FName(TEXT("Swipe")) })
+	{
+		UNoFearMonsterAttack* Attack = Melee->FindAttack(Name);
+		if (!Attack)
+		{
+			continue;
+		}
+		if (!Attack->HitSound)
+		{
+			Attack->HitSound = LoadObject<USoundBase>(nullptr, CatcherTearSounds[FMath::RandHelper(UE_ARRAY_COUNT(CatcherTearSounds))]);
+		}
+		if (!Attack->HitShake)
+		{
+			Attack->HitShake = UNoFearHunterHitShake::StaticClass();
+		}
+		if (UNoFearMonsterAttack_Leap* LeapAttack = Cast<UNoFearMonsterAttack_Leap>(Attack))
+		{
+			if (!LeapAttack->SwingSound)
+			{
+				LeapAttack->SwingSound = JumpSound;
+			}
+			if (!LeapAttack->LandSound)
+			{
+				LeapAttack->LandSound = LoadObject<USoundBase>(nullptr, CatcherLandSoundPath);
+			}
+		}
+	}
+}
+
+void ANoFearJumperAIController::PlayJumpSound()
+{
+	const APawn* MyPawn = GetPawn();
+	if (!MyPawn)
+	{
+		return;
+	}
+	++JumpSounds;
+	if (JumpSound)
+	{
+		UGameplayStatics::PlaySoundAtLocation(this, JumpSound, MyPawn->GetActorLocation());
 	}
 }
 
@@ -504,7 +578,7 @@ void ANoFearJumperAIController::UpdateBot()
 {
 	Super::UpdateBot();
 
-	const bool bBusy = IsPinning() || PerchState != EPerchState::None || bPouncing;
+	const bool bBusy = IsPinning() || PerchState != EPerchState::None || bPouncing || CatapultState != ECatapultState::None;
 	// Уклоняется, только если держат на мушке DodgeAimTime подряд: ствол, скользнувший мимо, не в счёт.
 	FVector AimDirection;
 	const double Now = GetNow();
@@ -528,8 +602,310 @@ void ANoFearJumperAIController::UpdateBot()
 		if (Distance > PerchMinTargetDistance && Distance <= PerchSearchRadius + 500.f)
 		{
 			NextPerchSearchTime = GetNow() + 2.0;
-			TryPerch();
+			if (!TryPerch() && bSeekCatapult && Distance > CatapultMinTargetDistance)
+			{
+				// Насеста нет, цель далеко — к колоссу за броском.
+				TrySeekCatapult();
+			}
 		}
+	}
+	else if (bSeekCatapult && !bBusy && CurrentTarget.IsValid() && GetTargetDistance2D() > CatapultMinTargetDistance
+		&& (!bUsePerches || GetTargetDistance2D() > PerchSearchRadius + 500.f))
+	{
+		TrySeekCatapult();
+	}
+
+	// Своей цели нет (или она далеко) — засада над порталом с проводниками.
+	if (bGuardPortals && !bBusy && Now >= NextPerchSearchTime && (!CurrentTarget.IsValid() || GetTargetDistance2D() > 1500.f))
+	{
+		NextPerchSearchTime = Now + 2.0;
+		TryGuardPortal();
+	}
+
+	// Низкий блок поперёк пути — перепрыгнуть.
+	if (bVaultLowObstacles && !bBusy && Now >= NextVaultTime)
+	{
+		NextVaultTime = Now + 0.4;
+		TryVault();
+	}
+}
+
+bool ANoFearJumperAIController::FindVaultLanding(const FVector& Goal, FVector& OutLand, float& OutTopZ, float& OutWallDistance) const
+{
+	const ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	const UWorld* World = GetWorld();
+	if (!MyCharacter || !World)
+	{
+		return false;
+	}
+	const UCapsuleComponent* Capsule = MyCharacter->GetCapsuleComponent();
+	const float MyRadius = Capsule->GetScaledCapsuleRadius();
+	const float MyHalf = Capsule->GetScaledCapsuleHalfHeight();
+	const FVector MyLocation = MyCharacter->GetActorLocation();
+	const FVector Feet = MyLocation - FVector(0.f, 0.f, MyHalf);
+	const FVector Dir = (Goal - MyLocation).GetSafeNormal2D();
+	if (Dir.IsNearlyZero())
+	{
+		return false;
+	}
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearVault), false, MyCharacter);
+	if (const AActor* Target = CurrentTarget.Get())
+	{
+		Params.AddIgnoredActor(Target);
+	}
+	FCollisionObjectQueryParams Objects(ECC_WorldStatic);
+	Objects.AddObjectTypesToQuery(ECC_WorldDynamic);
+
+	// Есть ли помеха прямо по ходу: тонкая капсула на уровне колен.
+	const float Look = FMath::Min(500.f, static_cast<float>(FVector::Dist2D(MyLocation, Goal)) - 100.f);
+	if (Look < 80.f)
+	{
+		return false;
+	}
+	const FCollisionShape Probe = FCollisionShape::MakeCapsule(MyRadius * 0.6f, 25.f);
+	const FVector ProbeStart = Feet + FVector(0.f, 0.f, 45.f);
+	FHitResult Wall;
+	if (!World->SweepSingleByObjectType(Wall, ProbeStart, ProbeStart + Dir * Look, FQuat::Identity, Objects, Probe, Params)
+		|| Wall.bStartPenetrating || Cast<APawn>(Wall.GetActor()))
+	{
+		return false;
+	}
+	// Верх помехи: трасса сверху сразу за точкой касания.
+	const FVector Into = Wall.ImpactPoint + Dir * 20.f;
+	FHitResult TopHit;
+	if (!World->LineTraceSingleByObjectType(TopHit, FVector(Into.X, Into.Y, Feet.Z + VaultMaxHeight + 60.f), FVector(Into.X, Into.Y, Feet.Z),
+		Objects, Params) || TopHit.bStartPenetrating)
+	{
+		return false;
+	}
+	const float Height = TopHit.ImpactPoint.Z - Feet.Z;
+	if (Height < 40.f || Height > VaultMaxHeight)
+	{
+		return false;
+	}
+
+	// Место за блоком: пол ниже верха блока, на навмеше, капсула помещается.
+	const UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+	const FCollisionShape Body = FCollisionShape::MakeCapsule(MyRadius, MyHalf);
+	for (float Along = 40.f; Along <= 400.f; Along += 40.f)
+	{
+		const FVector Column = Into + Dir * Along;
+		FHitResult Ground;
+		if (!World->LineTraceSingleByObjectType(Ground, FVector(Column.X, Column.Y, Feet.Z + VaultMaxHeight + 60.f),
+			FVector(Column.X, Column.Y, Feet.Z - 200.f), Objects, Params) || Ground.ImpactNormal.Z < 0.7f)
+		{
+			continue;
+		}
+		if (Ground.ImpactPoint.Z > Feet.Z + 40.f)
+		{
+			// Ещё на блоке.
+			continue;
+		}
+		FVector Land = Ground.ImpactPoint + FVector(0.f, 0.f, MyHalf + 4.f);
+		if (NavSys)
+		{
+			FNavLocation Nav;
+			if (!NavSys->ProjectPointToNavigation(Ground.ImpactPoint, Nav, FVector(60.f, 60.f, 80.f)))
+			{
+				continue;
+			}
+		}
+		// Отступ от края блока на радиус.
+		Land += Dir * (MyRadius + 10.f);
+		if (World->OverlapBlockingTestByChannel(Land, FQuat::Identity, ECC_Pawn, Body, Params))
+		{
+			continue;
+		}
+		OutLand = Land;
+		OutTopZ = TopHit.ImpactPoint.Z;
+		OutWallDistance = FVector::Dist2D(ProbeStart, Wall.ImpactPoint);
+		return true;
+	}
+	return false;
+}
+
+bool ANoFearJumperAIController::TryVault()
+{
+	ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	UCharacterMovementComponent* Movement = MyCharacter ? MyCharacter->GetCharacterMovement() : nullptr;
+	const AActor* Target = CurrentTarget.Get();
+	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	const UBrainComponent* Brain = GetBrainComponent();
+	if (!Movement || !Target || !Movement->IsMovingOnGround() || IsPinning() || bPouncing || PerchState != EPerchState::None
+		|| CatapultState != ECatapultState::None || (Brain && Brain->IsPaused()) || IsPortalControlled() || (Melee && Melee->IsAttacking())
+		|| UNoFearPoseComponent::IsActorStaggered(MyCharacter) || UNoFearHealthComponent::IsActorDead(MyCharacter))
+	{
+		return false;
+	}
+	const FVector MyLocation = MyCharacter->GetActorLocation();
+	const FVector Goal = Target->GetActorLocation();
+	const float Straight = FVector::Dist2D(MyLocation, Goal);
+	// Только на бегу к цели (или упёршись в блок по пути к ней): стоя у фланга или кружа, через блок не скачет.
+	const FVector ToGoal = (Goal - MyLocation).GetSafeNormal2D();
+	const bool bRunning = Movement->Velocity.Size2D() >= 150.f && FVector::DotProduct(Movement->Velocity.GetSafeNormal2D(), ToGoal) >= 0.5f;
+	const FVector Push = Movement->GetCurrentAcceleration();
+	const bool bPushing = Push.Size2D() > 1.f && FVector::DotProduct(Push.GetSafeNormal2D(), ToGoal) >= 0.5f;
+	if (Straight < 250.f || Straight > 1600.f || (!bRunning && !bPushing))
+	{
+		return false;
+	}
+	FVector Land;
+	float TopZ = 0.f;
+	float WallDistance = 0.f;
+	if (!FindVaultLanding(Goal, Land, TopZ, WallDistance))
+	{
+		return false;
+	}
+	// Обход по навмешу короткий — бежит в обход, не прыгает.
+	if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
+	{
+		const UNavigationPath* Path = NavSys->FindPathToLocationSynchronously(GetWorld(), MyLocation, Goal, MyCharacter);
+		if (Path && Path->IsValid() && !Path->IsPartial() && Path->GetPathLength() <= Straight * VaultDetourRatio + 150.f)
+		{
+			NextVaultTime = GetNow() + 1.0;
+			return false;
+		}
+	}
+	FVector Velocity;
+	const bool bArc = UNoFearMonsterAttack_Leap::FindClearArc(MyCharacter, Land, VaultArcParams, 1600.f, Target, Velocity);
+	// Вплотную к блоку дуга с места упирается в край: вверх вдоль стенки, над верхом — вперёд (TickVaultHop).
+	const float Feet = MyLocation.Z - MyCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	if (!bArc && WallDistance > 150.f)
+	{
+		return false;
+	}
+	StopMovement();
+	if (!bArc)
+	{
+		const float Rise = TopZ - Feet + 45.f;
+		Velocity = (Land - MyLocation).GetSafeNormal2D() * 120.f + FVector(0.f, 0.f, FMath::Sqrt(2.f * FMath::Abs(Movement->GetGravityZ()) * Rise));
+		bVaultHop = true;
+		VaultHopTopZ = TopZ;
+		VaultHopDir = (Land - MyLocation).GetSafeNormal2D();
+		VaultHopStartTime = GetNow();
+		StartCatcherTimer();
+	}
+	MyCharacter->LaunchCharacter(Velocity, true, true);
+	if (const ANoFearCharacter* NoFearCharacter = Cast<ANoFearCharacter>(MyCharacter))
+	{
+		if (UNoFearPoseComponent* Pose = NoFearCharacter->GetPoseComponent())
+		{
+			Pose->PlayPose(ENoFearPose::Lunge, 0.25f, 0.5f);
+		}
+	}
+	PlayJumpSound();
+	++VaultCount;
+	NextVaultTime = GetNow() + 1.5;
+	return true;
+}
+
+bool ANoFearJumperAIController::TrySeekCatapult()
+{
+	ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	const UCharacterMovementComponent* Movement = MyCharacter ? MyCharacter->GetCharacterMovement() : nullptr;
+	const AActor* Target = CurrentTarget.Get();
+	const UBrainComponent* Brain = GetBrainComponent();
+	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	const double Now = GetNow();
+	if (!bSeekCatapult || !Movement || !Target || Now < NextCatapultTime || Movement->IsFalling() || IsPinning() || bPouncing
+		|| PerchState != EPerchState::None || CatapultState != ECatapultState::None || (Brain && Brain->IsPaused()) || IsPortalControlled()
+		|| (Melee && Melee->IsAttacking()) || UNoFearPoseComponent::IsActorStaggered(MyCharacter) || UNoFearHealthComponent::IsActorDead(MyCharacter))
+	{
+		return false;
+	}
+	const FVector MyLocation = MyCharacter->GetActorLocation();
+	const FVector TargetLocation = Target->GetActorLocation();
+	const float MyDistance = FVector::Dist2D(MyLocation, TargetLocation);
+	if (MyDistance <= CatapultMinTargetDistance)
+	{
+		return false;
+	}
+	// Ближайший живой колосс рядом, и не дальше от цели, чем сам ловчий (с запасом).
+	APawn* Best = nullptr;
+	float BestDistance = CatapultSearchRadius;
+	for (TActorIterator<APawn> It(GetWorld()); It; ++It)
+	{
+		APawn* Other = *It;
+		if (!Other || Other == MyCharacter || !Cast<ANoFearTankAIController>(Other->GetController()) || UNoFearHealthComponent::IsActorDead(Other)
+			|| UNoFearTeamLibrary::AreHostile(MyCharacter, Other))
+		{
+			continue;
+		}
+		const float Distance = FVector::Dist2D(MyLocation, Other->GetActorLocation());
+		if (Distance < BestDistance && FVector::Dist2D(Other->GetActorLocation(), TargetLocation) <= MyDistance + 300.f)
+		{
+			Best = Other;
+			BestDistance = Distance;
+		}
+	}
+	if (!Best)
+	{
+		NextCatapultTime = Now + 3.0;
+		return false;
+	}
+	CatapultTank = Best;
+	CatapultState = ECatapultState::Going;
+	CatapultStateTime = Now;
+	PauseBrain();
+	StopMovement();
+	MoveToActor(Best, 150.f, true, true, true, nullptr, true);
+	SetMovementFlags(false, false, false, true);
+	StartCatcherTimer();
+	return true;
+}
+
+void ANoFearJumperAIController::EndCatapultWait()
+{
+	if (CatapultState == ECatapultState::None)
+	{
+		return;
+	}
+	CatapultState = ECatapultState::None;
+	CatapultTank.Reset();
+	NextCatapultTime = GetNow() + CatapultCooldown;
+	ClearFocus(EAIFocusPriority::Gameplay);
+	StopMovement();
+	ResumeBrain();
+}
+
+void ANoFearJumperAIController::TickCatapult(double Now)
+{
+	const APawn* MyPawn = GetPawn();
+	APawn* Tank = CatapultTank.Get();
+	AActor* Target = CurrentTarget.Get();
+	if (!MyPawn || !Tank || !Target || UNoFearHealthComponent::IsActorDead(Tank) || UNoFearHealthComponent::IsActorIncapacitated(Target)
+		|| FVector::Dist2D(MyPawn->GetActorLocation(), Target->GetActorLocation()) < 1000.f)
+	{
+		EndCatapultWait();
+		return;
+	}
+	if (CatapultState == ECatapultState::Going)
+	{
+		const float Distance = FVector::Dist2D(MyPawn->GetActorLocation(), Tank->GetActorLocation());
+		if (Distance <= 250.f)
+		{
+			StopMovement();
+			CatapultState = ECatapultState::Waiting;
+			CatapultStateTime = Now;
+			++CatapultWaits;
+			return;
+		}
+		if (Now - CatapultStateTime > 8.0)
+		{
+			EndCatapultWait();
+			return;
+		}
+		if (GetMoveStatus() == EPathFollowingStatus::Idle)
+		{
+			MoveToActor(Tank, 150.f, true, true, true, nullptr, true);
+		}
+		return;
+	}
+	// Ждёт: стоит у колосса лицом к цели. Колосс бросит и позовёт EndCatapultWait.
+	SetFocus(Target);
+	if (Now - CatapultStateTime > CatapultWaitTime)
+	{
+		EndCatapultWait();
 	}
 }
 
@@ -642,7 +1018,7 @@ void ANoFearJumperAIController::UpdateMovementStance()
 	// К цели — спринтом: в свою очередь или без стаи. На место в строю и в кольце бежит вместе со всеми.
 	// К подножию насеста — тоже спринтом.
 	FVector PackGoal;
-	if (PerchState == EPerchState::Approach
+	if (PerchState == EPerchState::Approach || CatapultState == ECatapultState::Going
 		|| (CurrentTarget.IsValid() && !IsCircling() && (HasAttackToken() || !GetPackGoal(PackGoal))))
 	{
 		SetMovementFlags(false, false, false, true);
@@ -677,6 +1053,56 @@ bool ANoFearJumperAIController::GetStandoffPoint(const FVector& TargetLocation, 
 		StalkSideTime = Now;
 	}
 	OutPoint = TargetLocation + Facing.RotateAngleAxis(StalkSide * StalkAngle, FVector::UpVector) * StalkDistance;
+
+	// Точка фланга за стеной или блоком — прыгать оттуда некуда, и ловчий бегает вокруг без толку. Ищет рядом
+	// такую, откуда видна цель и что стоит на навмеше: ±30° от своей, другой бок, ближе.
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return true;
+	}
+	const UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearStandoffSight), false, MyPawn);
+	Params.AddIgnoredActor(Target);
+	const float EyeHeight = MyPawn->BaseEyeHeight;
+	const auto IsGood = [&](FVector& Point)
+	{
+		if (NavSys)
+		{
+			FNavLocation Nav;
+			if (!NavSys->ProjectPointToNavigation(Point, Nav, FVector(120.f, 120.f, 250.f)))
+			{
+				return false;
+			}
+			Point = Nav.Location;
+		}
+		const ACharacter* MyCharacter = Cast<ACharacter>(MyPawn);
+		const float Half = MyCharacter ? MyCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 90.f;
+		const FVector Eye = Point + FVector(0.f, 0.f, Half + EyeHeight * 0.5f);
+		return !World->LineTraceTestByChannel(Eye, TargetLocation, ECC_Visibility, Params);
+	};
+	struct FVariant
+	{
+		float Angle;
+		float Distance;
+	};
+	const FVariant Variants[] = {
+		{ StalkSide * StalkAngle, StalkDistance },
+		{ StalkSide * (StalkAngle - 30.f), StalkDistance },
+		{ StalkSide * (StalkAngle + 30.f), StalkDistance },
+		{ -StalkSide * StalkAngle, StalkDistance },
+		{ StalkSide * StalkAngle, FMath::Min(StalkDistance, 650.f) },
+		{ StalkSide * (StalkAngle - 30.f), FMath::Min(StalkDistance, 650.f) },
+	};
+	for (const FVariant& Variant : Variants)
+	{
+		FVector Point = TargetLocation + Facing.RotateAngleAxis(Variant.Angle, FVector::UpVector) * Variant.Distance;
+		if (IsGood(Point))
+		{
+			OutPoint = Point;
+			return true;
+		}
+	}
 	return true;
 }
 
@@ -739,9 +1165,10 @@ bool ANoFearJumperAIController::WantsFreeAttack(AActor* Target)
 	// Цель только что спряталась за укрытие — прыгнуть к ней сразу, пока не устроилась.
 	const FNoFearKnownActor* Knowledge = KnownActors.Find(Target);
 	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
-	const UNoFearMonsterAttack* Leap = Melee ? Melee->FindAttack(TEXT("Leap")) : nullptr;
+	const UNoFearMonsterAttack_Leap* Leap = Melee ? Cast<UNoFearMonsterAttack_Leap>(Melee->FindAttack(TEXT("Leap"))) : nullptr;
+	// Только если дуга до неё свободна: за стену 2 м прыгать некуда.
 	const bool bTargetHidden = Knowledge && !Knowledge->bVisible && Now - Knowledge->LastSeenTime <= 3.0
-		&& Leap && GetTargetDistance2D() <= Leap->MaxRange + 150.f;
+		&& Leap && GetTargetDistance2D() <= Leap->MaxRange + 150.f && Leap->HasClearArc(Cast<ACharacter>(GetPawn()), Target);
 	if (IsTargetDistracted(Target))
 	{
 		++OpportunityLeaps;
@@ -861,15 +1288,149 @@ bool ANoFearJumperAIController::TryPerch()
 	}
 	PerchTop = Top;
 	PerchFoot = Foot;
+	GuardPortal.Reset();
+	BeginPerch();
+	return true;
+}
+
+void ANoFearJumperAIController::BeginPerch()
+{
+	const double Now = GetNow();
 	PerchState = EPerchState::Approach;
-	PerchStateTime = GetNow();
+	PerchStateTime = Now;
+	NextPerchArcTime = Now;
 	NoSightSince = -1.0;
 	PauseBrain();
 	StopMovement();
-	MoveToLocation(PerchFoot, 40.f, false, true, true, false);
+	// Дуга на верх с места — сразу, без подбега к подножию.
+	if (!TryArcToPerch(Now))
+	{
+		MoveToLocation(PerchFoot, 40.f, false, true, true, false);
+	}
 	UpdateMovementStance();
 	StartCatcherTimer();
+}
+
+bool ANoFearJumperAIController::TryArcToPerch(double Now)
+{
+	ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	const UCharacterMovementComponent* Movement = MyCharacter ? MyCharacter->GetCharacterMovement() : nullptr;
+	if (!Movement || !Movement->IsMovingOnGround() || Now < NextPerchArcTime)
+	{
+		return false;
+	}
+	NextPerchArcTime = Now + 0.3;
+	const FVector MyLocation = MyCharacter->GetActorLocation();
+	if (FVector::Dist2D(MyLocation, PerchTop) > 900.f)
+	{
+		return false;
+	}
+	const float MyHalf = MyCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	FVector Velocity;
+	if (!UNoFearMonsterAttack_Leap::FindClearArc(MyCharacter, PerchTop + FVector(0.f, 0.f, MyHalf + 5.f), PerchArcParams, 2200.f,
+		CurrentTarget.Get(), Velocity))
+	{
+		return false;
+	}
+	StopMovement();
+	MyCharacter->LaunchCharacter(Velocity, true, true);
+	if (const ANoFearCharacter* NoFearCharacter = Cast<ANoFearCharacter>(MyCharacter))
+	{
+		if (UNoFearPoseComponent* Pose = NoFearCharacter->GetPoseComponent())
+		{
+			Pose->PlayPose(ENoFearPose::Lunge, 0.3f, 0.6f);
+		}
+	}
+	PlayJumpSound();
+	++PerchArcJumps;
+	// Дальше Climb ждёт приземления наверху; подскоки не нужны. Время лазания не сбрасывает: не прыгает без конца.
+	if (PerchState != EPerchState::Climb)
+	{
+		PerchState = EPerchState::Climb;
+		PerchStateTime = Now;
+	}
+	NextHopTime = Now + 0.4;
+	bOverHopped = true;
 	return true;
+}
+
+bool ANoFearJumperAIController::TryGuardPortal()
+{
+	ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	const UCharacterMovementComponent* Movement = MyCharacter ? MyCharacter->GetCharacterMovement() : nullptr;
+	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	const UBrainComponent* Brain = GetBrainComponent();
+	UNoFearPortalSubsystem* Portals = GetWorld() ? GetWorld()->GetSubsystem<UNoFearPortalSubsystem>() : nullptr;
+	if (!bUsePerches || !Portals || !Movement || Movement->IsFalling() || IsPinning() || bPouncing || PerchState != EPerchState::None
+		|| CatapultState != ECatapultState::None || (Brain && Brain->IsPaused()) || IsPortalControlled() || (Melee && Melee->IsAttacking())
+		|| UNoFearPoseComponent::IsActorStaggered(MyCharacter) || UNoFearHealthComponent::IsActorDead(MyCharacter))
+	{
+		return false;
+	}
+	const FVector MyLocation = MyCharacter->GetActorLocation();
+	ANoFearPortal* Best = nullptr;
+	float BestDistance = PortalGuardRadius;
+	for (ANoFearPortal* Portal : Portals->GetPortals())
+	{
+		if (!Portal || Portal->GetFeeders().Num() == 0)
+		{
+			continue;
+		}
+		const float Distance = FVector::Dist2D(MyLocation, Portal->GetActorLocation());
+		if (Distance < BestDistance)
+		{
+			Best = Portal;
+			BestDistance = Distance;
+		}
+	}
+	FVector Top;
+	FVector Foot;
+	if (!Best || !FindPerch(Best, Top, Foot))
+	{
+		return false;
+	}
+	PerchTop = Top;
+	PerchFoot = Foot;
+	GuardPortal = Best;
+	BeginPerch();
+	return true;
+}
+
+APawn* ANoFearJumperAIController::FindPortalFreer(float MaxDistance) const
+{
+	const ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	const UWorld* World = GetWorld();
+	const UNoFearPortalSubsystem* Portals = World ? World->GetSubsystem<UNoFearPortalSubsystem>() : nullptr;
+	if (!MyCharacter || !Portals)
+	{
+		return nullptr;
+	}
+	const FVector Eye = MyCharacter->GetPawnViewLocation();
+	APawn* Best = nullptr;
+	float BestDistance = MaxDistance;
+	for (TActorIterator<APawn> It(const_cast<UWorld*>(World)); It; ++It)
+	{
+		APawn* Other = *It;
+		if (!Other || Other == MyCharacter || UNoFearHealthComponent::IsActorIncapacitated(Other) || !UNoFearTeamLibrary::AreHostile(MyCharacter, Other)
+			|| !Portals->IsFreeingFeeder(Other))
+		{
+			continue;
+		}
+		const float Distance = FVector::Dist(Eye, Other->GetActorLocation());
+		if (Distance >= BestDistance)
+		{
+			continue;
+		}
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearFreerSight), false, MyCharacter);
+		Params.AddIgnoredActor(Other);
+		if (World->LineTraceTestByChannel(Eye, Other->GetActorLocation(), ECC_Visibility, Params))
+		{
+			continue;
+		}
+		Best = Other;
+		BestDistance = Distance;
+	}
+	return Best;
 }
 
 bool ANoFearJumperAIController::FindPerch(const AActor* Target, FVector& OutTop, FVector& OutFoot) const
@@ -890,6 +1451,10 @@ bool ANoFearJumperAIController::FindPerch(const AActor* Target, FVector& OutTop,
 
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearPerch), false, MyCharacter);
 	Params.AddIgnoredActor(Target);
+	// И то, что у цели в руках: оружие не закрывает её от насеста.
+	TArray<AActor*> TargetAttached;
+	Target->GetAttachedActors(TargetAttached, true, true);
+	Params.AddIgnoredActors(TargetAttached);
 	const FCollisionObjectQueryParams Statics(ECC_WorldStatic);
 	// Земля у подножия бывает и подвижной геометрией (пол из мешей).
 	FCollisionObjectQueryParams GroundObjects(ECC_WorldStatic);
@@ -992,8 +1557,20 @@ void ANoFearJumperAIController::EndPerch(bool bFailed)
 		FailedPerches.RemoveAll([&](const TPair<FVector, double>& Failed) { return Now - Failed.Value >= PerchRetryTime; });
 		FailedPerches.Emplace(PerchTop, Now);
 	}
+	// Сидит наверху — спрыгнуть к подножию, а не искать спуск по навмешу (с насеста его часто нет).
+	ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	UCharacterMovementComponent* Movement = MyCharacter ? MyCharacter->GetCharacterMovement() : nullptr;
+	const bool bOnTop = PerchState == EPerchState::Perched && Movement && Movement->IsMovingOnGround()
+		&& MyCharacter->GetActorLocation().Z - MyCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() >= PerchTop.Z - 40.f;
 	PerchState = EPerchState::None;
+	GuardPortal.Reset();
 	StopMovement();
+	if (bOnTop && !UNoFearHealthComponent::IsActorDead(MyCharacter))
+	{
+		const FVector Down = (PerchFoot - MyCharacter->GetActorLocation()).GetSafeNormal2D();
+		MyCharacter->LaunchCharacter(Down * 400.f + FVector::UpVector * 200.f, true, true);
+		PlayJumpSound();
+	}
 	NextPerchSearchTime = GetNow() + (bFailed ? 4.0 : 2.0);
 	ResumeBrain();
 }
@@ -1007,7 +1584,9 @@ void ANoFearJumperAIController::TickCatcher()
 		bLogicPausedByCatcher = false;
 		ReleasePin();
 		PerchState = EPerchState::None;
+		CatapultState = ECatapultState::None;
 		bPouncing = false;
+		bVaultHop = false;
 		GetWorldTimerManager().ClearTimer(CatcherTimer);
 		return;
 	}
@@ -1023,6 +1602,10 @@ void ANoFearJumperAIController::TickCatcher()
 	{
 		HoldPin(Now);
 	}
+	if (bVaultHop)
+	{
+		TickVaultHop(Now);
+	}
 	switch (PerchState)
 	{
 	case EPerchState::Approach:
@@ -1037,18 +1620,54 @@ void ANoFearJumperAIController::TickCatcher()
 	default:
 		break;
 	}
-	if (!IsPinning() && PerchState == EPerchState::None && !bPouncing)
+	if (CatapultState != ECatapultState::None)
+	{
+		if (UNoFearPoseComponent::IsActorStaggered(MyPawn) || IsPortalControlled())
+		{
+			EndCatapultWait();
+		}
+		else
+		{
+			TickCatapult(Now);
+		}
+	}
+	if (!IsPinning() && PerchState == EPerchState::None && !bPouncing && CatapultState == ECatapultState::None && !bVaultHop)
 	{
 		GetWorldTimerManager().ClearTimer(CatcherTimer);
+	}
+}
+
+void ANoFearJumperAIController::TickVaultHop(double Now)
+{
+	ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
+	UCharacterMovementComponent* Movement = MyCharacter ? MyCharacter->GetCharacterMovement() : nullptr;
+	if (!Movement || Now - VaultHopStartTime > 1.5 || (Now - VaultHopStartTime > 0.2 && !Movement->IsFalling()))
+	{
+		bVaultHop = false;
+		return;
+	}
+	const float Feet = MyCharacter->GetActorLocation().Z - MyCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	if (Feet > VaultHopTopZ + 10.f)
+	{
+		// Над верхом блока — вперёд, через него.
+		Movement->Velocity = VaultHopDir * 520.f + FVector(0.f, 0.f, FMath::Max(Movement->Velocity.Z, 0.f));
+		bVaultHop = false;
 	}
 }
 
 void ANoFearJumperAIController::TickApproach(double Now)
 {
 	const APawn* MyPawn = GetPawn();
-	if (!CurrentTarget.IsValid() || Now - PerchStateTime > 6.0)
+	// В засаду у портала идёт и без цели, и дольше: портал бывает далеко.
+	const bool bGuard = GuardPortal.IsValid();
+	if ((!CurrentTarget.IsValid() && !bGuard) || Now - PerchStateTime > (bGuard ? 15.0 : 6.0))
 	{
 		EndPerch(true);
+		return;
+	}
+	// Дошёл на дальность дуги — запрыгивает сразу, без подскоков у стены.
+	if (TryArcToPerch(Now))
+	{
 		return;
 	}
 	const float Distance = FVector::Dist2D(MyPawn->GetActorLocation(), PerchFoot);
@@ -1072,7 +1691,7 @@ void ANoFearJumperAIController::TickClimb(double Now)
 {
 	ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
 	UCharacterMovementComponent* Movement = MyCharacter ? MyCharacter->GetCharacterMovement() : nullptr;
-	if (!Movement || !CurrentTarget.IsValid() || Now - PerchStateTime > 5.0)
+	if (!Movement || (!CurrentTarget.IsValid() && !GuardPortal.IsValid()) || Now - PerchStateTime > 5.0)
 	{
 		EndPerch(true);
 		return;
@@ -1087,6 +1706,11 @@ void ANoFearJumperAIController::TickClimb(double Now)
 		PerchStateTime = Now;
 		NoSightSince = -1.0;
 		++PerchCount;
+		return;
+	}
+	// Невысокий насест (блок 2 м) — одним прыжком дугой, а не подскоками.
+	if (Movement->IsMovingOnGround() && Remaining <= 260.f && TryArcToPerch(Now))
+	{
 		return;
 	}
 	// Подпрыгивает с земли или на вершине прошлого прыжка; ноги выше края — один толчок вперёд, дальше ждёт приземления.
@@ -1111,6 +1735,7 @@ void ANoFearJumperAIController::TickClimb(double Now)
 		NextHopTime = Now + 0.5;
 		bOverHopped = true;
 	}
+	PlayJumpSound();
 	if (const ANoFearCharacter* NoFearCharacter = Cast<ANoFearCharacter>(MyCharacter))
 	{
 		if (UNoFearPoseComponent* Pose = NoFearCharacter->GetPoseComponent())
@@ -1124,7 +1749,7 @@ void ANoFearJumperAIController::TickPerched(double Now)
 {
 	const ACharacter* MyCharacter = Cast<ACharacter>(GetPawn());
 	AActor* Target = CurrentTarget.Get();
-	if (!MyCharacter || !Target || UNoFearHealthComponent::IsActorIncapacitated(Target))
+	if (!MyCharacter)
 	{
 		EndPerch(false);
 		return;
@@ -1132,6 +1757,47 @@ void ANoFearJumperAIController::TickPerched(double Now)
 	// Сбросили с уступа.
 	const float Feet = MyCharacter->GetActorLocation().Z - MyCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
 	if (Feet < PerchTop.Z - 80.f)
+	{
+		EndPerch(false);
+		return;
+	}
+	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
+	const UNoFearMonsterAttack_Pounce* Pounce = Melee ? Cast<UNoFearMonsterAttack_Pounce>(Melee->FindAttack(TEXT("Pounce"))) : nullptr;
+
+	// Засада над порталом: ждёт того, кто освобождает проводника, и прыгает на него.
+	if (ANoFearPortal* Portal = Cast<ANoFearPortal>(GuardPortal.Get()))
+	{
+		if (Portal->GetFeeders().Num() == 0)
+		{
+			EndPerch(false);
+			return;
+		}
+		if (Pounce && IsPounceReady())
+		{
+			if (APawn* Freer = FindPortalFreer(Pounce->MaxRange))
+			{
+				if (Pounce->CanPounceFrom(MyCharacter, Freer))
+				{
+					SetTarget(Freer);
+					if (StartPounce())
+					{
+						++FreerPounces;
+					}
+					return;
+				}
+			}
+		}
+		// Своя цель подошла близко — дальше обычный насест над ней.
+		if (!Target || UNoFearHealthComponent::IsActorIncapacitated(Target) || GetTargetDistance2D() > 1500.f)
+		{
+			SetFocalPoint(Portal->GetActorLocation());
+			return;
+		}
+		GuardPortal.Reset();
+		PerchStateTime = Now;
+	}
+
+	if (!Target || UNoFearHealthComponent::IsActorIncapacitated(Target))
 	{
 		EndPerch(false);
 		return;
@@ -1155,9 +1821,8 @@ void ANoFearJumperAIController::TickPerched(double Now)
 		EndPerch(false);
 		return;
 	}
-	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
-	const UNoFearMonsterAttack* Pounce = Melee ? Melee->FindAttack(TEXT("Pounce")) : nullptr;
-	if (!bSees || !Pounce || !IsPounceReady() || Distance > Pounce->MaxRange)
+	// Прыгает сверху, только если дуга до цели свободна (край уступа, перила).
+	if (!bSees || !Pounce || !IsPounceReady() || Distance > Pounce->MaxRange || !Pounce->CanPounceFrom(MyCharacter, Target))
 	{
 		return;
 	}
@@ -1177,6 +1842,7 @@ bool ANoFearJumperAIController::StartPounce()
 		return false;
 	}
 	PerchState = EPerchState::None;
+	GuardPortal.Reset();
 	bPouncing = true;
 	bKnockedFromAir = false;
 	++PounceCount;
@@ -1343,6 +2009,11 @@ void ANoFearJumperAIController::HoldPin(double Now)
 	{
 		NextPinDamageTime = Now + PinDamageInterval;
 		UGameplayStatics::ApplyDamage(Victim, PinDamage, this, MyCharacter, UDamageType::StaticClass());
+		++TearSounds;
+		if (PinTearSound)
+		{
+			UGameplayStatics::PlaySoundAtLocation(this, PinTearSound, Victim->GetActorLocation());
+		}
 		if (const ANoFearCharacter* NoFearCharacter = Cast<ANoFearCharacter>(MyCharacter))
 		{
 			if (UNoFearPoseComponent* Pose = NoFearCharacter->GetPoseComponent())

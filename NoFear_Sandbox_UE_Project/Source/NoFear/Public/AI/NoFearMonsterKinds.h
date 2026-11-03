@@ -23,7 +23,13 @@ struct FNoFearDamageInfo;
  *   от 30, дробовиком или ударом вплотную: тот отлетает и оглушён 1.5 с. Союзники цели бегут на выручку
  *   (ANoFearAIController, PinRescueRadius).
  * - В полёте (прыжок, Pounce) спина ×1.5 (зона Flight); попадание от 15 урона сбивает его на землю.
- * - Цель спряталась за укрытие — прыгает к ней сразу, не дожидаясь, пока отвлечётся.
+ * - Цель спряталась за укрытие — прыгает к ней сразу, не дожидаясь, пока отвлечётся, если дуга прыжка свободна.
+ * - Прыгает только по свободной дуге (UNoFearMonsterAttack_Leap::FindClearArc); у фланга держится там, откуда видит цель.
+ * - Низкий блок (до VaultMaxHeight) поперёк пути, обход по навмешу длинный — перепрыгивает одним прыжком (TryVault).
+ * - Портал с проводниками рядом и своей цели нет — сидит на насесте над порталом и прыгает на того, кто освобождает
+ *   проводника (bGuardPortals).
+ * - Цель далеко, насеста нет, рядом колосс — бежит к нему и ждёт броска (IsWaitingForCatapult; бросает колосс).
+ * - Звуки: отрыв (JumpSound), приземление, рвущий урон прижатой цели (PinTearSound).
  * Тело: CBP_Bot_Jumper.
  */
 UCLASS(Blueprintable)
@@ -101,11 +107,11 @@ public:
 
 	/** После своей атаки следующий прыжок не раньше чем через столько секунд. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Stalk", meta = (ClampMin = "0"))
-	float LeapRest = 4.f;
+	float LeapRest = 2.5f;
 
 	/** Цель так и не отвлеклась за столько секунд — прыгает всё равно. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Stalk", meta = (ClampMin = "0"))
-	float LeapPatience = 8.f;
+	float LeapPatience = 3.f;
 
 	/** Цель отвлеклась от прыгуна — можно прыгать. */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Stalk")
@@ -133,7 +139,7 @@ public:
 
 	/** Уступ выше ног цели на столько, см. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Perch", meta = (ClampMin = "0"))
-	float PerchMinHeight = 300.f;
+	float PerchMinHeight = 180.f;
 
 	/** Насест, на который не удалось забраться, не выбирает столько секунд, с. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Perch", meta = (ClampMin = "0"))
@@ -182,6 +188,110 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Perch")
 	int32 GetCoverLeapCount() const { return CoverLeaps; }
+
+	/** Сколько раз запрыгнул на насест одной дугой (без подскоков по стене). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Perch")
+	int32 GetPerchArcJumpCount() const { return PerchArcJumps; }
+
+	// --- Ловчий: низкие блоки ---
+
+	/** Перепрыгивать низкие блоки поперёк пути к цели, если обход по навмешу длинный. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Vault")
+	bool bVaultLowObstacles = true;
+
+	/** Блок не выше этого над ногами — перепрыгивает, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Vault", meta = (ClampMin = "30"))
+	float VaultMaxHeight = 230.f;
+
+	/** Перепрыгивает, если путь по навмешу длиннее прямой во столько раз (или пути нет). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Vault", meta = (ClampMin = "1"))
+	float VaultDetourRatio = 1.4f;
+
+	/** Перепрыгнуть низкий блок на пути к цели, если он есть. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Monster|Vault")
+	bool TryVault();
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Vault")
+	int32 GetVaultCount() const { return VaultCount; }
+
+	// --- Ловчий: засада у портала ---
+
+	/** Без своей цели — сидеть на насесте над порталом с проводниками и прыгать на освобождающих. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Perch")
+	bool bGuardPortals = true;
+
+	/** Портал ищет не дальше этого, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Perch", meta = (ClampMin = "0"))
+	float PortalGuardRadius = 3000.f;
+
+	/** Насест над порталом: сидит над ним (или идёт туда). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Perch")
+	bool IsGuardingPortal() const { return GuardPortal.IsValid() && PerchState != EPerchState::None; }
+
+	/** Сколько раз прыгнул на освобождающего проводника. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Perch")
+	int32 GetFreerPounceCount() const { return FreerPounces; }
+
+	// --- Ловчий: катапульта колосса ---
+
+	/** Цель далеко, насеста нет — бежать к колоссу и ждать броска. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Catapult")
+	bool bSeekCatapult = true;
+
+	/** Цель дальше этого — ищет колосса, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Catapult", meta = (ClampMin = "0"))
+	float CatapultMinTargetDistance = 1500.f;
+
+	/** Колосс не дальше этого от ловчего, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Catapult", meta = (ClampMin = "0"))
+	float CatapultSearchRadius = 1500.f;
+
+	/** Ждёт у колосса не дольше столько секунд; следующий раз — не раньше чем через CatapultCooldown. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Catapult", meta = (ClampMin = "0"))
+	float CatapultWaitTime = 6.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Catapult", meta = (ClampMin = "0"))
+	float CatapultCooldown = 20.f;
+
+	/** Стоит у колосса и ждёт броска. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Catapult")
+	bool IsWaitingForCatapult() const { return CatapultState == ECatapultState::Waiting; }
+
+	/** Бежит к колоссу или ждёт у него. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Catapult")
+	bool IsSeekingCatapult() const { return CatapultState != ECatapultState::None; }
+
+	/** Колосс, у которого ждёт (или к которому бежит). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Catapult")
+	APawn* GetCatapultTank() const { return CatapultTank.Get(); }
+
+	/** Найти колосса и пойти к нему. false — колосса рядом нет или сейчас нельзя. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Monster|Catapult")
+	bool TrySeekCatapult();
+
+	/** Бросок состоялся (или колосс отказался): перестать ждать. Зовёт колосс. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Monster|Catapult")
+	void EndCatapultWait();
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Catapult")
+	int32 GetCatapultWaitCount() const { return CatapultWaits; }
+
+	// --- Ловчий: звуки ---
+
+	/** Отрыв от земли: прыжок, Pounce, подскок, перепрыгивание. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Sound")
+	TObjectPtr<USoundBase> JumpSound;
+
+	/** Рвёт прижатую цель — каждый удар PinDamage. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Monster|Sound")
+	TObjectPtr<USoundBase> PinTearSound;
+
+	/** Сколько раз прозвучали отрыв и рвущий урон (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Sound")
+	int32 GetJumpSoundCount() const { return JumpSounds; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Monster|Sound")
+	int32 GetTearSoundCount() const { return TearSounds; }
 
 	// --- Ловчий: прижатие ---
 
@@ -281,6 +391,13 @@ private:
 		Perched
 	};
 
+	enum class ECatapultState : uint8
+	{
+		None,
+		Going,
+		Waiting
+	};
+
 	/** Враг с оружием в руках, который сейчас целится в прыгуна. Возвращает направление его прицела. */
 	bool FindAimingThreat(FVector& OutAimDirection) const;
 
@@ -300,6 +417,23 @@ private:
 	void TickClimb(double Now);
 	void TickPerched(double Now);
 	void EndPerch(bool bFailed);
+	/** Начать путь на найденный насест (PerchTop/PerchFoot). */
+	void BeginPerch();
+	/** Запрыгнуть на насест одной дугой с места, если она свободна. */
+	bool TryArcToPerch(double Now);
+	/** Насест над порталом с проводниками: поиск и ожидание освобождающего. */
+	bool TryGuardPortal();
+	APawn* FindPortalFreer(float MaxDistance) const;
+
+	/** Точка за низким блоком прямо по пути к Goal: верх блока не выше VaultMaxHeight. OutTopZ — верх блока, OutWallDistance — до его края. */
+	bool FindVaultLanding(const FVector& Goal, FVector& OutLand, float& OutTopZ, float& OutWallDistance) const;
+	/** Прыжок с места у блока: вверх вдоль стенки, над верхом — вперёд. */
+	void TickVaultHop(double Now);
+
+	void TickCatapult(double Now);
+
+	/** Звук отрыва. */
+	void PlayJumpSound();
 
 	void BeginPin(ACharacter* Victim);
 	void HoldPin(double Now);
@@ -344,7 +478,25 @@ private:
 	bool bOverHopped = false;
 	double NoSightSince = -1.0;
 	int32 PerchCount = 0;
+	int32 PerchArcJumps = 0;
+	double NextPerchArcTime = 0.0;
 	int32 PounceCount = 0;
+	int32 FreerPounces = 0;
+	/** Насест над этим порталом (засада), без своей цели. */
+	TWeakObjectPtr<AActor> GuardPortal;
+	double NextVaultTime = 0.0;
+	int32 VaultCount = 0;
+	bool bVaultHop = false;
+	float VaultHopTopZ = 0.f;
+	FVector VaultHopDir = FVector::ZeroVector;
+	double VaultHopStartTime = 0.0;
+	ECatapultState CatapultState = ECatapultState::None;
+	TWeakObjectPtr<APawn> CatapultTank;
+	double CatapultStateTime = 0.0;
+	double NextCatapultTime = 0.0;
+	int32 CatapultWaits = 0;
+	int32 JumpSounds = 0;
+	int32 TearSounds = 0;
 	bool bPouncing = false;
 	bool bKnockedFromAir = false;
 

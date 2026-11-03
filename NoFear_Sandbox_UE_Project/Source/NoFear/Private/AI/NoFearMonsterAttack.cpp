@@ -237,12 +237,185 @@ UNoFearMonsterAttack_Leap::UNoFearMonsterAttack_Leap()
 	Pose = ENoFearPose::Lunge;
 }
 
+bool UNoFearMonsterAttack_Leap::FindClearArc(const ACharacter* Owner, const FVector& Land, TConstArrayView<float> ArcParams, float MaxSpeed,
+	const AActor* IgnoreActor, FVector& OutVelocity)
+{
+	UWorld* World = Owner ? Owner->GetWorld() : nullptr;
+	const UCharacterMovementComponent* Movement = Owner ? Owner->GetCharacterMovement() : nullptr;
+	if (!World || !Movement)
+	{
+		return false;
+	}
+	const UCapsuleComponent* Capsule = Owner->GetCapsuleComponent();
+	// Капсула чуть меньше своей: касание стены краем и пол под ногами — не помеха.
+	const FCollisionShape Shape = FCollisionShape::MakeCapsule(FMath::Max(Capsule->GetScaledCapsuleRadius() - 6.f, 10.f),
+		FMath::Max(Capsule->GetScaledCapsuleHalfHeight() - 12.f, 20.f));
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearLeapArc), false, Owner);
+	if (IgnoreActor)
+	{
+		// И то, что у цели в руках (оружие — WorldDynamic): в конце дуги ловчий на ней.
+		Params.AddIgnoredActor(IgnoreActor);
+		TArray<AActor*> Attached;
+		IgnoreActor->GetAttachedActors(Attached, true, true);
+		Params.AddIgnoredActors(Attached);
+	}
+	FCollisionObjectQueryParams Objects(ECC_WorldStatic);
+	Objects.AddObjectTypesToQuery(ECC_WorldDynamic);
+	const float GravityZ = Movement->GetGravityZ();
+	const FVector Start = Owner->GetActorLocation() + FVector(0.f, 0.f, 8.f);
+	const FVector End = Land + FVector(0.f, 0.f, 14.f);
+
+	for (const float Arc : ArcParams)
+	{
+		FVector Velocity;
+		if (!UGameplayStatics::SuggestProjectileVelocity_CustomArc(Owner, Velocity, Start, End, GravityZ, Arc) || Velocity.Size() > MaxSpeed)
+		{
+			continue;
+		}
+		const float Speed2D = Velocity.Size2D();
+		if (Speed2D < 1.f)
+		{
+			continue;
+		}
+		const float FlightTime = FVector::Dist2D(Start, End) / Speed2D;
+		constexpr int32 Steps = 12;
+		bool bClear = true;
+		FVector Previous = Start;
+		for (int32 Step = 1; Step <= Steps && bClear; ++Step)
+		{
+			const float Time = FlightTime * Step / Steps;
+			const FVector Point = Step == Steps ? End : Start + Velocity * Time + FVector(0.f, 0.f, 0.5f * GravityZ * Time * Time);
+			bClear = !World->SweepTestByObjectType(Previous, Point, FQuat::Identity, Objects, Shape, Params);
+			Previous = Point;
+		}
+		if (bClear)
+		{
+			OutVelocity = Velocity;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool UNoFearMonsterAttack_Leap::FindLandingNear(const ACharacter* Owner, const AActor* Target, float StopDistance, FVector& OutLand)
+{
+	UWorld* World = Owner ? Owner->GetWorld() : nullptr;
+	if (!World || !Target)
+	{
+		return false;
+	}
+	const float MyHalf = Owner->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	const float MyRadius = Owner->GetCapsuleComponent()->GetScaledCapsuleRadius();
+	const ACharacter* TargetCharacter = Cast<ACharacter>(Target);
+	const float TargetHalf = TargetCharacter ? TargetCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 90.f;
+	const FVector TargetFeet = Target->GetActorLocation() - FVector(0.f, 0.f, TargetHalf);
+	FVector ToMe = (Owner->GetActorLocation() - TargetFeet).GetSafeNormal2D();
+	if (ToMe.IsNearlyZero())
+	{
+		ToMe = -Owner->GetActorForwardVector().GetSafeNormal2D();
+	}
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(NoFearLeapLand), false, Owner);
+	Params.AddIgnoredActor(Target);
+	FCollisionObjectQueryParams Objects(ECC_WorldStatic);
+	Objects.AddObjectTypesToQuery(ECC_WorldDynamic);
+	// Перед целью: на полу или на низком блоке (цель за ним присела) — сверху и бьёт.
+	const float Stops[] = { StopDistance, StopDistance + 60.f, FMath::Max(StopDistance - 50.f, 40.f) };
+	for (const float Stop : Stops)
+	{
+		const FVector Column = TargetFeet + ToMe * Stop;
+		FHitResult Ground;
+		if (!World->LineTraceSingleByObjectType(Ground, Column + FVector(0.f, 0.f, 260.f), Column - FVector(0.f, 0.f, 200.f), Objects, Params)
+			|| Ground.bStartPenetrating || Ground.ImpactNormal.Z < 0.7f)
+		{
+			continue;
+		}
+		const FVector Land = Ground.ImpactPoint + FVector(0.f, 0.f, MyHalf + 4.f);
+		if (World->OverlapAnyTestByObjectType(Land, FQuat::Identity, Objects, FCollisionShape::MakeCapsule(MyRadius - 4.f, MyHalf - 4.f), Params))
+		{
+			continue;
+		}
+		OutLand = Land;
+		return true;
+	}
+	return false;
+}
+
+bool UNoFearMonsterAttack_Leap::ComputeArc(const ACharacter* Owner, const AActor* Target, FVector& OutVelocity) const
+{
+	FVector Land;
+	if (!FindLandingNear(Owner, Target, LungeStopDistance, Land))
+	{
+		return false;
+	}
+	// Сперва привычная дуга, помеха на пути — выше.
+	const float Arcs[] = { 0.45f, 0.6f, 0.72f, 0.82f };
+	return FindClearArc(Owner, Land, Arcs, MaxLaunchSpeed, Target, OutVelocity);
+}
+
+bool UNoFearMonsterAttack_Leap::HasClearArc(const ACharacter* Owner, const AActor* Target) const
+{
+	const UWorld* World = Owner ? Owner->GetWorld() : nullptr;
+	if (!World || !Target)
+	{
+		return false;
+	}
+	const double Now = World->GetTimeSeconds();
+	if (CachedArcTarget.Get() != Target || Now - CachedArcTime > 0.3)
+	{
+		CachedArcTarget = Target;
+		CachedArcTime = Now;
+		bCachedArcClear = ComputeArc(Owner, Target, CachedArcVelocity);
+	}
+	return bCachedArcClear;
+}
+
+bool UNoFearMonsterAttack_Leap::CanUse(const UNoFearMeleeComponent* Melee, const AActor* Target) const
+{
+	return Super::CanUse(Melee, Target) && HasClearArc(Cast<ACharacter>(Melee->GetOwner()), Target);
+}
+
+void UNoFearMonsterAttack_Leap::BeginStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target)
+{
+	bLanded = false;
+	if (!Owner || !Target)
+	{
+		return;
+	}
+	// За замах цель сдвинулась: дуга заново; закрылась — прыгает по той, что была свободна при выборе атаки.
+	FVector Velocity;
+	if (ComputeArc(Owner, Target, Velocity))
+	{
+		++ArcLaunchCount;
+		Owner->LaunchCharacter(Velocity, true, true);
+	}
+	else if (bCachedArcClear && CachedArcTarget.Get() == Target)
+	{
+		++ArcLaunchCount;
+		Owner->LaunchCharacter(CachedArcVelocity, true, true);
+	}
+	else
+	{
+		// Дуги нет — бьёт с места, не врезаясь в стену.
+		++BlockedArcCount;
+	}
+	CachedArcTime = -1.0;
+}
+
 bool UNoFearMonsterAttack_Leap::TickStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target, float DeltaTime)
 {
 	// Прыжок начинается со следующего шага движения; приземлился — удар закончен.
 	const UCharacterMovementComponent* Movement = Owner ? Owner->GetCharacterMovement() : nullptr;
 	const double Elapsed = Melee->GetWorld()->GetTimeSeconds() - StrikeStartTime;
-	return !Movement || Elapsed < 0.15 || Movement->IsFalling();
+	const bool bFlying = !Movement || Elapsed < 0.15 || Movement->IsFalling();
+	if (!bFlying && !bLanded && Owner)
+	{
+		bLanded = true;
+		if (LandSound)
+		{
+			UGameplayStatics::PlaySoundAtLocation(Melee, LandSound, Owner->GetActorLocation());
+		}
+	}
+	return bFlying;
 }
 
 void UNoFearMonsterAttack_Leap::BeginRecovery(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target)
@@ -291,19 +464,34 @@ void UNoFearMonsterAttack_Pounce::BeginStrike(UNoFearMeleeComponent* Melee, ACha
 	{
 		return;
 	}
-	// Дуга в точку чуть ниже центра цели: ловчий падает ей на плечи.
+	bLanded = false;
+	// Дуга в точку чуть ниже центра цели: ловчий падает ей на плечи. Край уступа мешает — дуга выше.
 	const FVector Start = Owner->GetActorLocation();
 	const FVector Aim = Target->GetActorLocation() - FVector(0.f, 0.f, 20.f);
 	FVector Velocity;
+	const float Arcs[] = { ArcParam, 0.45f, 0.6f };
 	const float GravityZ = Owner->GetCharacterMovement() ? Owner->GetCharacterMovement()->GetGravityZ() : 0.f;
-	if (UGameplayStatics::SuggestProjectileVelocity_CustomArc(Melee, Velocity, Start, Aim, GravityZ, ArcParam))
+	if (FindClearArc(Owner, Aim, Arcs, 2600.f, Target, Velocity)
+		|| UGameplayStatics::SuggestProjectileVelocity_CustomArc(Melee, Velocity, Start, Aim, GravityZ, ArcParam))
 	{
+		++ArcLaunchCount;
 		Owner->LaunchCharacter(Velocity, true, true);
 	}
 	else
 	{
-		Super::BeginStrike(Melee, Owner, Target);
+		UNoFearMonsterAttack::BeginStrike(Melee, Owner, Target);
 	}
+}
+
+bool UNoFearMonsterAttack_Pounce::CanPounceFrom(const ACharacter* Owner, const AActor* Target) const
+{
+	if (!Owner || !Target)
+	{
+		return false;
+	}
+	FVector Velocity;
+	const float Arcs[] = { ArcParam, 0.45f, 0.6f };
+	return FindClearArc(Owner, Target->GetActorLocation() - FVector(0.f, 0.f, 20.f), Arcs, 2600.f, Target, Velocity);
 }
 
 bool UNoFearMonsterAttack_Pounce::TickStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target, float DeltaTime)

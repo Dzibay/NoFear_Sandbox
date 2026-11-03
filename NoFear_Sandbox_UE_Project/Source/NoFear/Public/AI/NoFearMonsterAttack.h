@@ -262,8 +262,9 @@ public:
 };
 
 /**
- * Прыжок издалека (прыгун): высокая дуга с приземлением перед целью, удар при посадке, после — отскок назад.
- * Окно удара длится до приземления (не дольше HitWindow).
+ * Прыжок издалека (прыгун): баллистическая дуга с приземлением перед целью, удар при посадке, после — отскок назад.
+ * Окно удара длится до приземления (не дольше HitWindow). Прыгает, только если дуга свободна (FindClearArc): стена
+ * или низкий блок на пути — дуга выше, не перелететь — не прыгает. Цель на низком блоке — запрыгивает на него.
  */
 UCLASS(meta = (DisplayName = "Leap"))
 class NOFEAR_API UNoFearMonsterAttack_Leap : public UNoFearMonsterAttack
@@ -280,8 +281,48 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Lunge", meta = (ClampMin = "0"))
 	float BounceUpSpeed = 350.f;
 
+	/** Скорость прыжка не больше этой, см/с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Lunge", meta = (ClampMin = "100"))
+	float MaxLaunchSpeed = 1800.f;
+
+	/** Звук приземления. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Effects")
+	TObjectPtr<USoundBase> LandSound;
+
+	/** Сколько прыжков начато по свободной дуге и сколько раз дуга оказалась закрыта (для тестов). */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Lunge")
+	int32 ArcLaunchCount = 0;
+
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Lunge")
+	int32 BlockedArcCount = 0;
+
+	virtual bool CanUse(const UNoFearMeleeComponent* Melee, const AActor* Target) const override;
+	virtual void BeginStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target) override;
 	virtual bool TickStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target, float DeltaTime) override;
 	virtual void BeginRecovery(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target) override;
+
+	/** Дуга до цели свободна (кэш на 0.3 с). */
+	bool HasClearArc(const ACharacter* Owner, const AActor* Target) const;
+
+	/**
+	 * Скорость прыжка из центра капсулы Owner в точку Land (центр капсулы при посадке) по одной из дуг ArcParams
+	 * (0 — прямо, 1 — отвесно), вдоль которой капсула ничего не задевает (стены, ящики; персонажи не в счёт).
+	 */
+	static bool FindClearArc(const ACharacter* Owner, const FVector& Land, TConstArrayView<float> ArcParams, float MaxSpeed,
+		const AActor* IgnoreActor, FVector& OutVelocity);
+
+	/** Куда приземлиться, нападая на Target: за StopDistance перед ней, на пол или на низкий блок. Центр капсулы. */
+	static bool FindLandingNear(const ACharacter* Owner, const AActor* Target, float StopDistance, FVector& OutLand);
+
+protected:
+	/** Посчитать дугу к цели сейчас. */
+	bool ComputeArc(const ACharacter* Owner, const AActor* Target, FVector& OutVelocity) const;
+
+	mutable TWeakObjectPtr<const AActor> CachedArcTarget;
+	mutable double CachedArcTime = -1.0;
+	mutable bool bCachedArcClear = false;
+	mutable FVector CachedArcVelocity = FVector::ZeroVector;
+	bool bLanded = false;
 };
 
 /**
@@ -304,6 +345,9 @@ public:
 	virtual bool CanUse(const UNoFearMeleeComponent* Melee, const AActor* Target) const override { return false; }
 	virtual void BeginStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target) override;
 	virtual bool TickStrike(UNoFearMeleeComponent* Melee, ACharacter* Owner, AActor* Target, float DeltaTime) override;
+
+	/** Дуга с места на цель свободна. */
+	bool CanPounceFrom(const ACharacter* Owner, const AActor* Target) const;
 };
 
 /**

@@ -135,6 +135,32 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Combat|Phantom")
 	int32 GetPhantomCount() const { return PhantomCount; }
 
+	// --- Спасение из-под ловчего ---
+
+	/**
+	 * Ловчий прижал союзника, ловчий виден: бот останавливается и стреляет в него с места, вплотную бьёт прикладом.
+	 * Дерево на это время на паузе. Кончается, когда жертву отпустили или ловчего не видно дольше секунды.
+	 */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Combat|Rescue")
+	bool IsRescuingPin() const { return RescueCatcher.IsValid(); }
+
+	/** Удар прикладом не дальше этого, см; урон и перезарядка. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Combat|Rescue", meta = (ClampMin = "0"))
+	float ButtStrikeRange = 200.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Combat|Rescue", meta = (ClampMin = "0"))
+	float ButtStrikeDamage = 10.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Combat|Rescue", meta = (ClampMin = "0"))
+	float ButtStrikeCooldown = 0.8f;
+
+	/** Сколько раз брался спасать и сколько ударов прикладом (для тестов). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Combat|Rescue")
+	int32 GetPinRescueCount() const { return PinRescueCount; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Combat|Rescue")
+	int32 GetButtStrikeCount() const { return ButtStrikeCount; }
+
 	UPROPERTY(BlueprintAssignable, Category = "NoFear|Combat")
 	FNoFearTargetChangedSignature OnTargetChanged;
 
@@ -296,6 +322,10 @@ private:
 	void UpdateLineOfSight();
 	void UpdateSuppression(float DeltaTime);
 	void UpdatePhantom();
+	void UpdatePinRescue();
+	void ClearPinRescue();
+	/** Ловчий, прижавший союзника рядом и видимый отсюда. */
+	APawn* FindPinnedAllyCatcher() const;
 	void RefreshSuppressedState();
 	void WriteBlackboard();
 
@@ -327,4 +357,12 @@ private:
 	double NextPhantomTrigger = 0.0;
 	bool bPhantomTriggerHeld = false;
 	int32 PhantomCount = 0;
+
+	TWeakObjectPtr<APawn> RescueCatcher;
+	double RescueLastSeenTime = 0.0;
+	double NextRescueTrigger = 0.0;
+	double NextButtStrikeTime = 0.0;
+	bool bRescueTriggerHeld = false;
+	int32 PinRescueCount = 0;
+	int32 ButtStrikeCount = 0;
 };
