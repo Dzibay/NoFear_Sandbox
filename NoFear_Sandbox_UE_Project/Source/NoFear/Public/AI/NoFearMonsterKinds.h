@@ -647,15 +647,23 @@ private:
 class UAudioComponent;
 class USoundBase;
 class UNoFearHealthComponent;
+class UPointLightComponent;
+class ANoFearPhantom;
 struct FNoFearDamageInfo;
 
 /**
  * Шептун (раздел 4.6 Docs/Monsters_Design.md): слабый, сам не дерётся — гипнотизирует мирных и кормит ими порталы,
  * пугает людей, ослабляет их и усиливает своих.
- * - Охота: ближайший мирный в HuntRange (не проводник, не в трансе, не на повторе) — бегом (HuntRunSpeed) до
- *   HuntApproachDistance; видно и ближе HypnoStartRange — гипноз сразу. Не добрался за HuntTimeout — другая жертва.
- * - Гипноз: жертва в трансе лицом к шептуну, её страх растёт на HypnoFearPerSecond (прямой испуг) до слома — она
- *   становится проводником (UNoFearPortalSubsystem). Голова ×3 и светится. Срыв: урон от HypnoInterruptDamage
+ * - Охота: ближайший мирный в HuntRange (не проводник, не в трансе, не на повторе). Дальше StalkTeleportRange —
+ *   бегом (HuntRunSpeed). Ближе — пугает телепортами: раз в StalkInterval возникает перед лицом жертвы
+ *   (StalkTeleportDistance, вспышка и звук), та с криком бежит в другую сторону. На каждую жертву нужно случайное
+ *   число телепортов (StalkScares); на последнем она цепенеет (Freeze) и прячется на месте. Спрятавшуюся (после хотя бы
+ *   одного телепорта) — подходит шагом спереди на HypnoFaceDistance, присевшей — приседает рядом, и при прямой
+ *   видимости ближе HypnoStartRange начинает гипноз. Без телепорта и подхода дольше HuntTimeout — другая жертва.
+ * - Гипноз: жертва в трансе лицом к шептуну, над ней фиолетовый свет и гул (ярче и громче к слому); через
+ *   HypnoBreakTime шептун ломает её сам — она становится проводником (UNoFearPortalSubsystem). Его добычу (после
+ *   первого телепорта) общий слом ужасом не трогает (HoldBreak).
+ *   Голова ×3 и светится. Срыв: урон от HypnoInterruptDamage
  *   (оглушение HypnoStunTime), нет видимости дольше HypnoLostSightTime, дальше HypnoBreakRange, жертву ранили или
  *   успокоили (страх ниже HypnoCalmFear). Сорвавшаяся жертва убегает, повтор по ней через HypnoRetryTime.
  * - У портала: мирных нет, а в TendSearchRange есть портал с проводниками — стоит в TendDistance от него со стороны
@@ -663,9 +671,11 @@ struct FNoFearDamageInfo;
  * - Иначе держится в KeepMinDistance–KeepMaxDistance от ближайшего вооружённого человека, за колоссом, если тот рядом.
  * - Аура: люди в AuraRadius (сквозь стены) получают страх, герой — через браслет (источник «Шёпот»). Слышен шёпот.
  * - Видения: боты-люди в ауре со страхом от VisionMinFear время от времени стреляют в пустоту (UNoFearCombatComponent::SeePhantom).
+ *   Герою со страхом от HeroVisionMinFear в HeroVisionRange — 1–2 призрачных загонщика (ANoFearPhantom) за краем
+ *   зрения бегут к нему; видны только ему, урона нет.
  * - Бафф: монстры в BuffRadius быстрее, сильнее, чаще бьют (ApplyWhisperBuff).
  * - Охрана: ранили или вооружённый человек ближе GuardTriggerRadius — два ближайших загонщика или ловчих идут на
- *   обидчика, колосс закрывает линию огня, сам шептун уходит фазовым шагом (гипноз срывается).
+ *   обидчика, колосс закрывает линию огня, сам шептун уходит фазовым шагом со вспышкой и звуком (гипноз срывается).
  * - Смерть: всё пропадает сразу, жертва приходит в себя, колоссы рядом впадают в ярость.
  * Тело: CBP_Bot_Whisperer.
  */
@@ -707,23 +717,61 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hunt", meta = (ClampMin = "0"))
 	float HuntApproachDistance = 450.f;
 
-	/** Не добежал за столько секунд — ищет другую жертву, с. */
+	/** Без телепорта и подхода к жертве столько секунд — ищет другую жертву, с. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hunt", meta = (ClampMin = "0"))
 	float HuntTimeout = 12.f;
+
+	/** Жертва ближе этого — пугает её телепортами, дальше — бежит к ней, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hunt", meta = (ClampMin = "0"))
+	float StalkTeleportRange = 1500.f;
+
+	/** Возникает на столько перед лицом жертвы, см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hunt", meta = (ClampMin = "0"))
+	float StalkTeleportDistance = 150.f;
+
+	/** Сколько телепортов нужно, чтобы жертва оцепенела (случайно в пределах, на каждую жертву заново). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hunt")
+	FIntPoint StalkScares = FIntPoint(1, 3);
+
+	/** Пауза между телепортами (случайно в пределах), с. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hunt")
+	FVector2D StalkInterval = FVector2D(2.5f, 4.f);
+
+	/** Оцепеневшая жертва не вскакивает столько секунд. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hunt", meta = (ClampMin = "0"))
+	float StalkFreezeTime = 8.f;
+
+	/** Встаёт перед спрятавшейся жертвой на это расстояние (лицом к лицу), см. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hunt", meta = (ClampMin = "0"))
+	float HypnoFaceDistance = 100.f;
 
 	// --- Гипноз ---
 
 	/** Начинает гипноз, если жертву видно и она ближе этого, см. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis", meta = (ClampMin = "0"))
-	float HypnoStartRange = 700.f;
+	float HypnoStartRange = 170.f;
 
 	/** Жертва дальше этого — гипноз сорван, см. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis", meta = (ClampMin = "0"))
 	float HypnoBreakRange = 1100.f;
 
-	/** Страх жертвы растёт на столько в секунду (прямой испуг, до 100). */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis", meta = (ClampMin = "0"))
-	float HypnoFearPerSecond = 35.f;
+	/** Через столько секунд гипноза жертва ломается, с какого бы страха он ни начался; страх к тому времени дорастает до 100. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis", meta = (ClampMin = "0.5"))
+	float HypnoBreakTime = 10.f;
+
+	/** Гул гипноза над жертвой (зацикливается), громче со страхом. Пусто — без звука. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis")
+	TSoftObjectPtr<USoundBase> HypnoSound;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis", meta = (ClampMin = "0.1"))
+	float HypnoSoundPitch = 0.35f;
+
+	/** Свет над головой жертвы: цвет и яркость (кд) в начале и у слома. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis")
+	FLinearColor HypnoLightColor = FLinearColor(0.6f, 0.1f, 1.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis")
+	FVector2D HypnoLightIntensity = FVector2D(15.f, 120.f);
 
 	/** Столько урона за гипноз срывает его и оглушает шептуна. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Hypnosis", meta = (ClampMin = "0"))
@@ -795,6 +843,28 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Visions")
 	FVector2D VisionDuration = FVector2D(2.f, 3.f);
 
+	/** Видения героя: страх браслета от этого и герой не дальше HeroVisionRange от шептуна. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Visions", meta = (ClampMin = "0", ClampMax = "100"))
+	float HeroVisionMinFear = 60.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Visions", meta = (ClampMin = "0"))
+	float HeroVisionRange = 2000.f;
+
+	/** Призраки к герою раз в столько секунд (случайно в пределах). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Visions")
+	FVector2D HeroVisionInterval = FVector2D(8.f, 14.f);
+
+	/** Призрак появляется в стольких см от героя, за краем его зрения. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Visions")
+	FVector2D HeroVisionDistance = FVector2D(900.f, 1500.f);
+
+	/** Не больше стольких призраков у героя разом (за раз — 1–2). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Visions", meta = (ClampMin = "1"))
+	int32 HeroVisionMax = 2;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Visions")
+	TSubclassOf<ANoFearPhantom> PhantomClass;
+
 	// --- Бафф ---
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Buff", meta = (ClampMin = "0"))
@@ -826,6 +896,14 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Guard", meta = (ClampMin = "0"))
 	float PhaseStepCooldown = 8.f;
+
+	/** Звук телепорта (фазовый шаг и подкрадывание) в точках ухода и появления. Пусто — без звука. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Guard")
+	TSoftObjectPtr<USoundBase> PhaseSound;
+
+	/** Яркость вспышки телепорта, кд. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "NoFear|Whisperer|Guard", meta = (ClampMin = "0"))
+	float PhaseFlashIntensity = 400.f;
 
 	// --- Смерть ---
 
@@ -873,6 +951,33 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
 	int32 GetPhaseStepCount() const { return PhaseStepCount; }
 
+	/** Сколько раз возникал перед лицом жертвы (всего). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	int32 GetStalkCount() const { return StalkCount; }
+
+	/** Телепортов по текущей жертве: сделано и нужно до оцепенения. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	int32 GetStalkScaresDone() const { return ScaresDone; }
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	int32 GetStalkScaresNeeded() const { return ScaresNeeded; }
+
+	/** Подходит шагом к спрятавшейся жертве. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	bool IsApproachingVictim() const { return Mode == EMode::Hunt && bApproaching; }
+
+	/** Сколько призраков послал героям. */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	int32 GetHeroVisionCount() const { return HeroVisionCount; }
+
+	/** Свет гипноза над жертвой (или nullptr). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	UPointLightComponent* GetHypnoLight() const { return HypnoLight.Get(); }
+
+	/** Гул гипноза (или nullptr). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
+	UAudioComponent* GetHypnoAudio() const { return HypnoAudio.Get(); }
+
 	UFUNCTION(BlueprintPure, Category = "NoFear|Whisperer")
 	int32 GetGuardCount() const { return GuardCount; }
 
@@ -895,6 +1000,14 @@ public:
 	/** Видение у бота сейчас (отладка и тесты). */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Whisperer")
 	bool SendVision(APawn* VisionVictim);
+
+	/** Призраки к герою сейчас, без проверок страха и дистанции (отладка и тесты). Сколько появилось. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Whisperer")
+	int32 SendHeroVision(APawn* Hero);
+
+	/** Возникнуть перед лицом мирного сейчас и напугать его (отладка и тесты). bFreeze — оцепенеет, а не убежит. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Whisperer")
+	bool StalkTeleport(APawn* StalkVictim, bool bFreeze);
 
 	/** Не рычит: крик-волну заменил гипноз. */
 	virtual void Roar() override {}
@@ -931,6 +1044,7 @@ private:
 	void UpdateAura(float DeltaTime);
 	void UpdateBuff();
 	void UpdateVisions();
+	void UpdateHeroVisions();
 	void UpdateGuardTrigger();
 	/** Выбор дела: гипноз идёт — держит, иначе охота, портал или коридор от стрелков. */
 	void UpdateMode();
@@ -938,6 +1052,13 @@ private:
 	void UpdateHypnosis(float DeltaTime);
 	void UpdateTend();
 	void UpdatePosition();
+	/** Новая жертва охоты: своё число телепортов до оцепенения. */
+	void BeginHunt(APawn* NewVictim);
+	/** Вспышка и звук телепорта в точке. */
+	void PlayPhaseFlash(const FVector& Location);
+	/** Свет и гул гипноза над жертвой, сильнее к слому (Progress 0..1); Stop — погасить. */
+	void UpdateHypnoEffects(const APawn* Target, float Progress);
+	void StopHypnoEffects();
 	/** Гипноз кончился: жертва сломалась (bBroken) или сорвался — жертва очнулась и убегает. */
 	void EndHypnosis(bool bBroken);
 	void SetMode(EMode NewMode);
@@ -955,6 +1076,8 @@ private:
 
 	TWeakObjectPtr<UAudioComponent> WhisperAudio;
 	TWeakObjectPtr<UNoFearHealthComponent> BoundHealth;
+	TWeakObjectPtr<UPointLightComponent> HypnoLight;
+	TWeakObjectPtr<UAudioComponent> HypnoAudio;
 
 	EMode Mode = EMode::Keep;
 	double ModeStartTime = 0.0;
@@ -965,10 +1088,28 @@ private:
 	float HypnoDamage = 0.f;
 	/** Здоровье жертвы в начале гипноза: ранили — гипноз сорван. */
 	float VictimStartHealth = 0.f;
+	/** Наибольший страх жертвы за гипноз: упал заметно ниже — её успокоили. */
+	float HypnoPeakFear = 0.f;
 	double LastSeenVictimTime = 0.0;
 	int32 HypnoCount = 0;
 	int32 HypnoInterruptCount = 0;
 	int32 BrokenCount = 0;
+
+	/** Охота: телепортов по жертве нужно и сделано, когда следующий, когда было последнее продвижение. */
+	int32 ScaresNeeded = 0;
+	int32 ScaresDone = 0;
+	double NextStalkTime = 0.0;
+	double HuntProgressTime = 0.0;
+	bool bApproaching = false;
+	int32 StalkCount = 0;
+
+	double NextHeroVisionTime = 0.0;
+	int32 HeroVisionCount = 0;
+	TArray<TWeakObjectPtr<ANoFearPhantom>> HeroPhantoms;
+
+	/** Цель в коридоре от стрелков: держится её, пока новая не уйдёт дальше 200 см (без дёрганий). */
+	FVector KeepGoal = FVector::ZeroVector;
+	bool bHasKeepGoal = false;
 
 	double NextVisionTime = 0.0;
 	int32 VisionCount = 0;

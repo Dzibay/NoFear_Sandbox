@@ -1,5 +1,6 @@
 #include "Core/NoFearBraceletComponent.h"
 
+#include "AI/NoFearPhantom.h"
 #include "AI/NoFearAIController.h"
 #include "AI/NoFearCompanionAIController.h"
 #include "Components/AudioComponent.h"
@@ -281,6 +282,14 @@ void UNoFearBraceletComponent::TickComponent(float DeltaTime, ELevelTick TickTyp
 			const float Cap = FMath::Lerp(Tuning.MonsterCapNear, Tuning.MonsterCapFar, Alpha);
 			AddHeroFear(NoFearBracelet::Monster, Rate * DeltaTime, Cap, Pawn->GetActorLocation());
 		}
+		// Видения шептуна — так же, но слабее.
+		if (VisiblePhantoms > 0 && NearestPhantomDistance >= 0.f)
+		{
+			const float Alpha = NoFearBracelet::Ramp(NearestPhantomDistance, Tuning.MonsterNearDistance, Tuning.MonsterFarDistance);
+			const float Rate = FMath::Lerp(Tuning.MonsterRateNear, Tuning.MonsterRateFar, Alpha) * Tuning.PhantomFearScale;
+			const float Cap = FMath::Lerp(Tuning.MonsterCapNear, Tuning.MonsterCapFar, Alpha);
+			AddHeroFear(NoFearBracelet::Monster, Rate * DeltaTime, Cap, Pawn->GetActorLocation());
+		}
 		UpdateHealth(Pawn, DeltaTime);
 		UpdateCompanion(Pawn, DeltaTime);
 	}
@@ -288,6 +297,8 @@ void UNoFearBraceletComponent::TickComponent(float DeltaTime, ELevelTick TickTyp
 	{
 		VisibleMonsters = 0;
 		NearestMonsterDistance = -1.f;
+		VisiblePhantoms = 0;
+		NearestPhantomDistance = -1.f;
 	}
 
 	UpdateStabilize(DeltaTime);
@@ -374,6 +385,8 @@ void UNoFearBraceletComponent::UpdateMonsters(APawn* Pawn, float ScanDelta)
 	}
 	VisibleMonsters = 0;
 	NearestMonsterDistance = -1.f;
+	VisiblePhantoms = 0;
+	NearestPhantomDistance = -1.f;
 
 	const APlayerController* Controller = GetPlayerController();
 	const UNoFearBotSubsystem* Bots = UNoFearBotSubsystem::Get(this);
@@ -423,6 +436,37 @@ void UNoFearBraceletComponent::UpdateMonsters(APawn* Pawn, float ScanDelta)
 			const float Alpha = NoFearBracelet::Ramp(Distance, Tuning.MonsterNearDistance, Tuning.MonsterFarDistance);
 			AddHeroFear(NoFearBracelet::Monster, FMath::Lerp(Tuning.MonsterShockNear, Tuning.MonsterShockFar, Alpha),
 				FMath::Lerp(Tuning.MonsterCapNear, Tuning.MonsterCapFar, Alpha), MonsterLocation);
+		}
+		LastSeen = Now;
+	}
+
+	// Видения шептуна: видны только этому герою, пугают слабее (PhantomFearScale).
+	TArray<ANoFearPhantom*> Phantoms;
+	ANoFearPhantom::GetPhantoms(GetWorld(), Phantoms);
+	for (ANoFearPhantom* Phantom : Phantoms)
+	{
+		if (Phantom->GetHero() != Pawn)
+		{
+			continue;
+		}
+		const FVector PhantomLocation = Phantom->GetActorLocation();
+		const float Distance = FVector::Dist(HeroLocation, PhantomLocation);
+		const bool bInView = FVector::DotProduct(Forward, (PhantomLocation - ViewLocation).GetSafeNormal()) >= MinDot;
+		if (Distance > Tuning.SightRange || (!bInView && Distance > Tuning.CloseSenseDistance) || !CanSee(Pawn, Phantom, ViewLocation, PhantomLocation))
+		{
+			continue;
+		}
+		++VisiblePhantoms;
+		if (NearestPhantomDistance < 0.f || Distance < NearestPhantomDistance)
+		{
+			NearestPhantomDistance = Distance;
+		}
+		double& LastSeen = SeenMonsters.FindOrAdd(Phantom, -1.0e9);
+		if (Now - LastSeen > Tuning.MonsterForgetTime)
+		{
+			const float Alpha = NoFearBracelet::Ramp(Distance, Tuning.MonsterNearDistance, Tuning.MonsterFarDistance);
+			AddHeroFear(NoFearBracelet::Monster, FMath::Lerp(Tuning.MonsterShockNear, Tuning.MonsterShockFar, Alpha) * Tuning.PhantomFearScale,
+				FMath::Lerp(Tuning.MonsterCapNear, Tuning.MonsterCapFar, Alpha), PhantomLocation);
 		}
 		LastSeen = Now;
 	}

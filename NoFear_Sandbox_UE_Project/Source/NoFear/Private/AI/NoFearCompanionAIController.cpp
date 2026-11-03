@@ -1531,6 +1531,11 @@ void ANoFearCompanionAIController::UpdateCombatBarks()
 	}
 }
 
+void ANoFearCompanionAIController::ReactToPhantomShot()
+{
+	Say(TEXT("Phantom"), LOCTEXT("PhantomNobody", "Там никого нет."), 3.f, true);
+}
+
 bool ANoFearCompanionAIController::Say(FName Key, const FText& Text, float Cooldown, bool bForce)
 {
 	const double Now = GetNow();

@@ -114,6 +114,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Portal")
 	bool BreakPerson(APawn* Pawn);
 
+	/** Ещё Seconds не ломать Pawn ужасом, накопленный слом сбросить: жертву держит шептун и ломает сам, гипнозом. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Portal")
+	void HoldBreak(APawn* Pawn, float Seconds);
+
 	/** Открыть портал в Location размером Size (0 — StartSize). Без проводника он сразу начнёт сжиматься. */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Portal")
 	ANoFearPortal* OpenPortal(FVector Location, float Size = 0.f);

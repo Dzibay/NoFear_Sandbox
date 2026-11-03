@@ -69,6 +69,10 @@ struct FNoFearHeroFearTuning
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HeroFear|Monsters", meta = (ClampMin = "0"))
 	float MonsterForgetTime = 12.f;
 
+	/** Видение шептуна на виду пугает во столько раз слабее настоящего монстра (испуг и рост). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HeroFear|Monsters", meta = (ClampMin = "0"))
+	float PhantomFearScale = 0.5f;
+
 	// --- Здоровье и раны ---
 
 	/** Ниже этой доли здоровья страх растёт сам. */
@@ -452,6 +456,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|Bracelet")
 	int32 GetVisibleMonsterCount() const { return VisibleMonsters; }
 
+	/** Сколько видений шептуна на виду (на последнем осмотре). */
+	UFUNCTION(BlueprintPure, Category = "NoFear|Bracelet")
+	int32 GetVisiblePhantomCount() const { return VisiblePhantoms; }
+
 	/** Строка состояния для экрана отладки (NoFear.Hero.Debug 1). */
 	UFUNCTION(BlueprintPure, Category = "NoFear|Bracelet")
 	FString GetDebugText() const;
@@ -535,6 +543,8 @@ private:
 	float ScanTimer = 0.f;
 	float NearestMonsterDistance = -1.f;
 	int32 VisibleMonsters = 0;
+	float NearestPhantomDistance = -1.f;
+	int32 VisiblePhantoms = 0;
 
 	bool bCompanionWasDowned = false;
 

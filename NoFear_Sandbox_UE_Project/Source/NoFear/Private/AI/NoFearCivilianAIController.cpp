@@ -109,8 +109,8 @@ void ANoFearCivilianAIController::Panic(FVector ThreatLocation, AActor* Threat, 
 
 	if (CivilianState == ENoFearCivilianState::Cower)
 	{
-		// Спрятался: вскакивает, только если угроза совсем рядом и есть куда бежать.
-		if (FVector::Dist2D(MyPawn->GetActorLocation(), ThreatLocation) < CowerBreakDistance && PlanFlee())
+		// Спрятался: вскакивает, только если угроза совсем рядом и есть куда бежать (оцепеневший — нет).
+		if (!IsFrozen() && FVector::Dist2D(MyPawn->GetActorLocation(), ThreatLocation) < CowerBreakDistance && PlanFlee())
 		{
 			SetCivilianState(ENoFearCivilianState::Panic);
 		}
@@ -138,6 +138,61 @@ void ANoFearCivilianAIController::Panic(FVector ThreatLocation, AActor* Threat, 
 	}
 }
 
+void ANoFearCivilianAIController::Startle(FVector ThreatLocation, AActor* Threat)
+{
+	const APawn* MyPawn = GetPawn();
+	if (!MyPawn || UNoFearHealthComponent::IsActorIncapacitated(MyPawn) || IsInPortalTrance())
+	{
+		return;
+	}
+	if (IsFrozen() || (CivilianState != ENoFearCivilianState::Panic && CivilianState != ENoFearCivilianState::Cower))
+	{
+		Panic(ThreatLocation, Threat, true);
+		return;
+	}
+	// Уже бежит или прячется: крик и новый план бегства сразу, от новой точки угрозы.
+	AddThreat(Threat, ThreatLocation);
+	if (UNoFearFearComponent* FearComponent = UNoFearFearComponent::FindFear(MyPawn))
+	{
+		const float PanicThreshold = GetFearTuning(this).PanicThreshold;
+		if (FearComponent->GetFear() < PanicThreshold)
+		{
+			FearComponent->AddFear(100.f, PanicThreshold, ThreatLocation, false);
+		}
+	}
+	Scream(ThreatLocation);
+	if (PlanFlee())
+	{
+		SetCivilianState(ENoFearCivilianState::Panic);
+	}
+}
+
+void ANoFearCivilianAIController::Freeze(FVector ThreatLocation, AActor* Threat, float Duration)
+{
+	const APawn* MyPawn = GetPawn();
+	if (!MyPawn || UNoFearHealthComponent::IsActorIncapacitated(MyPawn) || IsInPortalTrance())
+	{
+		return;
+	}
+	AddThreat(Threat, ThreatLocation);
+	if (UNoFearFearComponent* FearComponent = UNoFearFearComponent::FindFear(MyPawn))
+	{
+		const float PanicThreshold = GetFearTuning(this).PanicThreshold;
+		if (FearComponent->GetFear() < PanicThreshold)
+		{
+			FearComponent->AddFear(100.f, PanicThreshold, ThreatLocation, false);
+		}
+	}
+	Scream(ThreatLocation);
+	FrozenUntil = GetNow() + FMath::Max(Duration, 0.f);
+	SetCivilianState(ENoFearCivilianState::Cower);
+}
+
+bool ANoFearCivilianAIController::IsFrozen() const
+{
+	return GetNow() < FrozenUntil;
+}
+
 void ANoFearCivilianAIController::NotifyReachedSafety()
 {
 	if (CivilianState == ENoFearCivilianState::Panic)
@@ -157,6 +212,7 @@ void ANoFearCivilianAIController::CalmDown()
 	Threats.Reset();
 	bThreatsChanged = false;
 	bHasFleeLocation = false;
+	FrozenUntil = -1.0;
 	if (MyPawn && FMath::FRand() >= ReturnHomeChance)
 	{
 		// Не пойдёт домой: бродит там, где успокоился.
@@ -408,6 +464,11 @@ void ANoFearCivilianAIController::SyncFear(AActor* FreshThreat, const FVector& F
 		break;
 
 	case ENoFearCivilianState::Cower:
+		if (IsFrozen())
+		{
+			// Оцепенел: не успокаивается и не вскакивает.
+			break;
+		}
 		if (Fear < Tuning.AnxiousThreshold)
 		{
 			CalmDown();
@@ -491,9 +552,25 @@ void ANoFearCivilianAIController::OnPortalTranceChanged(bool bTrance)
 	Super::OnPortalTranceChanged(bTrance);
 	if (bTrance)
 	{
-		// В трансе стоят в полный рост и тянутся к порталу, а не прячутся.
+		// В трансе тянутся к порталу, а не прячутся. Шептун (пешка) гипнотизирует, присев рядом: присевший так и сидит
+		// (без UnCrouch: Crouch в том же кадре не сработал бы, пока персонаж ещё числится присевшим).
+		if (bCowerPose && Cast<APawn>(GetTrancePortal()))
+		{
+			bCowerPose = false;
+			const ANoFearCharacter* BotCharacter = Cast<ANoFearCharacter>(GetPawn());
+			if (UNoFearPoseComponent* Pose = BotCharacter ? BotCharacter->GetPoseComponent() : nullptr)
+			{
+				Pose->SetPoseHeld(ENoFearPose::CoverHead, false);
+			}
+			return;
+		}
 		SetCowerPose(false);
 		return;
+	}
+	FrozenUntil = -1.0;
+	if (!bCowerPose)
+	{
+		SetCrouching(false);
 	}
 	const APawn* MyPawn = GetPawn();
 	if (!MyPawn || UNoFearHealthComponent::IsActorIncapacitated(MyPawn))

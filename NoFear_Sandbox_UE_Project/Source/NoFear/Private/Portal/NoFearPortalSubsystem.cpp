@@ -722,6 +722,18 @@ void UNoFearPortalSubsystem::UpdateBreaking(float DeltaTime, double Now)
 	}
 }
 
+void UNoFearPortalSubsystem::HoldBreak(APawn* Pawn, float Seconds)
+{
+	const UWorld* World = GetWorld();
+	if (!World || !Pawn)
+	{
+		return;
+	}
+	FBreakState& State = BreakStates.FindOrAdd(Pawn);
+	State.Progress = 0.f;
+	State.ImmuneUntil = FMath::Max(State.ImmuneUntil, World->GetTimeSeconds() + FMath::Max(Seconds, 0.f));
+}
+
 bool UNoFearPortalSubsystem::BreakPerson(APawn* Pawn)
 {
 	const UWorld* World = GetWorld();

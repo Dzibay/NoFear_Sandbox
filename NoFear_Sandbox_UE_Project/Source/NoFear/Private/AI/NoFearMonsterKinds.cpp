@@ -11,6 +11,8 @@
 #include "AI/NoFearTankShake.h"
 #include "AI/NoFearVulnerabilityComponent.h"
 #include "AI/NoFearSquadSubsystem.h"
+#include "AI/NoFearPhantom.h"
+#include "Components/PointLightComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Animation/NoFearPoseComponent.h"
 #include "BrainComponent.h"
@@ -1956,6 +1958,9 @@ ANoFearWhispererAIController::ANoFearWhispererAIController(const FObjectInitiali
 	AttackSet.Add(Swipe);
 
 	WhisperSound = TSoftObjectPtr<USoundBase>(FSoftObjectPath(TEXT("/Game/Audio/Ambient/Starter_Wind05.Starter_Wind05")));
+	HypnoSound = TSoftObjectPtr<USoundBase>(FSoftObjectPath(TEXT("/Game/Audio/Ambient/Starter_Wind06.Starter_Wind06")));
+	PhaseSound = TSoftObjectPtr<USoundBase>(FSoftObjectPath(TEXT("/Game/Audio/Ambient/Starter_Wind06.Starter_Wind06")));
+	PhantomClass = ANoFearPhantom::StaticClass();
 
 	// Шептун: голова во время гипноза ×3 и светится (окно Scream); голова ×1.5 (от загонщика).
 	KindName = TEXT("Whisperer");
@@ -1990,12 +1995,23 @@ void ANoFearWhispererAIController::OnPossess(APawn* InPawn)
 	const double Now = GetNow();
 	// Первое видение — не сразу после появления.
 	NextVisionTime = Now + FMath::FRandRange(VisionInterval.X, VisionInterval.Y);
+	NextHeroVisionTime = Now + FMath::FRandRange(HeroVisionInterval.X, HeroVisionInterval.Y);
 	NextGuardTime = 0.0;
 	NextPhaseStepTime = 0.0;
+	bApproaching = false;
+	bHasKeepGoal = false;
 
 	if (!InPawn)
 	{
 		return;
+	}
+	// Приседает рядом с присевшей жертвой.
+	if (ACharacter* Body = Cast<ACharacter>(InPawn))
+	{
+		if (UCharacterMovementComponent* Movement = Body->GetCharacterMovement())
+		{
+			Movement->GetNavAgentPropertiesRef().bCanCrouch = true;
+		}
 	}
 	if (UNoFearHealthComponent* Health = UNoFearHealthComponent::FindHealth(InPawn))
 	{
@@ -2051,8 +2067,13 @@ AActor* ANoFearWhispererAIController::GetTendedPortal() const
 
 bool ANoFearWhispererAIController::WantsFreeAttack(AActor* Target)
 {
-	// Бьёт только вплотную и не во время гипноза.
-	return Mode != EMode::Hypnotize && GetTargetDistance2D() <= 220.f;
+	// Бьёт только вплотную, не на охоте и не во время гипноза: жертву пугает, а не ранит.
+	const APawn* TargetPawn = Cast<APawn>(Target);
+	if (Mode == EMode::Hunt || Mode == EMode::Hypnotize || (TargetPawn && Cast<ANoFearCivilianAIController>(TargetPawn->GetController())))
+	{
+		return false;
+	}
+	return GetTargetDistance2D() <= 220.f;
 }
 
 void ANoFearWhispererAIController::Tick(float DeltaSeconds)
@@ -2068,12 +2089,17 @@ void ANoFearWhispererAIController::Tick(float DeltaSeconds)
 	const UNoFearMeleeComponent* Melee = GetMeleeComponent();
 	const ACharacter* Body = Cast<ACharacter>(MyPawn);
 	const UCharacterMovementComponent* Movement = Body ? Body->GetCharacterMovement() : nullptr;
-	if (Mode == EMode::Hunt && Movement && Movement->MaxWalkSpeed > 1.f && !(Melee && Melee->IsAttacking())
+	if (Mode == EMode::Hunt && !bApproaching && Movement && Movement->MaxWalkSpeed > 1.f && !(Melee && Melee->IsAttacking())
 		&& !UNoFearHealthComponent::IsActorDead(MyPawn))
 	{
 		Dilation = FMath::Max(1.f, HuntRunSpeed / Movement->MaxWalkSpeed);
 	}
 	MyPawn->CustomTimeDilation = Dilation;
+	// Свет и гул гипноза — каждый кадр: свет пульсирует и следует за жертвой.
+	if (Mode == EMode::Hypnotize && Victim.IsValid())
+	{
+		UpdateHypnoEffects(Victim.Get(), static_cast<float>(GetNow() - ModeStartTime) / FMath::Max(HypnoBreakTime, 0.1f));
+	}
 }
 
 void ANoFearWhispererAIController::UpdateBot()
@@ -2092,6 +2118,7 @@ void ANoFearWhispererAIController::UpdateBot()
 	UpdateAura(DeltaTime);
 	UpdateBuff();
 	UpdateVisions();
+	UpdateHeroVisions();
 	UpdateGuardTrigger();
 	if (Mode == EMode::Hypnotize)
 	{
@@ -2234,6 +2261,112 @@ void ANoFearWhispererAIController::UpdateVisions()
 	}
 }
 
+int32 ANoFearWhispererAIController::SendHeroVision(APawn* Hero)
+{
+	APawn* MyPawn = GetPawn();
+	UWorld* World = GetWorld();
+	if (!MyPawn || !World || !Hero || !PhantomClass || UNoFearHealthComponent::IsActorDead(Hero))
+	{
+		return 0;
+	}
+	TArray<ANoFearPhantom*> Phantoms;
+	ANoFearPhantom::GetPhantoms(World, Phantoms);
+	const int32 Existing = Phantoms.FilterByPredicate([Hero](const ANoFearPhantom* Phantom) { return Phantom->GetHero() == Hero; }).Num();
+	const int32 Wanted = FMath::Min(FMath::RandRange(1, 2), HeroVisionMax - Existing);
+	if (Wanted <= 0)
+	{
+		return 0;
+	}
+	// За краем зрения: дальше 75° от взгляда (браслет видит монстров в 60°).
+	FVector ViewLocation;
+	FRotator ViewRotation;
+	Hero->GetActorEyesViewPoint(ViewLocation, ViewRotation);
+	FVector Forward = ViewRotation.Vector().GetSafeNormal2D();
+	if (Forward.IsNearlyZero())
+	{
+		Forward = Hero->GetActorForwardVector().GetSafeNormal2D();
+	}
+	const FVector HeroLocation = Hero->GetActorLocation();
+	// Камера героя (у игрока — за спиной): где она окажется, когда он обернётся к видению.
+	FVector CameraOffset = ViewLocation - HeroLocation;
+	if (AController* HeroController = Hero->GetController())
+	{
+		FVector CameraLocation;
+		FRotator CameraRotation;
+		HeroController->GetPlayerViewPoint(CameraLocation, CameraRotation);
+		CameraOffset = CameraLocation - HeroLocation;
+	}
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(WhispererHeroVision), false, Hero);
+	Params.AddIgnoredActor(MyPawn);
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = Hero;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	int32 Spawned = 0;
+	TArray<FVector> Used;
+	for (int32 Attempt = 0; Attempt < 32 && Spawned < Wanted; ++Attempt)
+	{
+		const float Yaw = FMath::FRandRange(75.f, 180.f) * (FMath::RandBool() ? 1.f : -1.f);
+		const FVector Point = HeroLocation + Forward.RotateAngleAxis(Yaw, FVector::UpVector) * FMath::FRandRange(HeroVisionDistance.X, HeroVisionDistance.Y);
+		FVector Ground;
+		// Навмеш сдвигает точку: дистанцию проверяем уже после проекции.
+		const float GroundDistance = NoFearWhisperer::ProjectToNav(World, Point, Ground) ? FVector::Dist2D(Ground, HeroLocation) : -1.f;
+		if (GroundDistance < HeroVisionDistance.X || GroundDistance > HeroVisionDistance.Y
+			|| Used.ContainsByPredicate([&Ground](const FVector& Other) { return FVector::Dist2D(Other, Ground) < 250.f; }))
+		{
+			continue;
+		}
+		// Бежит по прямой и виден, если обернуться: ни до героя, ни до его камеры, развёрнутой к видению, нет стен.
+		const FVector ToGround = (Ground - HeroLocation).GetSafeNormal2D();
+		const FVector TurnedCamera = HeroLocation - ToGround * CameraOffset.Size2D() + FVector(0.f, 0.f, CameraOffset.Z);
+		FHitResult Hit;
+		if (World->LineTraceSingleByChannel(Hit, Ground + FVector(0.f, 0.f, 60.f), HeroLocation, ECC_Visibility, Params)
+			|| World->LineTraceSingleByChannel(Hit, Ground + FVector(0.f, 0.f, 60.f), TurnedCamera, ECC_Visibility, Params))
+		{
+			continue;
+		}
+		ANoFearPhantom* Phantom = World->SpawnActor<ANoFearPhantom>(PhantomClass, FTransform(Ground), SpawnParams);
+		if (!Phantom)
+		{
+			continue;
+		}
+		Phantom->Init(Hero, Ground);
+		HeroPhantoms.Add(Phantom);
+		Used.Add(Ground);
+		++Spawned;
+	}
+	HeroPhantoms.RemoveAll([](const TWeakObjectPtr<ANoFearPhantom>& Item) { return !Item.IsValid() || Item->IsVanishing(); });
+	HeroVisionCount += Spawned;
+	return Spawned;
+}
+
+void ANoFearWhispererAIController::UpdateHeroVisions()
+{
+	APawn* MyPawn = GetPawn();
+	UWorld* World = GetWorld();
+	const double Now = GetNow();
+	if (!MyPawn || !World || Now < NextHeroVisionTime)
+	{
+		return;
+	}
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		APlayerController* PlayerController = It->Get();
+		APawn* Hero = PlayerController ? PlayerController->GetPawn() : nullptr;
+		if (!Hero || UNoFearHealthComponent::IsActorIncapacitated(Hero)
+			|| FVector::Dist(Hero->GetActorLocation(), MyPawn->GetActorLocation()) > HeroVisionRange)
+		{
+			continue;
+		}
+		const UNoFearBraceletComponent* Bracelet = PlayerController->FindComponentByClass<UNoFearBraceletComponent>();
+		const float Fear = Bracelet ? Bracelet->GetFear() : NoFearWhisperer::GetHumanFear(Hero);
+		if (Fear >= HeroVisionMinFear && SendHeroVision(Hero) > 0)
+		{
+			NextHeroVisionTime = Now + FMath::FRandRange(HeroVisionInterval.X, HeroVisionInterval.Y);
+			return;
+		}
+	}
+}
+
 bool ANoFearWhispererAIController::CanSee(const AActor* Other) const
 {
 	const APawn* MyPawn = GetPawn();
@@ -2264,6 +2397,12 @@ void ANoFearWhispererAIController::SetMode(EMode NewMode)
 	if (NewMode != EMode::Hunt && NewMode != EMode::Hypnotize)
 	{
 		Victim.Reset();
+		bApproaching = false;
+		SetCrouching(false);
+	}
+	if (NewMode == EMode::Keep)
+	{
+		bHasKeepGoal = false;
 	}
 	if (NewMode != EMode::Tend)
 	{
@@ -2372,8 +2511,7 @@ void ANoFearWhispererAIController::UpdateMode()
 	// Мирные в округе — первым делом они.
 	if (APawn* NewVictim = FindHuntVictim())
 	{
-		SetMode(EMode::Hunt);
-		Victim = NewVictim;
+		BeginHunt(NewVictim);
 		UpdateHunt();
 		return;
 	}
@@ -2389,6 +2527,19 @@ void ANoFearWhispererAIController::UpdateMode()
 	UpdatePosition();
 }
 
+void ANoFearWhispererAIController::BeginHunt(APawn* NewVictim)
+{
+	SetMode(EMode::Hunt);
+	Victim = NewVictim;
+	const double Now = GetNow();
+	// Каждой жертве — своё число телепортов до оцепенения.
+	ScaresNeeded = FMath::RandRange(FMath::Max(1, FMath::Min(StalkScares.X, StalkScares.Y)), FMath::Max(1, FMath::Max(StalkScares.X, StalkScares.Y)));
+	ScaresDone = 0;
+	NextStalkTime = Now;
+	HuntProgressTime = Now;
+	bApproaching = false;
+}
+
 void ANoFearWhispererAIController::UpdateHunt()
 {
 	APawn* MyPawn = GetPawn();
@@ -2399,9 +2550,9 @@ void ANoFearWhispererAIController::UpdateHunt()
 	{
 		return;
 	}
-	if (!IsValidVictim(Target) || Now - ModeStartTime > HuntTimeout)
+	if (!IsValidVictim(Target) || Now - HuntProgressTime > HuntTimeout)
 	{
-		// Не добежал или жертву перехватили — на время её не трогает.
+		// Не добрался или жертву перехватили — на время её не трогает.
 		if (Target)
 		{
 			RetryUntil.Add(Target, Now + HypnoRetryTime);
@@ -2409,27 +2560,166 @@ void ANoFearWhispererAIController::UpdateHunt()
 		SetMode(EMode::Keep);
 		return;
 	}
+	const ANoFearCivilianAIController* Civilian = Cast<ANoFearCivilianAIController>(Target->GetController());
 	const FVector MyLocation = MyPawn->GetActorLocation();
 	const FVector VictimLocation = Target->GetActorLocation();
-	const float Distance = FVector::Dist(MyLocation, VictimLocation);
-	if (Distance <= HypnoStartRange && CanSee(Target))
+	const float Distance = FVector::Dist2D(MyLocation, VictimLocation);
+	SetFocus(Target, EAIFocusPriority::Gameplay);
+
+	// Жертва оцепенела (или спряталась после телепорта) — подходит вплотную, лицом к лицу.
+	const bool bCowering = Civilian && Civilian->GetCivilianState() == ENoFearCivilianState::Cower;
+	const bool bWasApproaching = bApproaching;
+	bApproaching = ScaresDone >= ScaresNeeded || (ScaresDone > 0 && bCowering);
+	// Напуганная телепортом — его добыча: ужас её не ломает, ломает гипноз.
+	if (ScaresDone > 0)
 	{
-		StartHypnosis(Target);
+		if (UNoFearPortalSubsystem* Portals = UNoFearPortalSubsystem::Get(this))
+		{
+			Portals->HoldBreak(Target, 0.5f);
+		}
+	}
+	if (bApproaching)
+	{
+		if (!bWasApproaching)
+		{
+			HuntProgressTime = Now;
+		}
+		FVector Front = Target->GetActorForwardVector().GetSafeNormal2D();
+		if (Front.IsNearlyZero())
+		{
+			Front = (MyLocation - VictimLocation).GetSafeNormal2D();
+		}
+		// Шаг дерева (MoveTo) встаёт примерно в 90 см от точки (радиус приёма и капсула) — точка на столько ближе к лицу.
+		FVector Goal = VictimLocation + Front * FMath::Max(HypnoFaceDistance - 90.f, 10.f);
+		FVector Projected;
+		if (NoFearWhisperer::ProjectToNav(World, Goal, Projected))
+		{
+			Goal = Projected;
+		}
+		else if (NoFearWhisperer::ProjectToNav(World, VictimLocation + (MyLocation - VictimLocation).GetSafeNormal2D() * HypnoFaceDistance, Projected))
+		{
+			// Спереди не встать (стена) — со своей стороны.
+			Goal = Projected;
+		}
+		SetShadeGoal(Goal, 0.6f);
+		// Присевшей — приседает рядом.
+		SetCrouching(Distance < 400.f && Civilian && Civilian->IsCrouching());
+		if (Distance <= HypnoStartRange && CanSee(Target))
+		{
+			StartHypnosis(Target);
+		}
 		return;
 	}
-	// Бегом к жертве, на HuntApproachDistance от неё со своей стороны.
-	FVector Away = (MyLocation - VictimLocation).GetSafeNormal2D();
-	if (Away.IsNearlyZero())
+	SetCrouching(false);
+
+	if (Distance > StalkTeleportRange)
 	{
-		Away = -MyPawn->GetActorForwardVector().GetSafeNormal2D();
+		// Далеко — бегом к жертве, на HuntApproachDistance от неё со своей стороны.
+		FVector Away = (MyLocation - VictimLocation).GetSafeNormal2D();
+		if (Away.IsNearlyZero())
+		{
+			Away = -MyPawn->GetActorForwardVector().GetSafeNormal2D();
+		}
+		FVector Goal = VictimLocation + Away * HuntApproachDistance;
+		FVector Projected;
+		if (NoFearWhisperer::ProjectToNav(World, Goal, Projected) || NoFearWhisperer::ProjectToNav(World, VictimLocation, Projected))
+		{
+			Goal = Projected;
+		}
+		SetShadeGoal(Goal, 0.6f);
+		return;
 	}
-	FVector Goal = VictimLocation + Away * FMath::Min(HuntApproachDistance, HypnoStartRange * 0.8f);
-	FVector Projected;
-	if (NoFearWhisperer::ProjectToNav(World, Goal, Projected) || NoFearWhisperer::ProjectToNav(World, VictimLocation, Projected))
+	// Близко: стоит и смотрит, пока не пора возникнуть перед лицом; на последнем телепорте жертва цепенеет.
+	if (Now >= NextStalkTime)
 	{
-		Goal = Projected;
+		if (StalkTeleport(Target, ScaresDone + 1 >= ScaresNeeded))
+		{
+			return;
+		}
+		// Перед лицом встать негде — чуть позже.
+		NextStalkTime = Now + 0.5;
 	}
-	SetShadeGoal(Goal, 0.6f);
+	SetShadeGoal(MyLocation, 0.6f);
+}
+
+bool ANoFearWhispererAIController::StalkTeleport(APawn* StalkVictim, bool bFreeze)
+{
+	APawn* MyPawn = GetPawn();
+	UWorld* World = GetWorld();
+	ANoFearCivilianAIController* Civilian = StalkVictim ? Cast<ANoFearCivilianAIController>(StalkVictim->GetController()) : nullptr;
+	if (!MyPawn || !World || !Civilian || UNoFearHealthComponent::IsActorDead(MyPawn) || UNoFearHealthComponent::IsActorIncapacitated(StalkVictim)
+		|| Civilian->IsPortalControlled())
+	{
+		return false;
+	}
+	const FVector VictimLocation = StalkVictim->GetActorLocation();
+	const FVector Velocity = StalkVictim->GetVelocity();
+	// Перед лицом: куда бежит, а стоящей — куда смотрит.
+	FVector Facing = Velocity.Size2D() > 50.f ? Velocity.GetSafeNormal2D() : StalkVictim->GetActorForwardVector().GetSafeNormal2D();
+	if (Facing.IsNearlyZero())
+	{
+		Facing = (MyPawn->GetActorLocation() - VictimLocation).GetSafeNormal2D();
+	}
+	const float HalfHeight = MyPawn->GetDefaultHalfHeight();
+	const FVector Eyes = StalkVictim->GetPawnViewLocation();
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(WhispererStalk), false, MyPawn);
+	Params.AddIgnoredActor(StalkVictim);
+	FVector Destination = FVector::ZeroVector;
+	bool bFound = false;
+	for (const float Angle : { 0.f, 30.f, -30.f, 60.f, -60.f, 90.f, -90.f })
+	{
+		FVector Projected;
+		if (!NoFearWhisperer::ProjectToNav(World, VictimLocation + Facing.RotateAngleAxis(Angle, FVector::UpVector) * StalkTeleportDistance, Projected))
+		{
+			continue;
+		}
+		const float Offset = FVector::Dist2D(Projected, VictimLocation);
+		if (Offset < StalkTeleportDistance * 0.5f || Offset > StalkTeleportDistance * 2.f || FMath::Abs(Projected.Z + HalfHeight - VictimLocation.Z) > 150.f)
+		{
+			continue;
+		}
+		// Жертва должна его увидеть: не за стеной.
+		FHitResult Hit;
+		if (World->LineTraceSingleByChannel(Hit, Eyes, Projected + FVector(0.f, 0.f, HalfHeight * 1.6f), ECC_Visibility, Params))
+		{
+			continue;
+		}
+		Destination = Projected;
+		bFound = true;
+		break;
+	}
+	if (!bFound)
+	{
+		return false;
+	}
+	const FVector From = MyPawn->GetActorLocation();
+	Destination.Z += HalfHeight;
+	if (!MyPawn->TeleportTo(Destination, FRotator(0.f, (VictimLocation - Destination).GetSafeNormal2D().Rotation().Yaw, 0.f)))
+	{
+		return false;
+	}
+	StopMovement();
+	SetCrouching(false);
+	SetFocus(StalkVictim, EAIFocusPriority::Gameplay);
+	PlayPhaseFlash(From);
+	PlayPhaseFlash(Destination);
+	const double Now = GetNow();
+	if (StalkVictim == Victim.Get())
+	{
+		++ScaresDone;
+	}
+	++StalkCount;
+	HuntProgressTime = Now;
+	NextStalkTime = Now + FMath::FRandRange(StalkInterval.X, StalkInterval.Y);
+	if (bFreeze)
+	{
+		Civilian->Freeze(Destination, MyPawn, StalkFreezeTime);
+	}
+	else
+	{
+		Civilian->Startle(Destination, MyPawn);
+	}
+	return true;
 }
 
 bool ANoFearWhispererAIController::StartHypnosis(APawn* NewVictim)
@@ -2457,9 +2747,11 @@ bool ANoFearWhispererAIController::StartHypnosis(APawn* NewVictim)
 	}
 	const UNoFearHealthComponent* VictimHealth = UNoFearHealthComponent::FindHealth(NewVictim);
 	VictimStartHealth = VictimHealth ? VictimHealth->GetHealth() : 0.f;
+	HypnoPeakFear = NoFearWhisperer::GetHumanFear(NewVictim);
 	HypnoDamage = 0.f;
 	LastSeenVictimTime = GetNow();
 	++HypnoCount;
+	UpdateHypnoEffects(NewVictim, 0.f);
 	return true;
 }
 
@@ -2495,16 +2787,32 @@ void ANoFearWhispererAIController::UpdateHypnosis(float DeltaTime)
 		|| Now - LastSeenVictimTime > HypnoLostSightTime
 		|| FVector::Dist(Target->GetActorLocation(), MyPawn->GetActorLocation()) > HypnoBreakRange
 		|| (VictimHealth && VictimHealth->GetHealth() < VictimStartHealth - 0.5f)
-		|| (Now - ModeStartTime > 1.0 && Fear < HypnoCalmFear))
+		|| (Now - ModeStartTime > 1.0 && Fear < HypnoCalmFear && Fear < HypnoPeakFear - 10.f))
 	{
 		EndHypnosis(false);
 		return;
 	}
+	HypnoPeakFear = FMath::Max(HypnoPeakFear, Fear);
 	SetShadeGoal(MyPawn->GetActorLocation(), 0.6f);
 	SetFocus(Target, EAIFocusPriority::Gameplay);
+	// Присевшей жертве — сидит рядом.
+	SetCrouching(VictimBot->IsCrouching());
 	DrawDebugLine(World, MyPawn->GetPawnViewLocation(), Target->GetPawnViewLocation(), FColor(170, 40, 255), false, 0.3f, 0, 3.f);
-	// Прямой испуг: на 100 страх ломает жертву, портал делает её проводником.
-	NoFearWhisperer::AddWhisperFear(Target, HypnoFearPerSecond * DeltaTime, 100.f, MyPawn->GetActorLocation(), MyPawn, true);
+	// Ломает сам через HypnoBreakTime, как бы ни была напугана жертва до того (после телепортов она уже у потолка):
+	// общий слом ужасом её не трогает (HoldBreak). Страх тем временем ровно растёт к потолку.
+	const float Elapsed = static_cast<float>(Now - ModeStartTime);
+	if (UNoFearPortalSubsystem* Portals = UNoFearPortalSubsystem::Get(this))
+	{
+		if (Elapsed >= HypnoBreakTime)
+		{
+			Portals->BreakPerson(Target);
+			return;
+		}
+		Portals->HoldBreak(Target, 0.5f);
+	}
+	const float Remaining = FMath::Max(HypnoBreakTime - Elapsed, FMath::Max(DeltaTime, 0.05f));
+	const float Amount = FMath::Max((100.f - Fear) * FMath::Min(1.f, DeltaTime / Remaining), 2.f * DeltaTime);
+	NoFearWhisperer::AddWhisperFear(Target, Amount, 100.f, MyPawn->GetActorLocation(), MyPawn, true);
 }
 
 void ANoFearWhispererAIController::EndHypnosis(bool bBroken)
@@ -2524,6 +2832,11 @@ void ANoFearWhispererAIController::EndHypnosis(bool bBroken)
 		if (Target)
 		{
 			RetryUntil.Add(Target, GetNow() + HypnoRetryTime);
+			// Спасённая не ломается тут же от ужаса, пока шептун не может взяться за неё снова.
+			if (UNoFearPortalSubsystem* Portals = UNoFearPortalSubsystem::Get(this))
+			{
+				Portals->HoldBreak(Target, HypnoRetryTime);
+			}
 			// Очнулась: убегает от шептуна (если её не забрал портал).
 			ANoFearAIController* VictimBot = Cast<ANoFearAIController>(Target->GetController());
 			if (VictimBot && VictimBot->IsInPortalTrance() && !UNoFearPortalSubsystem::IsActorFeeder(Target))
@@ -2539,8 +2852,92 @@ void ANoFearWhispererAIController::EndHypnosis(bool bBroken)
 			Vulnerability->CloseWindow(ENoFearWeakCondition::Scream);
 		}
 	}
+	StopHypnoEffects();
 	ClearFocus(EAIFocusPriority::Gameplay);
 	SetMode(EMode::Keep);
+}
+
+void ANoFearWhispererAIController::UpdateHypnoEffects(const APawn* Target, float Progress)
+{
+	APawn* MyPawn = GetPawn();
+	if (!MyPawn || !Target)
+	{
+		return;
+	}
+	const float Alpha = FMath::Clamp(Progress, 0.f, 1.f);
+	UPointLightComponent* Light = HypnoLight.Get();
+	if (!Light)
+	{
+		Light = NewObject<UPointLightComponent>(MyPawn, TEXT("HypnoLight"));
+		Light->SetMobility(EComponentMobility::Movable);
+		Light->SetUsingAbsoluteLocation(true);
+		Light->SetIntensityUnits(ELightUnits::Candelas);
+		Light->SetLightColor(HypnoLightColor);
+		Light->SetAttenuationRadius(400.f);
+		Light->SetCastShadows(false);
+		Light->RegisterComponent();
+		HypnoLight = Light;
+	}
+	// Над головой жертвы, пульсирует, ярче к слому.
+	Light->SetWorldLocation(Target->GetActorLocation() + FVector(0.f, 0.f, Target->GetSimpleCollisionHalfHeight() + 50.f));
+	const float Pulse = 0.8f + 0.2f * FMath::Sin(static_cast<float>(GetNow()) * 5.f);
+	Light->SetIntensity(FMath::Lerp(HypnoLightIntensity.X, HypnoLightIntensity.Y, Alpha) * Pulse);
+
+	UAudioComponent* Audio = HypnoAudio.Get();
+	if (!Audio)
+	{
+		if (USoundBase* Sound = HypnoSound.LoadSynchronous())
+		{
+			Audio = UGameplayStatics::SpawnSoundAttached(Sound, Target->GetRootComponent(), NAME_None, FVector(0.f, 0.f, 60.f),
+				EAttachLocation::KeepRelativeOffset, true, 0.5f, HypnoSoundPitch);
+			HypnoAudio = Audio;
+		}
+	}
+	if (Audio)
+	{
+		Audio->SetVolumeMultiplier(FMath::Lerp(0.5f, 1.5f, Alpha));
+	}
+}
+
+void ANoFearWhispererAIController::StopHypnoEffects()
+{
+	if (UPointLightComponent* Light = HypnoLight.Get())
+	{
+		Light->DestroyComponent();
+	}
+	HypnoLight.Reset();
+	if (UAudioComponent* Audio = HypnoAudio.Get())
+	{
+		Audio->FadeOut(0.5f, 0.f);
+	}
+	HypnoAudio.Reset();
+}
+
+void ANoFearWhispererAIController::PlayPhaseFlash(const FVector& Location)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	// Вспышка — отдельным актёром: тело шептуна на миг скрыто, его свет не горел бы.
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	if (AActor* FlashActor = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform(Location), SpawnParams))
+	{
+		UPointLightComponent* Flash = NewObject<UPointLightComponent>(FlashActor, TEXT("PhaseFlash"));
+		Flash->SetMobility(EComponentMobility::Movable);
+		FlashActor->SetRootComponent(Flash);
+		Flash->SetIntensityUnits(ELightUnits::Candelas);
+		Flash->SetIntensity(PhaseFlashIntensity);
+		Flash->SetLightColor(HypnoLightColor);
+		Flash->SetAttenuationRadius(600.f);
+		Flash->SetCastShadows(false);
+		Flash->RegisterComponent();
+		Flash->SetWorldLocation(Location);
+		FlashActor->SetLifeSpan(0.3f);
+	}
+	NoFearWhisperer::PlayLimitedSound(this, PhaseSound.LoadSynchronous(), Location, 1.8f, 0.5f);
 }
 
 // --- У портала ---
@@ -2739,6 +3136,8 @@ bool ANoFearWhispererAIController::PhaseStep(FVector From)
 			Pawn->SetActorHiddenInGame(false);
 		}
 	}), 0.2f, false);
+	PlayPhaseFlash(Location);
+	PlayPhaseFlash(Destination);
 	DrawDebugLine(World, Location, Destination, FColor(170, 40, 255), false, 0.5f, 0, 2.f);
 	return true;
 }
@@ -2786,6 +3185,13 @@ void ANoFearWhispererAIController::UpdatePosition()
 	const AActor* Target = CurrentTarget.Get();
 	if (!Shooter && !Target)
 	{
+		// Никого: стоит, где стоял (без цели строй стаи водил бы его туда-сюда).
+		if (!bHasKeepGoal)
+		{
+			KeepGoal = MyLocation;
+			bHasKeepGoal = true;
+		}
+		SetShadeGoal(KeepGoal, 0.6f);
 		return;
 	}
 
@@ -2831,6 +3237,13 @@ void ANoFearWhispererAIController::UpdatePosition()
 	{
 		Goal = Projected;
 	}
+	// Новая цель рядом со старой — держится старой: не дёргается от каждого шага стрелка.
+	if (bHasKeepGoal && FVector::Dist2D(Goal, KeepGoal) < 200.f)
+	{
+		Goal = KeepGoal;
+	}
+	KeepGoal = Goal;
+	bHasKeepGoal = true;
 	SetShadeGoal(Goal, 0.6f);
 }
 
@@ -2860,9 +3273,18 @@ void ANoFearWhispererAIController::HandleDeath(UNoFearHealthComponent* Component
 
 void ANoFearWhispererAIController::ClearEffects()
 {
-	// Жертва гипноза приходит в себя.
+	// Жертва гипноза приходит в себя, свет гаснет, призраки героя рассыпаются.
 	EndHypnosis(false);
+	StopHypnoEffects();
 	SetMode(EMode::Keep);
+	for (const TWeakObjectPtr<ANoFearPhantom>& Item : HeroPhantoms)
+	{
+		if (ANoFearPhantom* Phantom = Item.Get())
+		{
+			Phantom->Vanish(false);
+		}
+	}
+	HeroPhantoms.Reset();
 	for (const TWeakObjectPtr<APawn>& Item : VisionVictims)
 	{
 		if (UNoFearCombatComponent* Combat = Item.IsValid() ? Item->FindComponentByClass<UNoFearCombatComponent>() : nullptr)

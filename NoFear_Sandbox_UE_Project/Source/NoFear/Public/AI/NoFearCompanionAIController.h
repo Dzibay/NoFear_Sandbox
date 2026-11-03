@@ -98,6 +98,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NoFear|AI|Companion")
 	bool IsRecruited() const { return Leader.IsValid(); }
 
+	/** Лидер выстрелил в видение шептуна (ANoFearPhantom): «Там никого нет». */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|AI|Companion")
+	void ReactToPhantomShot();
+
 	/** true — идти за лидером, false — ждать на текущем месте. */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|AI|Companion")
 	void SetFollowing(bool bNewFollowing);

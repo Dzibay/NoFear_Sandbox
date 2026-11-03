@@ -1,5 +1,6 @@
 #include "AI/NoFearCombatSubsystem.h"
 
+#include "AI/NoFearPhantom.h"
 #include "AI/NoFearCombatComponent.h"
 #include "Core/NoFearTeam.h"
 #include "Engine/Engine.h"
@@ -40,6 +41,8 @@ void UNoFearCombatSubsystem::ReportShot(const UObject* WorldContextObject, AActo
 	float SuppressionRadius, float SuppressionAmount, float HitBonus)
 {
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	// Видения шептуна пуля проходит насквозь — и они рассыпаются.
+	ANoFearPhantom::NotifyShot(World, ResolveShooterPawn(Shooter), TraceStart, Hit.bBlockingHit ? FVector(Hit.ImpactPoint) : TraceEnd);
 	const UNoFearCombatSubsystem* Subsystem = World ? World->GetSubsystem<UNoFearCombatSubsystem>() : nullptr;
 	if (!Subsystem || SuppressionRadius <= 0.f)
 	{

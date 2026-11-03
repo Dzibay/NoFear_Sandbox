@@ -57,6 +57,20 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Civilian")
 	void Panic(FVector ThreatLocation, AActor* Threat = nullptr, bool bScream = true);
 
+	/**
+	 * Внезапный испуг вплотную (шептун возник перед лицом): крик и бегство сразу от угрозы,
+	 * даже если уже бежит или прятался (без ReplanInterval и CowerBreakDistance). Замерший (Freeze) не вскакивает.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Civilian")
+	void Startle(FVector ThreatLocation, AActor* Threat = nullptr);
+
+	/** Оцепенеть от страха: крик, присесть и закрыть голову на месте; Duration секунд не вскакивает ни от какой угрозы. */
+	UFUNCTION(BlueprintCallable, Category = "NoFear|Civilian")
+	void Freeze(FVector ThreatLocation, AActor* Threat, float Duration);
+
+	UFUNCTION(BlueprintPure, Category = "NoFear|Civilian")
+	bool IsFrozen() const;
+
 	/** Добежал до точки бегства: спрятаться (зовёт задача NoFear Civilian Shelter). */
 	UFUNCTION(BlueprintCallable, Category = "NoFear|Civilian")
 	void NotifyReachedSafety();
@@ -169,4 +183,6 @@ private:
 	double WaryLookUntil = 0.0;
 	bool bWaryFocus = false;
 	bool bCowerPose = false;
+	/** До этого времени оцепенел (Freeze): прячется и не вскакивает. */
+	double FrozenUntil = -1.0;
 };
